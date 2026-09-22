@@ -158,3 +158,25 @@ Log first:
 Then optimize based on observed data.
 
 **Status:** Planned.
+
+
+---
+
+## ADR-011 — Extract execution without changing orchestration
+
+**Decision:** Add one internal async `ExecutionBackend` protocol with an
+`ExecutionResult` carrying output and economics. Adapt the existing Treg client
+through `TregExecutionBackend`; retain it as the controller's default and allow
+an optional injected backend. Discovery, routing, verification, and persistence
+stay in their current locations.
+
+**Reason:** Establish the execution seam for a future UHP backend while preserving
+the v0.1.2.2 path and existing construction sites. No UHP fields or other v2
+interfaces are needed for this slice.
+
+**Constraint:** Preserve normal `TREG_ERROR:` normalization, dry-run exception
+propagation, and legacy economics behavior. Existing ranking and unknown-choice
+behavior are unchanged. UHP remains unimplemented.
+
+**Status:** Implemented; 33 tests pass. See the execution-foundation evidence in
+`03_PROGRESS_AND_EVIDENCE.md`.
