@@ -1,0 +1,1620 @@
+{
+ "api": {
+  "deterministic_pass": {
+   "body": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Email returned: ada@example.com",
+       "Email domain matches expected domain example.com.",
+       "Provider reported validIdentity=true.",
+       "Returned person matches Ada Example.",
+       "Provider reported validSMTP=true.",
+       "Provider reported valid email status."
+      ],
+      "deterministic_status": "pass",
+      "economics": {
+       "call_id": "first-1",
+       "idempotent_replay": false,
+       "latency_ms": 5,
+       "provider_requested": "first-provider",
+       "provider_served": "first",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.001
+      },
+      "output": "{\"email\": \"ada@example.com\", \"fullName\": \"Ada Example\", \"validIdentity\": true, \"validSMTP\": true, \"validity\": \"valid\"}",
+      "passed": true,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 1.0,
+      "verification_source": "deterministic"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "Tool result passed deterministic validation; Jev verification was unnecessary.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "first",
+    "status": "passed"
+   },
+   "status_code": 200
+  },
+  "dry_run": {
+   "body": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Dry run: command constructed; provider execution and result verification intentionally skipped."
+      ],
+      "deterministic_status": "inconclusive",
+      "economics": {
+       "call_id": "first-1",
+       "idempotent_replay": false,
+       "latency_ms": 5,
+       "provider_requested": "first-provider",
+       "provider_served": "first",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.001
+      },
+      "output": "DRY RUN: treg call first.email",
+      "passed": false,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 0.0,
+      "verification_source": "dry_run"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "Dry run completed after discovery, routing, and command construction. No provider or verification call was made.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "first",
+    "status": "dry_run"
+   },
+   "status_code": 200
+  },
+  "dry_run_preparation_error": {
+   "body": {
+    "detail": "cannot prepare command"
+   },
+   "status_code": 502
+  },
+  "treg_error_then_pass": {
+   "body": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Treg/provider execution failed."
+      ],
+      "deterministic_status": "fail",
+      "economics": null,
+      "output": "TREG_ERROR: first unavailable",
+      "passed": false,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 0.0,
+      "verification_source": "deterministic"
+     },
+     {
+      "deterministic_evidence": [
+       "Email returned: ada@example.com",
+       "Email domain matches expected domain example.com.",
+       "Provider reported validIdentity=true.",
+       "Returned person matches Ada Example.",
+       "Provider reported validSMTP=true.",
+       "Provider reported valid email status."
+      ],
+      "deterministic_status": "pass",
+      "economics": {
+       "call_id": "second-2",
+       "idempotent_replay": false,
+       "latency_ms": 10,
+       "provider_requested": "second-provider",
+       "provider_served": "second",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.002
+      },
+      "output": "{\"email\": \"ada@example.com\", \"fullName\": \"Ada Example\", \"validIdentity\": true, \"validSMTP\": true, \"validity\": \"valid\"}",
+      "passed": true,
+      "route_probability": 0.15,
+      "tool_id": "second",
+      "verification_probability": 1.0,
+      "verification_source": "deterministic"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "Tool result passed deterministic validation; Jev verification was unnecessary.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "second",
+    "status": "passed"
+   },
+   "status_code": 200
+  }
+ },
+ "captured_from": "10d4b7188c1f0259e4fb02ddc1b66eeb116fe029",
+ "scenarios": {
+  "all_treg_errors_escalate": {
+   "records": [
+    {
+     "id": "<run_id>",
+     "objective": "Find the verified work email for Ada Example",
+     "payload": {
+      "candidates": [
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "first",
+        "method": "GET",
+        "provider": "first-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "first.email"
+       },
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "second",
+        "method": "GET",
+        "provider": "second-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "second.email"
+       }
+      ],
+      "dry_run": false,
+      "max_attempts": 2,
+      "objective": "Find the verified work email for Ada Example",
+      "route_confidence": 0.65,
+      "state": {
+       "company_domain": "example.com",
+       "person": "Ada Example"
+      },
+      "success_criteria": "The tool result directly and sufficiently satisfies the objective.",
+      "verify_probability": 0.85
+     },
+     "result": {
+      "attempts": [
+       {
+        "deterministic_evidence": [
+         "Treg/provider execution failed."
+        ],
+        "deterministic_status": "fail",
+        "economics": null,
+        "output": "TREG_ERROR: first unavailable",
+        "passed": false,
+        "route_probability": 0.8,
+        "tool_id": "first",
+        "verification_probability": 0.0,
+        "verification_source": "deterministic"
+       },
+       {
+        "deterministic_evidence": [
+         "Treg/provider execution failed."
+        ],
+        "deterministic_status": "fail",
+        "economics": null,
+        "output": "TREG_ERROR: second unavailable",
+        "passed": false,
+        "route_probability": 0.15,
+        "tool_id": "second",
+        "verification_probability": 0.0,
+        "verification_source": "deterministic"
+       }
+      ],
+      "discovered_candidates": [
+       "first",
+       "second"
+      ],
+      "discovery_evidence": null,
+      "discovery_query": null,
+      "discovery_used": false,
+      "reason": "No attempted tool produced a result above the verification threshold.",
+      "route_confidence": 0.94,
+      "routing_probabilities": {
+       "escalate": 0.05,
+       "first": 0.8,
+       "second": 0.15
+      },
+      "run_id": "<run_id>",
+      "selected_tool": "first",
+      "status": "escalate"
+     },
+     "route_confidence": 0.94,
+     "selected_tool": "first",
+     "status": "escalate"
+    }
+   ],
+   "response": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Treg/provider execution failed."
+      ],
+      "deterministic_status": "fail",
+      "economics": null,
+      "output": "TREG_ERROR: first unavailable",
+      "passed": false,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 0.0,
+      "verification_source": "deterministic"
+     },
+     {
+      "deterministic_evidence": [
+       "Treg/provider execution failed."
+      ],
+      "deterministic_status": "fail",
+      "economics": null,
+      "output": "TREG_ERROR: second unavailable",
+      "passed": false,
+      "route_probability": 0.15,
+      "tool_id": "second",
+      "verification_probability": 0.0,
+      "verification_source": "deterministic"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "No attempted tool produced a result above the verification threshold.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "first",
+    "status": "escalate"
+   },
+   "treg_calls": [
+    [
+     "first",
+     false
+    ],
+    [
+     "second",
+     false
+    ]
+   ],
+   "validator_inputs": [
+    [
+     "first",
+     "TREG_ERROR: first unavailable"
+    ],
+    [
+     "second",
+     "TREG_ERROR: second unavailable"
+    ]
+   ],
+   "verification_outputs": []
+  },
+  "attempt_limit_one": {
+   "records": [
+    {
+     "id": "<run_id>",
+     "objective": "Find the verified work email for Ada Example",
+     "payload": {
+      "candidates": [
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "first",
+        "method": "GET",
+        "provider": "first-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "first.email"
+       },
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "second",
+        "method": "GET",
+        "provider": "second-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "second.email"
+       }
+      ],
+      "dry_run": false,
+      "max_attempts": 1,
+      "objective": "Find the verified work email for Ada Example",
+      "route_confidence": 0.65,
+      "state": {
+       "company_domain": "example.com",
+       "person": "Ada Example"
+      },
+      "success_criteria": "The tool result directly and sufficiently satisfies the objective.",
+      "verify_probability": 0.85
+     },
+     "result": {
+      "attempts": [
+       {
+        "deterministic_evidence": [
+         "Tool output is not structured JSON."
+        ],
+        "deterministic_status": "inconclusive",
+        "economics": {
+         "call_id": "first-1",
+         "idempotent_replay": false,
+         "latency_ms": 5,
+         "provider_requested": "first-provider",
+         "provider_served": "first",
+         "quoted_cost_usd": null,
+         "reserved_cost_usd": null,
+         "settled_cost_usd": 0.001
+        },
+        "output": "mock_fail unstructured result",
+        "passed": false,
+        "route_probability": 0.8,
+        "tool_id": "first",
+        "verification_probability": 0.2,
+        "verification_source": "jev"
+       }
+      ],
+      "discovered_candidates": [
+       "first",
+       "second"
+      ],
+      "discovery_evidence": null,
+      "discovery_query": null,
+      "discovery_used": false,
+      "reason": "No attempted tool produced a result above the verification threshold.",
+      "route_confidence": 0.94,
+      "routing_probabilities": {
+       "escalate": 0.05,
+       "first": 0.8,
+       "second": 0.15
+      },
+      "run_id": "<run_id>",
+      "selected_tool": "first",
+      "status": "escalate"
+     },
+     "route_confidence": 0.94,
+     "selected_tool": "first",
+     "status": "escalate"
+    }
+   ],
+   "response": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Tool output is not structured JSON."
+      ],
+      "deterministic_status": "inconclusive",
+      "economics": {
+       "call_id": "first-1",
+       "idempotent_replay": false,
+       "latency_ms": 5,
+       "provider_requested": "first-provider",
+       "provider_served": "first",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.001
+      },
+      "output": "mock_fail unstructured result",
+      "passed": false,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 0.2,
+      "verification_source": "jev"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "No attempted tool produced a result above the verification threshold.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "first",
+    "status": "escalate"
+   },
+   "treg_calls": [
+    [
+     "first",
+     false
+    ]
+   ],
+   "validator_inputs": [
+    [
+     "first",
+     "mock_fail unstructured result"
+    ]
+   ],
+   "verification_outputs": [
+    "mock_fail unstructured result"
+   ]
+  },
+  "deterministic_pass": {
+   "records": [
+    {
+     "id": "<run_id>",
+     "objective": "Find the verified work email for Ada Example",
+     "payload": {
+      "candidates": [
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "first",
+        "method": "GET",
+        "provider": "first-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "first.email"
+       },
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "second",
+        "method": "GET",
+        "provider": "second-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "second.email"
+       }
+      ],
+      "dry_run": false,
+      "max_attempts": 2,
+      "objective": "Find the verified work email for Ada Example",
+      "route_confidence": 0.65,
+      "state": {
+       "company_domain": "example.com",
+       "person": "Ada Example"
+      },
+      "success_criteria": "The tool result directly and sufficiently satisfies the objective.",
+      "verify_probability": 0.85
+     },
+     "result": {
+      "attempts": [
+       {
+        "deterministic_evidence": [
+         "Email returned: ada@example.com",
+         "Email domain matches expected domain example.com.",
+         "Provider reported validIdentity=true.",
+         "Returned person matches Ada Example.",
+         "Provider reported validSMTP=true.",
+         "Provider reported valid email status."
+        ],
+        "deterministic_status": "pass",
+        "economics": {
+         "call_id": "first-1",
+         "idempotent_replay": false,
+         "latency_ms": 5,
+         "provider_requested": "first-provider",
+         "provider_served": "first",
+         "quoted_cost_usd": null,
+         "reserved_cost_usd": null,
+         "settled_cost_usd": 0.001
+        },
+        "output": "{\"email\": \"ada@example.com\", \"fullName\": \"Ada Example\", \"validIdentity\": true, \"validSMTP\": true, \"validity\": \"valid\"}",
+        "passed": true,
+        "route_probability": 0.8,
+        "tool_id": "first",
+        "verification_probability": 1.0,
+        "verification_source": "deterministic"
+       }
+      ],
+      "discovered_candidates": [
+       "first",
+       "second"
+      ],
+      "discovery_evidence": null,
+      "discovery_query": null,
+      "discovery_used": false,
+      "reason": "Tool result passed deterministic validation; Jev verification was unnecessary.",
+      "route_confidence": 0.94,
+      "routing_probabilities": {
+       "escalate": 0.05,
+       "first": 0.8,
+       "second": 0.15
+      },
+      "run_id": "<run_id>",
+      "selected_tool": "first",
+      "status": "passed"
+     },
+     "route_confidence": 0.94,
+     "selected_tool": "first",
+     "status": "passed"
+    }
+   ],
+   "response": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Email returned: ada@example.com",
+       "Email domain matches expected domain example.com.",
+       "Provider reported validIdentity=true.",
+       "Returned person matches Ada Example.",
+       "Provider reported validSMTP=true.",
+       "Provider reported valid email status."
+      ],
+      "deterministic_status": "pass",
+      "economics": {
+       "call_id": "first-1",
+       "idempotent_replay": false,
+       "latency_ms": 5,
+       "provider_requested": "first-provider",
+       "provider_served": "first",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.001
+      },
+      "output": "{\"email\": \"ada@example.com\", \"fullName\": \"Ada Example\", \"validIdentity\": true, \"validSMTP\": true, \"validity\": \"valid\"}",
+      "passed": true,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 1.0,
+      "verification_source": "deterministic"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "Tool result passed deterministic validation; Jev verification was unnecessary.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "first",
+    "status": "passed"
+   },
+   "treg_calls": [
+    [
+     "first",
+     false
+    ]
+   ],
+   "validator_inputs": [
+    [
+     "first",
+     "{\"email\": \"ada@example.com\", \"fullName\": \"Ada Example\", \"validIdentity\": true, \"validSMTP\": true, \"validity\": \"valid\"}"
+    ]
+   ],
+   "verification_outputs": []
+  },
+  "dry_run": {
+   "records": [
+    {
+     "id": "<run_id>",
+     "objective": "Find the verified work email for Ada Example",
+     "payload": {
+      "candidates": [
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "first",
+        "method": "GET",
+        "provider": "first-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "first.email"
+       },
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "second",
+        "method": "GET",
+        "provider": "second-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "second.email"
+       }
+      ],
+      "dry_run": true,
+      "max_attempts": 2,
+      "objective": "Find the verified work email for Ada Example",
+      "route_confidence": 0.65,
+      "state": {
+       "company_domain": "example.com",
+       "person": "Ada Example"
+      },
+      "success_criteria": "The tool result directly and sufficiently satisfies the objective.",
+      "verify_probability": 0.85
+     },
+     "result": {
+      "attempts": [
+       {
+        "deterministic_evidence": [
+         "Dry run: command constructed; provider execution and result verification intentionally skipped."
+        ],
+        "deterministic_status": "inconclusive",
+        "economics": {
+         "call_id": "first-1",
+         "idempotent_replay": false,
+         "latency_ms": 5,
+         "provider_requested": "first-provider",
+         "provider_served": "first",
+         "quoted_cost_usd": null,
+         "reserved_cost_usd": null,
+         "settled_cost_usd": 0.001
+        },
+        "output": "DRY RUN: treg call first.email",
+        "passed": false,
+        "route_probability": 0.8,
+        "tool_id": "first",
+        "verification_probability": 0.0,
+        "verification_source": "dry_run"
+       }
+      ],
+      "discovered_candidates": [
+       "first",
+       "second"
+      ],
+      "discovery_evidence": null,
+      "discovery_query": null,
+      "discovery_used": false,
+      "reason": "Dry run completed after discovery, routing, and command construction. No provider or verification call was made.",
+      "route_confidence": 0.94,
+      "routing_probabilities": {
+       "escalate": 0.05,
+       "first": 0.8,
+       "second": 0.15
+      },
+      "run_id": "<run_id>",
+      "selected_tool": "first",
+      "status": "dry_run"
+     },
+     "route_confidence": 0.94,
+     "selected_tool": "first",
+     "status": "dry_run"
+    }
+   ],
+   "response": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Dry run: command constructed; provider execution and result verification intentionally skipped."
+      ],
+      "deterministic_status": "inconclusive",
+      "economics": {
+       "call_id": "first-1",
+       "idempotent_replay": false,
+       "latency_ms": 5,
+       "provider_requested": "first-provider",
+       "provider_served": "first",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.001
+      },
+      "output": "DRY RUN: treg call first.email",
+      "passed": false,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 0.0,
+      "verification_source": "dry_run"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "Dry run completed after discovery, routing, and command construction. No provider or verification call was made.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "first",
+    "status": "dry_run"
+   },
+   "treg_calls": [
+    [
+     "first",
+     true
+    ]
+   ],
+   "validator_inputs": [],
+   "verification_outputs": []
+  },
+  "dry_run_preparation_error": {
+   "error": {
+    "message": "cannot prepare command",
+    "type": "TregError"
+   },
+   "records": [],
+   "treg_calls": [
+    [
+     "first",
+     true
+    ]
+   ],
+   "validator_inputs": [],
+   "verification_outputs": []
+  },
+  "duplicate_ranking_preserved": {
+   "records": [
+    {
+     "id": "<run_id>",
+     "objective": "Find the verified work email for Ada Example",
+     "payload": {
+      "candidates": [
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "first",
+        "method": "GET",
+        "provider": "first-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "first.email"
+       },
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "second",
+        "method": "GET",
+        "provider": "second-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "second.email"
+       }
+      ],
+      "dry_run": false,
+      "max_attempts": 3,
+      "objective": "Find the verified work email for Ada Example",
+      "route_confidence": 0.65,
+      "state": {
+       "company_domain": "example.com",
+       "person": "Ada Example"
+      },
+      "success_criteria": "The tool result directly and sufficiently satisfies the objective.",
+      "verify_probability": 0.85
+     },
+     "result": {
+      "attempts": [
+       {
+        "deterministic_evidence": [
+         "Treg/provider execution failed."
+        ],
+        "deterministic_status": "fail",
+        "economics": null,
+        "output": "TREG_ERROR: second unavailable",
+        "passed": false,
+        "route_probability": 0.15,
+        "tool_id": "second",
+        "verification_probability": 0.0,
+        "verification_source": "deterministic"
+       },
+       {
+        "deterministic_evidence": [
+         "Treg/provider execution failed."
+        ],
+        "deterministic_status": "fail",
+        "economics": null,
+        "output": "TREG_ERROR: first unavailable",
+        "passed": false,
+        "route_probability": 0.8,
+        "tool_id": "first",
+        "verification_probability": 0.0,
+        "verification_source": "deterministic"
+       },
+       {
+        "deterministic_evidence": [
+         "Treg/provider execution failed."
+        ],
+        "deterministic_status": "fail",
+        "economics": null,
+        "output": "TREG_ERROR: second unavailable",
+        "passed": false,
+        "route_probability": 0.15,
+        "tool_id": "second",
+        "verification_probability": 0.0,
+        "verification_source": "deterministic"
+       }
+      ],
+      "discovered_candidates": [
+       "first",
+       "second"
+      ],
+      "discovery_evidence": null,
+      "discovery_query": null,
+      "discovery_used": false,
+      "reason": "No attempted tool produced a result above the verification threshold.",
+      "route_confidence": 0.94,
+      "routing_probabilities": {
+       "escalate": 0.05,
+       "first": 0.8,
+       "second": 0.15
+      },
+      "run_id": "<run_id>",
+      "selected_tool": "second",
+      "status": "escalate"
+     },
+     "route_confidence": 0.94,
+     "selected_tool": "second",
+     "status": "escalate"
+    }
+   ],
+   "response": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Treg/provider execution failed."
+      ],
+      "deterministic_status": "fail",
+      "economics": null,
+      "output": "TREG_ERROR: second unavailable",
+      "passed": false,
+      "route_probability": 0.15,
+      "tool_id": "second",
+      "verification_probability": 0.0,
+      "verification_source": "deterministic"
+     },
+     {
+      "deterministic_evidence": [
+       "Treg/provider execution failed."
+      ],
+      "deterministic_status": "fail",
+      "economics": null,
+      "output": "TREG_ERROR: first unavailable",
+      "passed": false,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 0.0,
+      "verification_source": "deterministic"
+     },
+     {
+      "deterministic_evidence": [
+       "Treg/provider execution failed."
+      ],
+      "deterministic_status": "fail",
+      "economics": null,
+      "output": "TREG_ERROR: second unavailable",
+      "passed": false,
+      "route_probability": 0.15,
+      "tool_id": "second",
+      "verification_probability": 0.0,
+      "verification_source": "deterministic"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "No attempted tool produced a result above the verification threshold.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "second",
+    "status": "escalate"
+   },
+   "treg_calls": [
+    [
+     "second",
+     false
+    ],
+    [
+     "first",
+     false
+    ],
+    [
+     "second",
+     false
+    ]
+   ],
+   "validator_inputs": [
+    [
+     "second",
+     "TREG_ERROR: second unavailable"
+    ],
+    [
+     "first",
+     "TREG_ERROR: first unavailable"
+    ],
+    [
+     "second",
+     "TREG_ERROR: second unavailable"
+    ]
+   ],
+   "verification_outputs": []
+  },
+  "jev_fail_then_treg_error_stale_economics": {
+   "records": [
+    {
+     "id": "<run_id>",
+     "objective": "Find the verified work email for Ada Example",
+     "payload": {
+      "candidates": [
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "first",
+        "method": "GET",
+        "provider": "first-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "first.email"
+       },
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "second",
+        "method": "GET",
+        "provider": "second-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "second.email"
+       }
+      ],
+      "dry_run": false,
+      "max_attempts": 2,
+      "objective": "Find the verified work email for Ada Example",
+      "route_confidence": 0.65,
+      "state": {
+       "company_domain": "example.com",
+       "person": "Ada Example"
+      },
+      "success_criteria": "The tool result directly and sufficiently satisfies the objective.",
+      "verify_probability": 0.85
+     },
+     "result": {
+      "attempts": [
+       {
+        "deterministic_evidence": [
+         "Tool output is not structured JSON."
+        ],
+        "deterministic_status": "inconclusive",
+        "economics": {
+         "call_id": "first-1",
+         "idempotent_replay": false,
+         "latency_ms": 5,
+         "provider_requested": "first-provider",
+         "provider_served": "first",
+         "quoted_cost_usd": null,
+         "reserved_cost_usd": null,
+         "settled_cost_usd": 0.001
+        },
+        "output": "mock_fail unstructured result",
+        "passed": false,
+        "route_probability": 0.8,
+        "tool_id": "first",
+        "verification_probability": 0.2,
+        "verification_source": "jev"
+       },
+       {
+        "deterministic_evidence": [
+         "Treg/provider execution failed."
+        ],
+        "deterministic_status": "fail",
+        "economics": {
+         "call_id": "first-1",
+         "idempotent_replay": false,
+         "latency_ms": 5,
+         "provider_requested": "first-provider",
+         "provider_served": "first",
+         "quoted_cost_usd": null,
+         "reserved_cost_usd": null,
+         "settled_cost_usd": 0.001
+        },
+        "output": "TREG_ERROR: second unavailable",
+        "passed": false,
+        "route_probability": 0.15,
+        "tool_id": "second",
+        "verification_probability": 0.0,
+        "verification_source": "deterministic"
+       }
+      ],
+      "discovered_candidates": [
+       "first",
+       "second"
+      ],
+      "discovery_evidence": null,
+      "discovery_query": null,
+      "discovery_used": false,
+      "reason": "No attempted tool produced a result above the verification threshold.",
+      "route_confidence": 0.94,
+      "routing_probabilities": {
+       "escalate": 0.05,
+       "first": 0.8,
+       "second": 0.15
+      },
+      "run_id": "<run_id>",
+      "selected_tool": "first",
+      "status": "escalate"
+     },
+     "route_confidence": 0.94,
+     "selected_tool": "first",
+     "status": "escalate"
+    }
+   ],
+   "response": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Tool output is not structured JSON."
+      ],
+      "deterministic_status": "inconclusive",
+      "economics": {
+       "call_id": "first-1",
+       "idempotent_replay": false,
+       "latency_ms": 5,
+       "provider_requested": "first-provider",
+       "provider_served": "first",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.001
+      },
+      "output": "mock_fail unstructured result",
+      "passed": false,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 0.2,
+      "verification_source": "jev"
+     },
+     {
+      "deterministic_evidence": [
+       "Treg/provider execution failed."
+      ],
+      "deterministic_status": "fail",
+      "economics": {
+       "call_id": "first-1",
+       "idempotent_replay": false,
+       "latency_ms": 5,
+       "provider_requested": "first-provider",
+       "provider_served": "first",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.001
+      },
+      "output": "TREG_ERROR: second unavailable",
+      "passed": false,
+      "route_probability": 0.15,
+      "tool_id": "second",
+      "verification_probability": 0.0,
+      "verification_source": "deterministic"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "No attempted tool produced a result above the verification threshold.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "first",
+    "status": "escalate"
+   },
+   "treg_calls": [
+    [
+     "first",
+     false
+    ],
+    [
+     "second",
+     false
+    ]
+   ],
+   "validator_inputs": [
+    [
+     "first",
+     "mock_fail unstructured result"
+    ],
+    [
+     "second",
+     "TREG_ERROR: second unavailable"
+    ]
+   ],
+   "verification_outputs": [
+    "mock_fail unstructured result"
+   ]
+  },
+  "jev_verified": {
+   "records": [
+    {
+     "id": "<run_id>",
+     "objective": "Find the verified work email for Ada Example",
+     "payload": {
+      "candidates": [
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "first",
+        "method": "GET",
+        "provider": "first-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "first.email"
+       },
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "second",
+        "method": "GET",
+        "provider": "second-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "second.email"
+       }
+      ],
+      "dry_run": false,
+      "max_attempts": 2,
+      "objective": "Find the verified work email for Ada Example",
+      "route_confidence": 0.65,
+      "state": {
+       "company_domain": "example.com",
+       "person": "Ada Example"
+      },
+      "success_criteria": "The tool result directly and sufficiently satisfies the objective.",
+      "verify_probability": 0.85
+     },
+     "result": {
+      "attempts": [
+       {
+        "deterministic_evidence": [
+         "Tool output is not structured JSON."
+        ],
+        "deterministic_status": "inconclusive",
+        "economics": {
+         "call_id": "first-1",
+         "idempotent_replay": false,
+         "latency_ms": 5,
+         "provider_requested": "first-provider",
+         "provider_served": "first",
+         "quoted_cost_usd": null,
+         "reserved_cost_usd": null,
+         "settled_cost_usd": 0.001
+        },
+        "output": "Unstructured candidate evidence",
+        "passed": true,
+        "route_probability": 0.8,
+        "tool_id": "first",
+        "verification_probability": 0.93,
+        "verification_source": "jev"
+       }
+      ],
+      "discovered_candidates": [
+       "first",
+       "second"
+      ],
+      "discovery_evidence": null,
+      "discovery_query": null,
+      "discovery_used": false,
+      "reason": "Tool result verified by Jev at 0.930, meeting threshold 0.850.",
+      "route_confidence": 0.94,
+      "routing_probabilities": {
+       "escalate": 0.05,
+       "first": 0.8,
+       "second": 0.15
+      },
+      "run_id": "<run_id>",
+      "selected_tool": "first",
+      "status": "passed"
+     },
+     "route_confidence": 0.94,
+     "selected_tool": "first",
+     "status": "passed"
+    }
+   ],
+   "response": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Tool output is not structured JSON."
+      ],
+      "deterministic_status": "inconclusive",
+      "economics": {
+       "call_id": "first-1",
+       "idempotent_replay": false,
+       "latency_ms": 5,
+       "provider_requested": "first-provider",
+       "provider_served": "first",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.001
+      },
+      "output": "Unstructured candidate evidence",
+      "passed": true,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 0.93,
+      "verification_source": "jev"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "Tool result verified by Jev at 0.930, meeting threshold 0.850.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "first",
+    "status": "passed"
+   },
+   "treg_calls": [
+    [
+     "first",
+     false
+    ]
+   ],
+   "validator_inputs": [
+    [
+     "first",
+     "Unstructured candidate evidence"
+    ]
+   ],
+   "verification_outputs": [
+    "Unstructured candidate evidence"
+   ]
+  },
+  "routing_escalate_no_execution": {
+   "records": [
+    {
+     "id": "<run_id>",
+     "objective": "Find the verified work email for Ada Example",
+     "payload": {
+      "candidates": [
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "first",
+        "method": "GET",
+        "provider": "first-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "first.email"
+       },
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "second",
+        "method": "GET",
+        "provider": "second-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "second.email"
+       }
+      ],
+      "dry_run": false,
+      "max_attempts": 2,
+      "objective": "Find the verified work email for Ada Example",
+      "route_confidence": 0.65,
+      "state": {
+       "company_domain": "example.com",
+       "person": "Ada Example"
+      },
+      "success_criteria": "The tool result directly and sufficiently satisfies the objective.",
+      "verify_probability": 0.85
+     },
+     "result": {
+      "attempts": [],
+      "discovered_candidates": [
+       "first",
+       "second"
+      ],
+      "discovery_evidence": null,
+      "discovery_query": null,
+      "discovery_used": false,
+      "reason": "Routing confidence 0.100 is below threshold 0.650.",
+      "route_confidence": 0.1,
+      "routing_probabilities": {
+       "escalate": 0.05,
+       "first": 0.8,
+       "second": 0.15
+      },
+      "run_id": "<run_id>",
+      "selected_tool": null,
+      "status": "escalate"
+     },
+     "route_confidence": 0.1,
+     "selected_tool": null,
+     "status": "escalate"
+    }
+   ],
+   "response": {
+    "attempts": [],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "Routing confidence 0.100 is below threshold 0.650.",
+    "route_confidence": 0.1,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": null,
+    "status": "escalate"
+   },
+   "treg_calls": [],
+   "validator_inputs": [],
+   "verification_outputs": []
+  },
+  "treg_error_then_pass": {
+   "records": [
+    {
+     "id": "<run_id>",
+     "objective": "Find the verified work email for Ada Example",
+     "payload": {
+      "candidates": [
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "first",
+        "method": "GET",
+        "provider": "first-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "first.email"
+       },
+       {
+        "body": {},
+        "capability": null,
+        "description": "Work email provider",
+        "id": "second",
+        "method": "GET",
+        "provider": "second-provider",
+        "query": {},
+        "quoted_cost_usd": null,
+        "treg_tool_id": "second.email"
+       }
+      ],
+      "dry_run": false,
+      "max_attempts": 2,
+      "objective": "Find the verified work email for Ada Example",
+      "route_confidence": 0.65,
+      "state": {
+       "company_domain": "example.com",
+       "person": "Ada Example"
+      },
+      "success_criteria": "The tool result directly and sufficiently satisfies the objective.",
+      "verify_probability": 0.85
+     },
+     "result": {
+      "attempts": [
+       {
+        "deterministic_evidence": [
+         "Treg/provider execution failed."
+        ],
+        "deterministic_status": "fail",
+        "economics": null,
+        "output": "TREG_ERROR: first unavailable",
+        "passed": false,
+        "route_probability": 0.8,
+        "tool_id": "first",
+        "verification_probability": 0.0,
+        "verification_source": "deterministic"
+       },
+       {
+        "deterministic_evidence": [
+         "Email returned: ada@example.com",
+         "Email domain matches expected domain example.com.",
+         "Provider reported validIdentity=true.",
+         "Returned person matches Ada Example.",
+         "Provider reported validSMTP=true.",
+         "Provider reported valid email status."
+        ],
+        "deterministic_status": "pass",
+        "economics": {
+         "call_id": "second-2",
+         "idempotent_replay": false,
+         "latency_ms": 10,
+         "provider_requested": "second-provider",
+         "provider_served": "second",
+         "quoted_cost_usd": null,
+         "reserved_cost_usd": null,
+         "settled_cost_usd": 0.002
+        },
+        "output": "{\"email\": \"ada@example.com\", \"fullName\": \"Ada Example\", \"validIdentity\": true, \"validSMTP\": true, \"validity\": \"valid\"}",
+        "passed": true,
+        "route_probability": 0.15,
+        "tool_id": "second",
+        "verification_probability": 1.0,
+        "verification_source": "deterministic"
+       }
+      ],
+      "discovered_candidates": [
+       "first",
+       "second"
+      ],
+      "discovery_evidence": null,
+      "discovery_query": null,
+      "discovery_used": false,
+      "reason": "Tool result passed deterministic validation; Jev verification was unnecessary.",
+      "route_confidence": 0.94,
+      "routing_probabilities": {
+       "escalate": 0.05,
+       "first": 0.8,
+       "second": 0.15
+      },
+      "run_id": "<run_id>",
+      "selected_tool": "second",
+      "status": "passed"
+     },
+     "route_confidence": 0.94,
+     "selected_tool": "second",
+     "status": "passed"
+    }
+   ],
+   "response": {
+    "attempts": [
+     {
+      "deterministic_evidence": [
+       "Treg/provider execution failed."
+      ],
+      "deterministic_status": "fail",
+      "economics": null,
+      "output": "TREG_ERROR: first unavailable",
+      "passed": false,
+      "route_probability": 0.8,
+      "tool_id": "first",
+      "verification_probability": 0.0,
+      "verification_source": "deterministic"
+     },
+     {
+      "deterministic_evidence": [
+       "Email returned: ada@example.com",
+       "Email domain matches expected domain example.com.",
+       "Provider reported validIdentity=true.",
+       "Returned person matches Ada Example.",
+       "Provider reported validSMTP=true.",
+       "Provider reported valid email status."
+      ],
+      "deterministic_status": "pass",
+      "economics": {
+       "call_id": "second-2",
+       "idempotent_replay": false,
+       "latency_ms": 10,
+       "provider_requested": "second-provider",
+       "provider_served": "second",
+       "quoted_cost_usd": null,
+       "reserved_cost_usd": null,
+       "settled_cost_usd": 0.002
+      },
+      "output": "{\"email\": \"ada@example.com\", \"fullName\": \"Ada Example\", \"validIdentity\": true, \"validSMTP\": true, \"validity\": \"valid\"}",
+      "passed": true,
+      "route_probability": 0.15,
+      "tool_id": "second",
+      "verification_probability": 1.0,
+      "verification_source": "deterministic"
+     }
+    ],
+    "discovered_candidates": [
+     "first",
+     "second"
+    ],
+    "discovery_evidence": null,
+    "discovery_query": null,
+    "discovery_used": false,
+    "reason": "Tool result passed deterministic validation; Jev verification was unnecessary.",
+    "route_confidence": 0.94,
+    "routing_probabilities": {
+     "escalate": 0.05,
+     "first": 0.8,
+     "second": 0.15
+    },
+    "run_id": "<run_id>",
+    "selected_tool": "second",
+    "status": "passed"
+   },
+   "treg_calls": [
+    [
+     "first",
+     false
+    ],
+    [
+     "second",
+     false
+    ]
+   ],
+   "validator_inputs": [
+    [
+     "first",
+     "TREG_ERROR: first unavailable"
+    ],
+    [
+     "second",
+     "{\"email\": \"ada@example.com\", \"fullName\": \"Ada Example\", \"validIdentity\": true, \"validSMTP\": true, \"validity\": \"valid\"}"
+    ]
+   ],
+   "verification_outputs": []
+  }
+ }
+}

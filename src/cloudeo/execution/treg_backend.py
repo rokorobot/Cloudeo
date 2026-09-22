@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 from cloudeo.adapters.treg import TregClient, TregError
-from cloudeo.execution.base import ExecutionResult
+from cloudeo.execution.base import ExecutionBackend, ExecutionResult
 from cloudeo.execution.contracts import (
     DirectToolExecution,
     ExecutionCost,
@@ -75,11 +75,11 @@ def outcome_from_treg(
     )
 
 
-class TregDirectToolBackend:
-    """Executes a DirectToolExecution through the existing Treg execution path."""
+class LegacyDirectToolBackend:
+    """Executes a DirectToolExecution through a legacy Treg-shaped ExecutionBackend."""
 
-    def __init__(self, client: TregClient):
-        self._legacy = TregExecutionBackend(client)
+    def __init__(self, backend: ExecutionBackend):
+        self._legacy = backend
 
     async def execute(self, request: DirectToolExecution) -> ExecutionOutcome:
         started = time.monotonic()
@@ -87,3 +87,10 @@ class TregDirectToolBackend:
         result = await self._legacy.execute(request.candidate, dry_run=request.dry_run)
         duration_ms = round((time.monotonic() - started) * 1000)
         return outcome_from_treg(request, result, duration_ms=duration_ms)
+
+
+class TregDirectToolBackend(LegacyDirectToolBackend):
+    """Executes a DirectToolExecution through the existing Treg execution path."""
+
+    def __init__(self, client: TregClient):
+        super().__init__(TregExecutionBackend(client))

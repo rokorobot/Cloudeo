@@ -517,3 +517,75 @@ Validation:
 - Ruff checks pass for the new and changed files.
 
 No live provider verification was performed in this milestone.
+
+
+---
+
+## 2026-09-23 — Execution dispatch adoption (Treg path only)
+
+Branch `feat/execution-dispatch-adoption`, from `main` at `10d4b71`. This is a
+plumbing migration. External behavior is intended to be unchanged, and the
+golden characterization below checks that. No provider or live verification
+was performed; every test is offline.
+
+Execution flow before:
+
+```text
+Controller.run()
+  -> self.execution_backend.execute(candidate, dry_run)   # TregExecutionBackend
+  -> ExecutionResult(output, economics)
+  -> validate_tool_output(output) -> Jev fallback -> AttemptResult / RunResponse
+```
+
+Execution flow after (both the dry-run and attempt-loop call sites):
+
+```text
+Controller.run()
+  -> Controller._execute_direct_tool(candidate, dry_run)
+  -> ExecutionDispatcher.execute(DirectToolExecution(candidate, dry_run))
+  -> TregDirectToolBackend -> TregExecutionBackend -> TregClient
+  -> ExecutionOutcome
+  -> (outcome.output_text, outcome.cost.direct_tool_economics)
+  -> validate_tool_output(output) -> Jev fallback -> AttemptResult / RunResponse
+```
+
+Constructor: `Controller(settings, jev, treg, database)` is unchanged and builds
+a Treg-only dispatcher with no harness-task backend. `execution_backend=` still
+accepts a legacy Treg-shaped backend; it is adapted through
+`LegacyDirectToolBackend`, not bypassed. New optional `execution_dispatcher=`
+injects a dispatcher; passing both raises `ValueError`. The internal
+`Controller.execution_backend` attribute is replaced by `execution_dispatcher`;
+no caller read it. `api/app.py` is unchanged.
+
+Semantics deliberately preserved:
+
+- Validators receive exactly the text the legacy path produced. `outcome.status`
+  is not consulted by the controller, so the validators' `TREG_ERROR:` prefix
+  check remains the only interpretation rule.
+- Dry-run preparation errors propagate as the same exception object, and the API
+  still maps them to HTTP 502.
+- Candidate order, attempt limit, and the legacy duplicate ranking are unchanged.
+- Legacy economics pass through as-is, including values a failed attempt retains
+  from an earlier call (not fixed).
+- The unknown-choice dry-run `KeyError` is unchanged.
+- Verification, the RunResponse/AttemptResult shapes, persistence, and the API are
+  unchanged. `ExecutionOutcome` is internal and not exposed.
+
+Validation:
+
+- Golden characterization: `tests/fixtures/controller_golden_v0122.json` was
+  captured from the unmodified controller at `10d4b71` (10 controller scenarios
+  and 4 `POST /v1/runs` cases). It records normalized responses, persisted
+  rows, Treg call order with dry-run flags, exact validator inputs, and Jev
+  verification inputs. The migrated controller reproduces it exactly.
+- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q`: **142 passed** (116 existing
+  unchanged, 15 in `tests/test_controller_characterization.py`, 11 in
+  `tests/test_dispatch_adoption.py`). The latter prove the controller sends
+  `DirectToolExecution` requests in legacy order with the same candidate
+  objects, that the default dispatcher refuses harness tasks, and that a Treg
+  run makes no network call and never constructs a UHP client.
+- Ruff passes for the changed execution module and new tests. `controller.py`
+  keeps its pre-existing ISC004 finding and was not reformatted, to keep the
+  diff to the migration itself.
+
+UHP remains outside `Controller.run()`.

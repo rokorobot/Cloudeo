@@ -263,3 +263,30 @@ mappers, and dispatch only (`src/cloudeo/execution/contracts.py`,
    `HarnessTaskExecutionBackend`) instead of a generic `ExecutionBackend[R]`.
    The legacy `ExecutionBackend`/`TregExecutionBackend` are unchanged, and the
    new `TregDirectToolBackend` wraps them.
+
+
+---
+
+## ADR-014 — Controller executes through the dispatcher (Treg only)
+
+**Decision:** `Controller.run()` executes every tool attempt, including the dry
+run, as a `DirectToolExecution` through an `ExecutionDispatcher` and reads the
+resulting `ExecutionOutcome`. By default the controller builds a dispatcher with
+only a direct-tool backend (`TregDirectToolBackend`). The legacy
+`execution_backend=` argument is kept and adapted through
+`LegacyDirectToolBackend`. An optional `execution_dispatcher=` may be injected
+instead, but not together with it.
+
+**Reason:** Move the controller onto the execution contracts without changing
+behavior, so a later milestone can add harness execution by configuring the
+dispatcher rather than rewriting the attempt loop.
+
+**Constraint:** The controller does not interpret `outcome.status`; the
+validators remain the only `TREG_ERROR:` rule, and runtime status is never
+verification. Legacy economics, ranking, and dry-run exception behavior are
+preserved. No harness-task backend is configured, and `HarnessTaskExecution`
+is not built by the controller.
+
+**Status:** Implemented on `feat/execution-dispatch-adoption`; equivalence is
+checked against a golden captured at `10d4b71`. See
+`03_PROGRESS_AND_EVIDENCE.md`.
