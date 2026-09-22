@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from cloudeo.adapters.jev import JevClient
 from cloudeo.adapters.treg import TregClient
@@ -9,8 +10,19 @@ from cloudeo.core.validators import validate_tool_output
 from cloudeo.db.models import RunRecord
 from cloudeo.db.session import Database
 from cloudeo.execution.base import ExecutionBackend
-from cloudeo.execution.treg_backend import TregExecutionBackend
-from cloudeo.models import AttemptResult, RunRequest, RunResponse
+from cloudeo.execution.contracts import DirectToolExecution
+from cloudeo.execution.dispatch import ExecutionDispatcher
+from cloudeo.execution.treg_backend import (
+    LegacyDirectToolBackend,
+    TregDirectToolBackend,
+)
+from cloudeo.models import (
+    AttemptResult,
+    ExecutionEconomics,
+    RunRequest,
+    RunResponse,
+    ToolCandidate,
+)
 
 
 class Controller:
@@ -22,16 +34,25 @@ class Controller:
         database: Database,
         *,
         execution_backend: ExecutionBackend | None = None,
+        execution_dispatcher: ExecutionDispatcher | None = None,
     ):
         self.settings = settings
         self.jev = jev
         self.treg = treg
         self.database = database
-        self.execution_backend = (
-            execution_backend
-            if execution_backend is not None
-            else TregExecutionBackend(treg)
-        )
+        if execution_backend is not None and execution_dispatcher is not None:
+            raise ValueError(
+                "Pass execution_backend or execution_dispatcher, not both."
+            )
+        if execution_dispatcher is None:
+            # Treg-only: no harness-task backend is configured here.
+            direct_tool = (
+                LegacyDirectToolBackend(execution_backend)
+                if execution_backend is not None
+                else TregDirectToolBackend(treg)
+            )
+            execution_dispatcher = ExecutionDispatcher(direct_tool=direct_tool)
+        self.execution_dispatcher = execution_dispatcher
 
     async def run(self, request: RunRequest) -> RunResponse:
         run_id = str(uuid.uuid4())
@@ -187,9 +208,10 @@ class Controller:
         # It intentionally does not call the verifier or fallback providers.
         if request.dry_run:
             candidate = by_id[choice]
-            execution = await self.execution_backend.execute(candidate, dry_run=True)
-            output = execution.output
-            economics = execution.economics
+            output, economics = await self._execute_direct_tool(
+                candidate,
+                dry_run=True,
+            )
             attempt = AttemptResult(
                 tool_id=choice,
                 route_probability=float(probabilities.get(choice, 0.0)),
@@ -228,9 +250,10 @@ class Controller:
         for tool_id in ranked[:max_attempts]:
             candidate = by_id[tool_id]
 
-            execution = await self.execution_backend.execute(candidate, dry_run=False)
-            output = execution.output
-            economics = execution.economics
+            output, economics = await self._execute_direct_tool(
+                candidate,
+                dry_run=False,
+            )
 
             deterministic = validate_tool_output(
                 request,
@@ -354,6 +377,22 @@ class Controller:
         )
         await self._record(request, response)
         return response
+
+    async def _execute_direct_tool(
+        self,
+        candidate: ToolCandidate,
+        *,
+        dry_run: bool,
+    ) -> tuple[str, ExecutionEconomics | dict[str, Any] | None]:
+        outcome = await self.execution_dispatcher.execute(
+            DirectToolExecution(candidate=candidate, dry_run=dry_run)
+        )
+        # The validators keep sole ownership of TREG_ERROR interpretation, so
+        # outcome.status is deliberately not consulted here. Runtime status is
+        # not verification.
+        if outcome.kind != "direct_tool" or outcome.output_text is None:
+            raise TypeError("Direct-tool execution returned no output_text.")
+        return outcome.output_text, outcome.cost.direct_tool_economics
 
     async def _record(
         self,
