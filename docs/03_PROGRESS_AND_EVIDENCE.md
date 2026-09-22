@@ -326,3 +326,35 @@ Observed: full objective with person/domain literals produced 0 Treg matches; `w
 ## v0.1.2.2 — Hardening
 
 Added clean capability-query generation, terminal dry-run semantics, structured discovery evidence, and per-attempt execution economics. See `docs/08_V0122_HARDENING.md`.
+
+
+---
+
+## 2026-09-22 — v2 execution foundation
+
+Implemented an internal asynchronous `ExecutionBackend` contract and
+`TregExecutionBackend`. The controller accepts an optional backend and uses it
+for normal execution and dry-run preparation. Existing callers default to the
+Treg wrapper; discovery remains on the existing Treg client.
+
+`UHPExecutionBackend` is not implemented yet. No HarnessRouter, LongHorizon,
+Performance Memory, new dependency, configuration, API schema, or database
+schema was introduced. Routing and verification remain unchanged.
+
+Validation:
+
+- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q`: **33 passed** (15 existing tests
+  unchanged, 18 new execution-boundary regression cases).
+- Ruff checks pass for the new execution package and test files.
+- Compared the baseline controller at `c4db48d` with the refactor through an
+  in-memory SQLite/mock HTTP harness: success, dry run, no candidates, provider
+  failure, and dry-run failure. HTTP responses, history, persisted request/result
+  JSON, and SQLite schema matched after normalizing UUIDs/timestamps. Dry-run
+  failure still returns HTTP 502. No external service was called.
+- External behavior remains unchanged for the tested paths; existing public
+  models, API wiring, adapters, validators, configuration, and database code
+  are unchanged.
+
+Known legacy limitations deliberately preserved: shared/stale execution economics,
+duplicate candidate ranking, and unknown Jev choice lookup in dry-run. These
+remain separately scoped work, not fixes bundled into the extraction.

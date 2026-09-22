@@ -3,11 +3,13 @@ from __future__ import annotations
 import uuid
 
 from cloudeo.adapters.jev import JevClient
-from cloudeo.adapters.treg import TregClient, TregError
+from cloudeo.adapters.treg import TregClient
 from cloudeo.config import Settings
 from cloudeo.core.validators import validate_tool_output
 from cloudeo.db.models import RunRecord
 from cloudeo.db.session import Database
+from cloudeo.execution.base import ExecutionBackend
+from cloudeo.execution.treg_backend import TregExecutionBackend
 from cloudeo.models import AttemptResult, RunRequest, RunResponse
 
 
@@ -18,11 +20,18 @@ class Controller:
         jev: JevClient,
         treg: TregClient,
         database: Database,
+        *,
+        execution_backend: ExecutionBackend | None = None,
     ):
         self.settings = settings
         self.jev = jev
         self.treg = treg
         self.database = database
+        self.execution_backend = (
+            execution_backend
+            if execution_backend is not None
+            else TregExecutionBackend(treg)
+        )
 
     async def run(self, request: RunRequest) -> RunResponse:
         run_id = str(uuid.uuid4())
@@ -178,12 +187,9 @@ class Controller:
         # It intentionally does not call the verifier or fallback providers.
         if request.dry_run:
             candidate = by_id[choice]
-            output = await self.treg.execute(candidate, dry_run=True)
-            economics = getattr(
-                self.treg,
-                "last_execution_economics",
-                None,
-            )
+            execution = await self.execution_backend.execute(candidate, dry_run=True)
+            output = execution.output
+            economics = execution.economics
             attempt = AttemptResult(
                 tool_id=choice,
                 route_probability=float(probabilities.get(choice, 0.0)),
@@ -222,16 +228,9 @@ class Controller:
         for tool_id in ranked[:max_attempts]:
             candidate = by_id[tool_id]
 
-            try:
-                output = await self.treg.execute(candidate, dry_run=False)
-            except TregError as exc:
-                output = f"TREG_ERROR: {exc}"
-
-            economics = getattr(
-                self.treg,
-                "last_execution_economics",
-                None,
-            )
+            execution = await self.execution_backend.execute(candidate, dry_run=False)
+            output = execution.output
+            economics = execution.economics
 
             deterministic = validate_tool_output(
                 request,
