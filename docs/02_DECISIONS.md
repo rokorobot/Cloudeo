@@ -244,9 +244,12 @@ mappers, and dispatch only (`src/cloudeo/execution/contracts.py`,
 2. Neither request carries `attempt_id` or `profile_id` yet. No caller exists
    to supply them; they arrive with controller integration.
 3. `ExecutionStatus` adds `unknown`, used when Cloudeo could not observe the
-   final task state (UHP transport or protocol failure). Such a task may still
-   be running, so it is neither `failed` nor `cancelled`. A UHP HTTP error is
-   the server rejecting the request and maps to `failed`.
+   final task state. Such a task may have been accepted or still be running,
+   so it is neither `failed` nor `cancelled`. For request-level UHP failures,
+   only an HTTP 4xx rejection other than 408 maps to `failed`. HTTP 408, 5xx,
+   any other HTTP status, transport failures, and protocol failures map to
+   `unknown`. An explicit `UHPTaskResult` status is always kept as returned.
+   Structured error fields are kept in every case, and nothing is retried.
 4. Proposed `evidence` became `raw_output`: Treg stdout verbatim, or UHP output
    items verbatim, with no synthetic wrapper. Proposed `cost` became
    `ExecutionCost` with `direct_tool_economics` (kept exactly as the Treg path

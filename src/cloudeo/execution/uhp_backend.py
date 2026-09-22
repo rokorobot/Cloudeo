@@ -88,15 +88,18 @@ def outcome_from_uhp_error(
     *,
     duration_ms: int | None = None,
 ) -> ExecutionOutcome:
-    """Map a request-level UHP failure.
+    """Map a request-level UHP failure to what Cloudeo actually knows.
 
-    An HTTP error is the server rejecting the request. A transport or protocol
-    failure leaves the task state unobserved: it may still be running, so the
-    status is "unknown" and never "cancelled".
+    Only a 4xx rejection (other than 408) shows the task did not run: "failed".
+    A 408, 5xx, other HTTP status, transport failure, or protocol failure leaves
+    the task state unobserved; it may have been accepted or still be running,
+    so the status is "unknown" and never "cancelled".
     """
 
     if isinstance(exc, UHPHTTPError):
-        status, source = "failed", "uhp_http"
+        rejected = exc.http_status is not None and 400 <= exc.http_status < 500
+        status = "failed" if rejected and exc.http_status != 408 else "unknown"
+        source = "uhp_http"
     elif isinstance(exc, UHPProtocolError):
         status, source = "unknown", "uhp_protocol"
     else:

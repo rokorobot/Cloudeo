@@ -493,8 +493,10 @@ Semantics preserved:
 - UHP: all five response statuses map one-to-one. Partial output and unknown
   output item types are kept. `actual_harness` stays None unless echoed.
   Requested and actual model stay separate. Token usage is never converted to
-  money. A transport timeout or protocol failure maps to `unknown`, never
-  `cancelled`. There are no retries.
+  money. For request-level failures, only an HTTP 4xx rejection other than 408
+  maps to `failed`. HTTP 408, 5xx, other HTTP statuses, transport failures, and
+  protocol failures map to `unknown`, never `cancelled`, because the task may
+  have been accepted. There are no retries.
 - `native_result` is the backend's own `ExecutionResult` or `UHPTaskResult`
   object.
 - The dispatcher never selects a harness, a model, or a backend class. A missing
@@ -502,9 +504,13 @@ Semantics preserved:
 
 Validation:
 
-- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q`: **102 passed** (67 existing
-  unchanged, 35 new in `tests/test_execution_contracts.py`). No network calls;
-  UHP paths use `httpx.MockTransport`.
+- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q`: **116 passed** (67 existing
+  unchanged, 49 new in `tests/test_execution_contracts.py`, including one case
+  per HTTP status for 400, 401, 404, 409, 422, 429, 408, 500, 502, 503, 504, and
+  307). No network calls; UHP paths use `httpx.MockTransport`.
+- Review hardening before merge: every `UHPHTTPError` had mapped to `failed`,
+  which overstated what Cloudeo knows after a 5xx or 408. The rule above
+  replaced it.
 - A test found that Pydantic's smart-mode union coerced a legacy economics dict
   into `ExecutionEconomics`, dropping unknown keys. The field now uses
   left-to-right union mode, and tests assert the dict is kept.

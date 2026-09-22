@@ -392,6 +392,80 @@ async def test_uhp_http_error_is_failed_with_structured_error():
     assert outcome.error.protocol_version == UHP_VERSION
 
 
+@pytest.mark.parametrize(
+    "http_status,error_type,code,expected",
+    [
+        (400, "invalid_request_error", "invalid_input", "failed"),
+        (401, "authentication_error", "missing_credential", "failed"),
+        (404, "invalid_request_error", "harness_not_found", "failed"),
+        (409, "invalid_request_error", "session_busy", "failed"),
+        (422, "invalid_request_error", "model_unavailable", "failed"),
+        (429, "rate_limit_error", "rate_limited", "failed"),
+        (408, "invalid_request_error", "request_timeout", "unknown"),
+        (500, "server_error", "server_error", "unknown"),
+        (502, "server_error", "harness_unavailable", "unknown"),
+        (503, "server_error", "harness_unavailable", "unknown"),
+        (504, "server_error", "timeout", "unknown"),
+        (307, None, None, "unknown"),
+    ],
+)
+async def test_uhp_http_status_maps_to_what_cloudeo_knows(http_status, error_type, code, expected):
+    body = (
+        {
+            "error": {
+                "type": error_type,
+                "code": code,
+                "message": "Request not completed",
+                "param": "metadata.harness_id",
+                "detail": {"vendor": "kept"},
+            }
+        }
+        if code
+        else {"vendor": "no envelope"}
+    )
+    client, backend = uhp_backend(
+        lambda request: httpx.Response(http_status, json=body, headers=HEADERS)
+    )
+    async with client:
+        outcome = await backend.execute(harness_task())
+    assert outcome.status == expected
+    assert outcome.status != "cancelled"
+    assert outcome.native_result is None
+    error = outcome.error
+    assert error.source == "uhp_http"
+    assert error.http_status == http_status
+    assert error.body == body
+    assert error.protocol_version == UHP_VERSION
+    if code:
+        assert (error.code, error.error_type) == (code, error_type)
+        assert error.message == "Request not completed"
+        assert error.param == "metadata.harness_id"
+        assert error.detail == {"vendor": "kept"}
+    else:
+        assert error.code == "http_error"
+
+
+def refuse_connection(request):
+    raise httpx.ConnectError("down", request=request)
+
+
+def malformed_success(request):
+    return httpx.Response(200, json={"not": "a response"}, headers=HEADERS)
+
+
+@pytest.mark.parametrize(
+    "handler,source",
+    [(refuse_connection, "uhp_transport"), (malformed_success, "uhp_protocol")],
+)
+async def test_uhp_transport_and_protocol_failures_are_unknown(handler, source):
+    client, backend = uhp_backend(handler)
+    async with client:
+        outcome = await backend.execute(harness_task())
+    assert outcome.status == "unknown"
+    assert outcome.status != "cancelled"
+    assert outcome.error.source == source
+
+
 # --- Dispatcher ---
 
 
