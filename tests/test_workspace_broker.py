@@ -1,4 +1,6 @@
 import subprocess
+import threading
+import uuid
 from pathlib import Path
 
 import pytest
@@ -402,6 +404,217 @@ def test_cleanup_is_explicit_idempotent_and_keeps_checkpoints(repo, broker):
         broker.inspect_candidate(candidate)
     # An immutable checkpoint can still be promoted after its worktree is gone.
     assert broker.promote(checkpoint).accepted_commit == checkpoint.commit
+
+
+# --- Atomic terminal decisions ---
+
+
+def decision_refs(repo, candidate_id, workspace="demo"):
+    prefix = f"refs/cloudeo/workspaces/{workspace}/candidates/{candidate_id}"
+    listed = git(repo, "for-each-ref", "--format=%(refname:lstrip=-1)", prefix)
+    return {name for name in listed.split() if name in {"promoted", "rejected"}}
+
+
+def test_promotion_updates_accepted_and_marker_atomically(repo, broker):
+    candidate = broker.create_candidate(broker.accepted_state())
+    checkpoint = change_and_checkpoint(broker, candidate)
+    broker.promote(checkpoint)
+    assert accepted_ref(repo) == checkpoint.commit
+    assert decision_refs(repo, candidate.candidate_id) == {"promoted"}
+    promoted = f"refs/cloudeo/workspaces/demo/candidates/{candidate.candidate_id}/promoted"
+    assert git(repo, "rev-parse", promoted) == checkpoint.commit
+
+
+def test_stale_promotion_changes_no_ref(repo, broker):
+    state = broker.accepted_state()
+    first, second = broker.create_candidate(state), broker.create_candidate(state)
+    winner = change_and_checkpoint(broker, first, "a.txt")
+    loser = change_and_checkpoint(broker, second, "b.txt")
+    broker.promote(winner)
+    with pytest.raises(StaleCandidateError):
+        broker.promote(loser)
+    assert accepted_ref(repo) == winner.commit
+    assert decision_refs(repo, second.candidate_id) == set()
+
+
+def test_failed_promotion_transaction_leaves_every_ref_unchanged(repo, broker, monkeypatch):
+    """Accepted moves after the pre-check: the whole transaction is refused."""
+    state = broker.accepted_state()
+    candidate = broker.create_candidate(state)
+    checkpoint = change_and_checkpoint(broker, candidate)
+    other = broker.create_candidate(state)
+    concurrent = change_and_checkpoint(broker, other, "other.txt")
+    git(repo, "update-ref", "refs/cloudeo/workspaces/demo/accepted", concurrent.commit)
+    monkeypatch.setattr(broker, "accepted_state", lambda: state)
+    with pytest.raises(StaleCandidateError, match="changed during promotion"):
+        broker.promote(checkpoint)
+    assert accepted_ref(repo) == concurrent.commit
+    assert decision_refs(repo, candidate.candidate_id) == set()
+
+
+def test_promotion_after_racing_rejection_changes_nothing(repo, broker, monkeypatch):
+    """Both pre-checks pass; the transaction still sees the rejection."""
+    a = broker.accepted_state().accepted_commit
+    candidate = broker.create_candidate(broker.accepted_state())
+    checkpoint = change_and_checkpoint(broker, candidate)
+    broker.reject(candidate, "audit failed", checkpoint)
+    monkeypatch.setattr(broker, "_require_open", lambda cid: None, raising=True)
+    with pytest.raises(WorkspaceBrokerError):
+        broker.promote(checkpoint)
+    assert accepted_ref(repo) == a
+    assert decision_refs(repo, candidate.candidate_id) == {"rejected"}
+
+
+def test_rejection_after_racing_promotion_changes_nothing(repo, broker, monkeypatch):
+    candidate = broker.create_candidate(broker.accepted_state())
+    checkpoint = change_and_checkpoint(broker, candidate)
+    broker.promote(checkpoint)
+    monkeypatch.setattr(broker, "_require_open", lambda cid: None, raising=True)
+    with pytest.raises(WorkspaceBrokerError):
+        broker.reject(candidate, "too late", checkpoint)
+    assert accepted_ref(repo) == checkpoint.commit
+    assert decision_refs(repo, candidate.candidate_id) == {"promoted"}
+
+
+def race(start, errors, name, action, *args):
+    start.wait()
+    try:
+        action(*args)
+    except WorkspaceBrokerError as exc:
+        errors[name] = exc
+
+
+def test_concurrent_promote_and_reject_never_both_decide(repo, broker):
+    for _ in range(8):
+        base = broker.accepted_state().accepted_commit
+        candidate = broker.create_candidate(broker.accepted_state())
+        checkpoint = change_and_checkpoint(broker, candidate, f"race-{uuid.uuid4().hex}.txt")
+        start = threading.Barrier(2)
+        errors = {}
+        threads = [
+            threading.Thread(
+                target=race, args=(start, errors, "promote", broker.promote, checkpoint)
+            ),
+            threading.Thread(
+                target=race,
+                args=(start, errors, "reject", broker.reject, candidate, "race", checkpoint),
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        decisions = decision_refs(repo, candidate.candidate_id)
+        assert len(decisions) <= 1
+        assert len(errors) >= 1
+        expected = checkpoint.commit if decisions == {"promoted"} else base
+        assert accepted_ref(repo) == expected
+        broker.cleanup(candidate, discard=True)
+
+
+def test_rejection_is_canonical_state_neutral(repo, broker):
+    before = accepted_ref(repo)
+    snapshot = canonical_snapshot(repo)
+    candidate = broker.create_candidate(broker.accepted_state())
+    broker.reject(candidate, "never checkpointed")
+    other = broker.create_candidate(broker.accepted_state())
+    broker.reject(other, "bad work", change_and_checkpoint(broker, other))
+    assert accepted_ref(repo) == before
+    assert canonical_snapshot(repo) == snapshot
+
+
+# --- Side-effect-free broker commits ---
+
+
+def install_hooks(repo, marker_dir):
+    hooks = repo / ".git" / "hooks"
+    scripts = {}
+    for name in ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"):
+        hook = hooks / name
+        hook.write_text(f"#!/bin/sh\necho ran > '{marker_dir / name}'\nexit 1\n")
+        hook.chmod(0o755)
+        scripts[name] = hook.read_text()
+    return scripts
+
+
+def test_broker_checkpoint_runs_no_repository_hooks(repo, broker, tmp_path):
+    markers = tmp_path / "markers"
+    markers.mkdir()
+    scripts = install_hooks(repo, markers)
+    local_config = git(repo, "config", "--local", "--list")
+    candidate = broker.create_candidate(broker.accepted_state())
+    checkpoint = change_and_checkpoint(broker, candidate)
+    assert git(repo, "cat-file", "-t", checkpoint.commit) == "commit"
+    assert list(markers.iterdir()) == []
+    # The user's hooks and persistent config are left exactly as they were.
+    assert {name: (repo / ".git" / "hooks" / name).read_text() for name in scripts} == scripts
+    assert git(repo, "config", "--local", "--list") == local_config
+    # The hooks are live: an ordinary commit in the candidate is blocked by them.
+    (candidate.local_path / "executor.txt").write_text("x\n")
+    git(candidate.local_path, "add", "executor.txt")
+    with pytest.raises(subprocess.CalledProcessError):
+        git(candidate.local_path, "commit", "-q", "-m", "executor commit")
+    assert (markers / "pre-commit").exists()
+
+
+def test_broker_checkpoint_does_not_depend_on_signing(repo, broker):
+    git(repo, "config", "--local", "commit.gpgSign", "true")
+    git(repo, "config", "--local", "gpg.program", "false")
+    candidate = broker.create_candidate(broker.accepted_state())
+    checkpoint = change_and_checkpoint(broker, candidate)
+    assert git(repo, "log", "-1", "--format=%G?", checkpoint.commit) == "N"
+    assert git(repo, "config", "--local", "commit.gpgSign") == "true"
+    (candidate.local_path / "signed.txt").write_text("x\n")
+    git(candidate.local_path, "add", "signed.txt")
+    with pytest.raises(subprocess.CalledProcessError):
+        git(candidate.local_path, "commit", "-q", "-m", "would need signing")
+
+
+def test_broker_identity_overrides_identity_environment(repo, broker, monkeypatch):
+    for key in ("GIT_AUTHOR", "GIT_COMMITTER"):
+        monkeypatch.setenv(f"{key}_NAME", "Someone Else")
+        monkeypatch.setenv(f"{key}_EMAIL", "someone@example.invalid")
+    candidate = broker.create_candidate(broker.accepted_state())
+    checkpoint = change_and_checkpoint(broker, candidate)
+    identity = f"{BROKER_IDENTITY['user.name']} <{BROKER_IDENTITY['user.email']}>"
+    assert git(repo, "log", "-1", "--format=%an <%ae>", checkpoint.commit) == identity
+    assert git(repo, "log", "-1", "--format=%cn <%ce>", checkpoint.commit) == identity
+
+
+# --- Candidate creation rollback ---
+
+
+def test_failed_worktree_creation_leaves_no_candidate(repo, broker, root, monkeypatch):
+    fixed = uuid.UUID(int=1)
+    monkeypatch.setattr(git_module.uuid, "uuid4", lambda: fixed)
+    blocking = root / "demo" / fixed.hex
+    blocking.mkdir(parents=True)
+    (blocking / "keep.txt").write_text("not the broker's\n")
+    before_refs = git(repo, "for-each-ref", "refs/cloudeo")
+    before_worktrees = git(repo, "worktree", "list", "--porcelain")
+    with pytest.raises(git_module.GitCommandError, match="worktree add"):
+        broker.create_candidate(broker.accepted_state())
+    assert git(repo, "for-each-ref", "refs/cloudeo") == before_refs
+    assert git(repo, "worktree", "list", "--porcelain") == before_worktrees
+    assert (blocking / "keep.txt").read_text() == "not the broker's\n"
+
+
+def test_rollback_only_removes_the_failed_candidate(repo, broker, root, monkeypatch):
+    survivor = broker.create_candidate(broker.accepted_state())
+    fixed = uuid.UUID(int=2)
+    monkeypatch.setattr(git_module.uuid, "uuid4", lambda: fixed)
+    (root / "demo" / fixed.hex).mkdir(parents=True)
+    (root / "demo" / fixed.hex / "occupied").write_text("x\n")
+    with pytest.raises(git_module.GitCommandError):
+        broker.create_candidate(broker.accepted_state())
+    assert broker.inspect_candidate(survivor).head_commit == survivor.base_commit
+    base = f"refs/cloudeo/workspaces/demo/candidates/{fixed.hex}/base"
+    assert (
+        subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", base], check=False
+        ).returncode
+        != 0
+    )
 
 
 # --- No network ---

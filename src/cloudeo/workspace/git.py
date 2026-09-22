@@ -50,6 +50,13 @@ BROKER_IDENTITY = {
     "user.name": "Cloudeo Workspace Broker",
     "user.email": "workspace-broker@cloudeo.invalid",
 }
+# A checkpoint captures state; it is not project validation. Broker commits run
+# no repository hooks and never depend on signing configuration.
+BROKER_COMMIT_CONFIG = {
+    **BROKER_IDENTITY,
+    "commit.gpgSign": "false",
+    "core.hooksPath": os.devnull,
+}
 
 _identifier = TypeAdapter(Identifier)
 _commit_sha = TypeAdapter(CommitSha)
@@ -121,8 +128,17 @@ class GitWorkspaceBroker:
         candidate_id = uuid.uuid4().hex
         path = self._candidate_path(candidate_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._update_ref(self._candidate_ref(candidate_id, "base"), current, self._zero, check=True)
-        self._git("worktree", "add", "--detach", str(path), current)
+        base_ref = self._candidate_ref(candidate_id, "base")
+        self._update_ref(base_ref, current, self._zero, check=True)
+        try:
+            self._git("worktree", "add", "--detach", str(path), current)
+        except Exception as exc:
+            # Unregister the candidate so no ref claims it exists. Only this
+            # candidate's ref is removed; other refs and worktrees are untouched.
+            rollback = self._run(("update-ref", "-d", base_ref, current), check=False)
+            if rollback.returncode != 0:
+                exc.add_note(f"Rollback of {base_ref} failed: {rollback.stderr.strip()}")
+            raise
         return CandidateWorkspace(
             workspace_id=self.workspace_id,
             candidate_id=candidate_id,
@@ -152,7 +168,9 @@ class GitWorkspaceBroker:
         dirty = bool(self._uncheckpointed_paths(candidate))
         if dirty:
             self._git("add", "--all", cwd=candidate.local_path)
-            self._git("commit", "--quiet", "-m", message, cwd=candidate.local_path, config=True)
+            self._git(
+                "commit", "--quiet", "-m", message, cwd=candidate.local_path, broker_commit=True
+            )
         head = self._git("rev-parse", "HEAD", cwd=candidate.local_path)
         checkpoint_ref = self._candidate_ref(candidate.candidate_id, f"checkpoints/{head}")
         if head == candidate.base_commit or (not dirty and self._read_ref(checkpoint_ref) == head):
@@ -183,13 +201,23 @@ class GitWorkspaceBroker:
             )
         if checkpoint.commit == base or not self._is_ancestor(base, checkpoint.commit):
             raise ForeignCheckpointError(f"{checkpoint.commit} is not a descendant of {base}.")
-        # Compare-and-swap: succeeds only if accepted is still the candidate's base.
-        if not self._update_ref(self._accepted_ref, checkpoint.commit, base):
-            raise StaleCandidateError(
-                f"Accepted state changed during promotion of {checkpoint.candidate_id}."
+        # One atomic transaction: accepted is compare-and-swapped from the base,
+        # the promoted marker is created, and the rejected marker must be absent.
+        # If any precondition fails, no ref changes.
+        cid = checkpoint.candidate_id
+        transaction = self._ref_transaction(
+            f"verify {self._candidate_ref(cid, 'rejected')} {self._zero}",
+            f"update {self._accepted_ref} {checkpoint.commit} {base}",
+            f"create {self._candidate_ref(cid, 'promoted')} {checkpoint.commit}",
+        )
+        if transaction.returncode != 0:
+            self._require_open(cid)
+            # Read the ref itself: the transaction's view, not a cached state.
+            if self._read_ref(self._accepted_ref) != base:
+                raise StaleCandidateError(f"Accepted state changed during promotion of {cid}.")
+            raise GitCommandError(
+                ("update-ref", "--stdin"), transaction.returncode, transaction.stderr
             )
-        promoted_ref = self._candidate_ref(checkpoint.candidate_id, "promoted")
-        self._update_ref(promoted_ref, checkpoint.commit, self._zero, check=True)
         return PromotionResult(
             workspace_id=self.workspace_id,
             previous_commit=base,
@@ -212,13 +240,20 @@ class GitWorkspaceBroker:
             if checkpoint.candidate_id != candidate.candidate_id:
                 raise ForeignCheckpointError("The checkpoint belongs to another candidate.")
         rejected_commit = checkpoint.commit if checkpoint is not None else None
-        # Keep the rejected state reachable as evidence; accepted is not touched.
-        self._update_ref(
-            self._candidate_ref(candidate.candidate_id, "rejected"),
-            rejected_commit or candidate.base_commit,
-            self._zero,
-            check=True,
+        # One atomic transaction that never touches accepted: the promoted marker
+        # must be absent and the rejected marker is created (create fails if it
+        # exists). The rejected commit stays reachable as evidence.
+        cid = candidate.candidate_id
+        transaction = self._ref_transaction(
+            f"verify {self._candidate_ref(cid, 'promoted')} {self._zero}",
+            f"create {self._candidate_ref(cid, 'rejected')} "
+            f"{rejected_commit or candidate.base_commit}",
         )
+        if transaction.returncode != 0:
+            self._require_open(cid)
+            raise GitCommandError(
+                ("update-ref", "--stdin"), transaction.returncode, transaction.stderr
+            )
         return RejectionRecord(
             workspace_id=self.workspace_id,
             candidate_id=candidate.candidate_id,
@@ -245,23 +280,39 @@ class GitWorkspaceBroker:
 
     # --- internals ---
 
-    def _git(self, *args: str, cwd: Path | None = None, config: bool = False) -> str:
-        return self._run(args, cwd=cwd, config=config, check=True).stdout.strip()
+    def _git(self, *args: str, cwd: Path | None = None, broker_commit: bool = False) -> str:
+        return self._run(args, cwd=cwd, broker_commit=broker_commit).stdout.strip()
 
     def _run(
-        self, args: tuple[str, ...], *, cwd: Path | None, config: bool, check: bool
+        self,
+        args: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+        broker_commit: bool = False,
+        check: bool = True,
+        stdin: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         if args[0] not in ALLOWED_GIT_SUBCOMMANDS:
             raise WorkspaceBrokerError(f"git {args[0]} is not permitted in the broker.")
-        options = []
-        if config:
-            for key, value in BROKER_IDENTITY.items():
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+        options: list[str] = []
+        if broker_commit:
+            # Command-scoped only; the repository's config and hooks are untouched.
+            for key, value in BROKER_COMMIT_CONFIG.items():
                 options += ["-c", f"{key}={value}"]
+            # These environment variables would otherwise override user.name/email.
+            env |= {
+                "GIT_AUTHOR_NAME": BROKER_IDENTITY["user.name"],
+                "GIT_AUTHOR_EMAIL": BROKER_IDENTITY["user.email"],
+                "GIT_COMMITTER_NAME": BROKER_IDENTITY["user.name"],
+                "GIT_COMMITTER_EMAIL": BROKER_IDENTITY["user.email"],
+            }
         process = subprocess.run(
             ["git", "-C", str(cwd or self.repository), *options, *args],
             capture_output=True,
             text=True,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"},
+            input=stdin,
+            env=env,
             check=False,
         )
         if check and process.returncode != 0:
@@ -269,33 +320,25 @@ class GitWorkspaceBroker:
         return process
 
     def _update_ref(self, ref: str, new: str, old: str, *, check: bool = False) -> bool:
-        process = self._run(("update-ref", ref, new, old), cwd=None, config=False, check=check)
-        return process.returncode == 0
+        return self._run(("update-ref", ref, new, old), check=check).returncode == 0
+
+    def _ref_transaction(self, *commands: str) -> subprocess.CompletedProcess[str]:
+        """Apply update-ref commands as one atomic transaction: all or none."""
+        script = "".join(f"{command}\n" for command in ("start", *commands, "prepare", "commit"))
+        return self._run(("update-ref", "--stdin"), check=False, stdin=script)
 
     def _read_ref(self, ref: str) -> str | None:
-        process = self._run(
-            ("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"),
-            cwd=None,
-            config=False,
-            check=False,
-        )
+        process = self._run(("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"), check=False)
         return process.stdout.strip() if process.returncode == 0 else None
 
     def _resolve_commit(self, value: str) -> str:
         sha = _commit_sha.validate_python(value)
-        if self._run(
-            ("cat-file", "-e", f"{sha}^{{commit}}"), cwd=None, config=False, check=False
-        ).returncode:
+        if self._run(("cat-file", "-e", f"{sha}^{{commit}}"), check=False).returncode:
             raise WorkspaceBrokerError(f"{sha} is not a commit in {self.repository}.")
         return sha
 
     def _is_ancestor(self, ancestor: str, descendant: str) -> bool:
-        process = self._run(
-            ("merge-base", "--is-ancestor", ancestor, descendant),
-            cwd=None,
-            config=False,
-            check=False,
-        )
+        process = self._run(("merge-base", "--is-ancestor", ancestor, descendant), check=False)
         if process.returncode not in (0, 1):
             raise GitCommandError(("merge-base",), process.returncode, process.stderr)
         return process.returncode == 0
@@ -304,8 +347,6 @@ class GitWorkspaceBroker:
         output = self._run(
             ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"),
             cwd=candidate.local_path,
-            config=False,
-            check=True,
         ).stdout
         return tuple(entry[3:] for entry in output.split("\0") if entry)
 

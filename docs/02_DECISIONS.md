@@ -320,17 +320,43 @@ candidate independently. The broker therefore has no automatic promotion path;
 a future verifier-driven caller decides.
 
 **Optimistic concurrency:** A candidate records the accepted commit it began
-from. Promotion requires the accepted commit to still equal that base, and then
-advances it with Git's atomic `update-ref <ref> <new> <expected-old>`. If
+from. Promotion requires the accepted commit to still equal that base. If
 accepted moved from A to B after candidate C began from A, promoting C fails as
 stale and B is kept. There is no auto-rebase, force-reset, or history rewrite;
 every promotion is a fast-forward. Only commits the broker recorded as
 checkpoints for that candidate and workspace can be promoted.
 
+**Atomic terminal decisions:** Promotion is one `git update-ref --stdin`
+transaction (`start` … `prepare` / `commit`). It verifies the `rejected`
+marker is absent, compare-and-swaps `accepted` from the base to the checkpoint
+commit, and creates the `promoted` marker, which fails if it already exists.
+Rejection is likewise one transaction: it verifies `promoted` is absent and
+creates `rejected`. Either every ref in a transaction changes or none does. A
+promote and a reject racing for the same candidate can never both succeed, and
+a failed promotion leaves `accepted` and both markers unchanged. A changed
+`accepted` is reported as `StaleCandidateError`; an existing decision as
+`CandidateStateError`. There are no retries.
+
 **Rejection:** leaves accepted state unchanged and keeps the rejected commit
 reachable through a `rejected` ref, so the evidence is not lost. The returned
 `RejectionRecord` carries the reason; storing reasons and richer evidence
 durably is future work.
+
+**Side-effect-free checkpoint commits:** A checkpoint captures state; it is not
+project validation. A commit created by `checkpoint_candidate()` runs with
+command-scoped settings only: the fixed broker identity (also set through the
+`GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment variables, which would
+otherwise take precedence), `commit.gpgSign=false`, and `core.hooksPath` set to
+the null device. Repository hooks therefore do not run for broker commits, and
+signing configuration cannot block them. The repository's hooks and persistent
+config are not modified. Commits an executor makes itself in a candidate are
+outside this guarantee.
+
+**Candidate creation rollback:** The candidate's `base` ref is created before
+`git worktree add`. If the worktree cannot be created, only that ref is deleted
+(compare-and-delete against the expected commit), and the original error is
+raised. A failed creation never leaves a registered candidate, and no other ref
+or worktree is touched.
 
 **Relationship to HarnessRouter sessions:** A UHP session keeps a conversation
 and a server-side working directory. It can expire, deleting it removes its
