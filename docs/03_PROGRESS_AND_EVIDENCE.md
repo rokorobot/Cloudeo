@@ -589,3 +589,56 @@ Validation:
   diff to the migration itself.
 
 UHP remains outside `Controller.run()`.
+
+
+---
+
+## 2026-09-23 — Workspace Broker foundation
+
+Branch `feat/workspace-broker-foundation`, from `main` at `c3e8d93`. It adds
+`src/cloudeo/workspace/` (`models.py`, `broker.py`, `git.py`) and ADR-015.
+`Controller.run()`, the dispatcher, the execution contracts, the UHP client, the
+API, and the database are unchanged. No LongHorizon, verification policy,
+Performance Memory, remote Git, or automatic promotion was added.
+
+Central invariant: an executor may produce a candidate state; only a separate
+`promote` call changes the canonical accepted state.
+
+Implemented:
+
+- Types: `CanonicalWorkspaceState`, `CandidateWorkspace` (its `local_path` is
+  local and internal only), `WorkspaceCheckpoint`, `CandidateInspection`,
+  `PromotionResult`, `RejectionRecord`, plus typed errors
+  (`StaleCandidateError`, `ForeignCheckpointError`, `NothingToCheckpointError`,
+  `CandidateStateError`, `WorkspaceConflictError`).
+- `WorkspaceBroker` protocol: `accepted_state`, `create_candidate`,
+  `inspect_candidate`, `checkpoint_candidate`, `promote`, `reject`, `cleanup`.
+- `GitWorkspaceBroker`: all state is kept in Git refs under
+  `refs/cloudeo/workspaces/<id>/`, with no database. Candidates are detached
+  worktrees at the accepted commit. A checkpoint commits the candidate's changes
+  as the broker identity, or captures descendant commits the executor made.
+  Promotion is an atomic compare-and-swap fast-forward of the accepted ref.
+  Rejection keeps the rejected commit reachable. `cleanup` removes only the
+  worktree and refuses to drop uncheckpointed changes unless `discard=True`.
+
+Validation:
+
+- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q`: **178 passed** (142 existing
+  unchanged, 36 in `tests/test_workspace_broker.py`). Tests use temporary
+  repositories with isolated Git config and no remote.
+- Covered: explicit accepted commit (not branch `HEAD`); idempotent,
+  non-replacing initialization; exact candidate content; candidate edits and
+  promotion leave the canonical checkout's HEAD, branch, files, and status
+  unchanged; isolation between candidates; real descendant checkpoint commits;
+  empty and repeated checkpoints refused; executor commits captured; rewritten
+  history refused; promotion only on `promote`; stale candidates refused; a
+  simulated concurrent move of accepted defeats promotion via compare-and-swap;
+  commits made outside the broker, unrelated histories, other workspaces, and
+  tampered candidate identities refused; rejection keeps accepted state and the
+  rejected commit (also after cleanup); promote and reject decisions are final;
+  dirty-state inspection and cleanup; only allowlisted local Git subcommands
+  run.
+- The test run created no `refs/cloudeo` refs or worktrees in the Cloudeo
+  repository itself.
+
+No live execution, harness, or provider verification was performed.
