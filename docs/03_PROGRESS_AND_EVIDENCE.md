@@ -358,3 +358,101 @@ Validation:
 Known legacy limitations deliberately preserved: shared/stale execution economics,
 duplicate candidate ranking, and unknown Jev choice lookup in dry-run. These
 remain separately scoped work, not fixes bundled into the extraction.
+
+
+---
+
+## 2026-09-22 — UHP client foundation (standalone)
+
+Added an internal `cloudeo.uhp` package (`client.py`, `models.py`) built on the
+existing `httpx`/`pydantic` dependencies. It is not wired into the controller:
+`Controller.run()`, `TregExecutionBackend`, `ToolCandidate`, Jev routing,
+verification, `RunRequest`/`RunResponse`, configuration, and the database schema
+are unchanged. The v0.1 path remains Objective → Jev → Treg → verification →
+SQLite.
+
+Protocol source: UHP `2026-09-12`, checked against the machine-readable
+`protocol/schema/uhp-2026-09-12.schema.json` and OpenAPI file in
+HarnessRouter/harnessrouter at `v0.23.7` (`809392d602e34e36f0468943035c54d3350af885`).
+Every request sends `UHP-Version: 2026-09-12`; a successful response whose
+`UHP-Version` header is missing or different is rejected as a protocol error.
+
+Validation:
+
+- `uv run pytest -q`: **67 passed** (33 existing unchanged, 34 new mock-transport
+  UHP cases in `tests/test_uhp_client.py`). No Docker or network required.
+- Ruff checks pass for the new package, tests, and `dev/uhp_smoke.py`.
+
+HarnessRouter CE local development instance (`dev/harnessrouter.compose.yaml`):
+
+- Image `harnessrouter/harnessrouter@sha256:d8794a4cbaaac8920548b2e1474e84d9c54e754119f700d2817765ec89837ced`
+  (Docker Hub tag `0.23.7`; source tag `v0.23.7` = commit `809392d`).
+- Bound to `127.0.0.1:18810` only; named volume `cloudeo-harnessrouter-dev-data`
+  at `/data`; `restart: "no"`; backends `codex,claude` with Codex `0.154.0` and
+  Claude Code `2.1.280` pinned. Runs under Docker Desktop on the Windows host and
+  is reachable from WSL at the same loopback address.
+
+Live discovery through `UHPClient` (`GET /v1/uhp`, unauthenticated):
+
+- Implementation: HarnessRouter Community Edition `0.23.7`.
+- Versions `2026-09-12`, `2026-08-11`; default `2026-09-12`; conformance class
+  `full`; response header `UHP-Version: 2026-09-12`.
+- Capabilities all `true`: streaming, sessions, cancellation, files_input,
+  files_output, session_listing, harness_management, session_sharing,
+  idempotency, plugins.
+
+Not yet proven: `GET /v1/harnesses` returns HTTP 401 without a HarnessRouter API
+key. The CE body is `{"detail":"sign in to continue"}` with no UHP error
+envelope and no `UHP-Version` header (the client preserved it as `http_error`
+with `protocol_version=None`). Harness/model discovery, a live task, and the
+two-harness proof are blocked on a Console-created API key and provider
+credentials for Codex and Claude Code. No live task has been run.
+
+
+---
+
+## 2026-09-23 — UHP live execution evidence
+
+Operator-run smoke with `dev/uhp_smoke.py` against the local HarnessRouter CE
+`0.23.7` instance (`http://127.0.0.1:18810/api/harness`), UHP `2026-09-12`,
+using a Console-created HarnessRouter API key held only in the operator's shell.
+No key or provider credential is recorded here or in Git. This supersedes the
+"Not yet proven" note in the previous entry.
+
+| Check | Result |
+| --- | --- |
+| Authenticated discovery (`/v1/harnesses`, harness models) | **PASS** |
+| Claude Code live task | **PASS** (runtime `completed`) |
+| Codex live task | **BLOCKED_EXTERNAL** (OpenAI provider quota) |
+
+Claude Code live task (`Reply with exactly: CLOUDEO_UHP_OK`, new session):
+
+- Harness `chrn_56a17d779ea643e9b2924aaa1e86e175` (`Cloudeo-claude`, base
+  `claude-code`); model `claude-opus-5`.
+- Status `completed`; output `CLOUDEO_UHP_OK`.
+- Response `resp_c44edf543ff64daeb0d119c8c6f64ca8`; session
+  `hsess9f7d54617d284c8d89a64886e1371b92`.
+- Response `UHP-Version: 2026-09-12`; client-measured duration 5.21 s.
+- `actual_harness: null` — HarnessRouter did not echo `metadata.harness_id` on
+  the response. This is observed server metadata behavior; Cloudeo must record
+  the requested harness and must not infer an actual one.
+
+`completed` is runtime completion only. It is execution evidence, not Cloudeo
+verified success, and nothing was written to Performance Memory (which does not
+exist yet).
+
+Codex live task:
+
+- Harness `chrn_bdbb7e0349a14734a2bdc7d57ba81f22` (`Cloudeo - OpenAI`, base
+  `codex`); model `gpt-5.5`.
+- The UHP task created a real Codex session and rollout, then failed with
+  `Reconnecting... 1/5`.
+- A direct OpenAI Responses API request with the same OpenAI account returned
+  `type: insufficient_quota`, `code: credit_balance_exhausted`,
+  `message: You have no credits remaining.`
+- Classification: **BLOCKED_EXTERNAL / provider quota**. This is not a Cloudeo,
+  UHP client, HarnessRouter, or Codex implementation failure. Paid OpenAI
+  requests are not retried until credit is restored.
+
+Two-harness proof status: one harness (Claude Code) proven end to end; the
+Codex path reaches the runtime but is blocked by the provider account.

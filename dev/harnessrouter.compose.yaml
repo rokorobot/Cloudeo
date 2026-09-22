@@ -1,0 +1,19 @@
+# Development only. Source: HarnessRouter/harnessrouter v0.23.7
+# Source commit: 809392d602e34e36f0468943035c54d3350af885
+# Protocol inspected: UHP 2026-09-12. No automatic upgrade or restart.
+services:
+  harnessrouter:
+    image: harnessrouter/harnessrouter@sha256:d8794a4cbaaac8920548b2e1474e84d9c54e754119f700d2817765ec89837ced
+    container_name: cloudeo-harnessrouter-dev
+    ports:
+      - "127.0.0.1:18810:3000"
+    environment:
+      HR_BACKENDS: "codex,claude"
+      HR_CODEX_VERSION: "0.154.0"
+      CLAUDE_CODE_VERSION: "2.1.280"
+    volumes:
+      - harnessrouter-data:/data
+    restart: "no"
+volumes:
+  harnessrouter-data:
+    name: cloudeo-harnessrouter-dev-data

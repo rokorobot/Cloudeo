@@ -180,3 +180,54 @@ behavior are unchanged. UHP remains unimplemented.
 
 **Status:** Implemented; 33 tests pass. See the execution-foundation evidence in
 `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-012 — Standalone UHP client before execution integration
+
+**Decision:** Add a UHP-native client (`cloudeo.uhp`) with its own request,
+result, harness, model, and error types, pinned to UHP `2026-09-12`. Do not
+route it through `ExecutionBackend`, `ToolCandidate`, or the controller yet.
+
+**Reason:** A harness task (input, harness, model, step/time budgets, session
+continuation, output items) is a different execution class from a Treg endpoint
+call. Proving the UHP boundary independently lets the shared execution request
+be designed from two concrete shapes instead of one.
+
+**Constraint:** `completed` is runtime completion, never Cloudeo verified
+success. Terminal output (including partial output of `incomplete`, `failed`,
+and `cancelled`) and unknown output item types are preserved unchanged.
+Structured errors keep HTTP status, UHP code, type, message, param, detail,
+body, and the response `UHP-Version`. No retries or recovery policy are built
+on them yet. Transport timeouts do not claim cancellation.
+
+**Status:** Client implemented; 34 mock-transport tests. Live discovery proven
+against HarnessRouter CE 0.23.7; harness listing and live tasks await an API key
+and provider credentials. See `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-013 — Discriminated execution request and outcome (proposed)
+
+**Decision (proposed):** Replace the Treg-shaped `ExecutionBackend.execute(
+ToolCandidate)` with a discriminated `ExecutionRequest`
+(`DirectToolExecution` | `HarnessTaskExecution`) and a common
+`ExecutionOutcome` that carries a backend-native result, rather than a generic
+`ExecutionBackend[T]` or a flattened universal task model.
+
+**Reason:** The concrete Treg and UHP shapes share little beyond attempt
+identity, execution status, evidence, cost, duration, and error. Harness
+selection, model fallback, step/time budgets, sessions, `incomplete`, and
+partial output have no Treg equivalent; endpoint, method, query/body, and ledger
+economics have no UHP equivalent. A discriminated union keeps each class typed
+and lets the controller consume one outcome shape.
+
+**Constraint:** Execution status never means verified success. Native results
+are retained, not reduced to text. The live `actual_harness: null` observation
+means runtime identity records what was requested and what the server actually
+echoed as separate fields.
+
+**Status:** Proposed only; not implemented or wired into `Controller.run()`.
+See `12_EXECUTION_REQUEST_AND_OUTCOME_PROPOSAL.md`.
