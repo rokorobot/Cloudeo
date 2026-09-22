@@ -407,3 +407,52 @@ envelope and no `UHP-Version` header (the client preserved it as `http_error`
 with `protocol_version=None`). Harness/model discovery, a live task, and the
 two-harness proof are blocked on a Console-created API key and provider
 credentials for Codex and Claude Code. No live task has been run.
+
+
+---
+
+## 2026-09-23 — UHP live execution evidence
+
+Operator-run smoke with `dev/uhp_smoke.py` against the local HarnessRouter CE
+`0.23.7` instance (`http://127.0.0.1:18810/api/harness`), UHP `2026-09-12`,
+using a Console-created HarnessRouter API key held only in the operator's shell.
+No key or provider credential is recorded here or in Git. This supersedes the
+"Not yet proven" note in the previous entry.
+
+| Check | Result |
+| --- | --- |
+| Authenticated discovery (`/v1/harnesses`, harness models) | **PASS** |
+| Claude Code live task | **PASS** (runtime `completed`) |
+| Codex live task | **BLOCKED_EXTERNAL** (OpenAI provider quota) |
+
+Claude Code live task (`Reply with exactly: CLOUDEO_UHP_OK`, new session):
+
+- Harness `chrn_56a17d779ea643e9b2924aaa1e86e175` (`Cloudeo-claude`, base
+  `claude-code`); model `claude-opus-5`.
+- Status `completed`; output `CLOUDEO_UHP_OK`.
+- Response `resp_c44edf543ff64daeb0d119c8c6f64ca8`; session
+  `hsess9f7d54617d284c8d89a64886e1371b92`.
+- Response `UHP-Version: 2026-09-12`; client-measured duration 5.21 s.
+- `actual_harness: null` — HarnessRouter did not echo `metadata.harness_id` on
+  the response. This is observed server metadata behavior; Cloudeo must record
+  the requested harness and must not infer an actual one.
+
+`completed` is runtime completion only. It is execution evidence, not Cloudeo
+verified success, and nothing was written to Performance Memory (which does not
+exist yet).
+
+Codex live task:
+
+- Harness `chrn_bdbb7e0349a14734a2bdc7d57ba81f22` (`Cloudeo - OpenAI`, base
+  `codex`); model `gpt-5.5`.
+- The UHP task created a real Codex session and rollout, then failed with
+  `Reconnecting... 1/5`.
+- A direct OpenAI Responses API request with the same OpenAI account returned
+  `type: insufficient_quota`, `code: credit_balance_exhausted`,
+  `message: You have no credits remaining.`
+- Classification: **BLOCKED_EXTERNAL / provider quota**. This is not a Cloudeo,
+  UHP client, HarnessRouter, or Codex implementation failure. Paid OpenAI
+  requests are not retried until credit is restored.
+
+Two-harness proof status: one harness (Claude Code) proven end to end; the
+Codex path reaches the runtime but is blocked by the provider account.
