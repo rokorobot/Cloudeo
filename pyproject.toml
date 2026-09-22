@@ -19,6 +19,11 @@ dev = [
   "pytest-asyncio>=0.24",
   "ruff>=0.8",
 ]
+# Optional LongHorizon-Harness integration. Pinned to the exact v0.1.7 source
+# commit; see ADR-016 for why this is a Git pin rather than the PyPI release.
+longhorizon = [
+  "lh-harness @ git+https://github.com/AMAP-ML/LongHorizon-Harness@ff76d6a4c0a4f6d7dfeb2fc2adcf51ccb87a3b9a",
+]
 
 [project.scripts]
 cloudeo = "cloudeo.main:run"
@@ -33,6 +38,10 @@ line-length = 100
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# Required for the commit-pinned Git dependency in the longhorizon extra.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cloudeo"]

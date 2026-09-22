@@ -46,6 +46,13 @@ uv sync --extra dev
 cp .env.example .env
 ```
 
+The LongHorizon-Harness integration is optional. To install it (pinned to
+upstream v0.1.7, commit `ff76d6a`), add its extra:
+
+```bash
+uv sync --extra dev --extra longhorizon
+```
+
 ## 2. Run the zero-cost local smoke test
 
 Leave these defaults in `.env`:
