@@ -620,17 +620,29 @@ Implemented:
   Promotion is one atomic `update-ref --stdin` transaction: a compare-and-swap
   fast-forward of the accepted ref, creation of the `promoted` marker, and
   verification that no `rejected` marker exists. Rejection is one transaction
-  too, and keeps the rejected commit reachable. Broker checkpoint commits run
-  no repository hooks and ignore signing configuration, using command-scoped
-  settings only. A failed `git worktree add` rolls back the candidate's `base`
-  ref. `cleanup` removes only the worktree and refuses to drop uncheckpointed
-  changes unless `discard=True`.
+  too, and keeps the rejected commit reachable. Candidate worktree creation and
+  broker checkpoint commits run no repository hooks, using command-scoped
+  settings only. Checkpoint commits also ignore signing configuration. A failed
+  `git worktree add` rolls back the candidate's `base` ref. `cleanup` removes
+  only the worktree and refuses to drop uncheckpointed changes unless
+  `discard=True`.
 
 Validation:
 
-- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q`: **190 passed** (142 existing
-  unchanged, 48 in `tests/test_workspace_broker.py`). Tests use temporary
+- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q`: **193 passed** (142 existing
+  unchanged, 51 in `tests/test_workspace_broker.py`). Tests use temporary
   repositories with isolated Git config and no remote.
+- Hook isolation for candidate creation (3 of the 51):
+  - a `post-checkout` hook that writes a marker and exits 1 does not run
+    during `create_candidate()`. The candidate still starts at the accepted
+    commit, with its `base` ref and a detached worktree;
+  - the same hook still runs for an ordinary `git worktree add`, proving the
+    repository was not reconfigured;
+  - a repository-configured `core.hooksPath` is overridden for the broker
+    command only and is still set afterwards; the local config is identical;
+  - rollback on a failed `worktree add` still works with the hook installed.
+
+  With the `hooks_disabled` flag removed, the two hook-detection tests fail.
 - State-integrity hardening (12 of the 48):
   - promotion updates `accepted` and `promoted` together;
   - a stale or failed promotion transaction changes no ref;

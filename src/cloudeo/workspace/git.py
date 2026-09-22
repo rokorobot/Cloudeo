@@ -50,12 +50,14 @@ BROKER_IDENTITY = {
     "user.name": "Cloudeo Workspace Broker",
     "user.email": "workspace-broker@cloudeo.invalid",
 }
-# A checkpoint captures state; it is not project validation. Broker commits run
-# no repository hooks and never depend on signing configuration.
+# Broker-owned operations manage state; they are not project validation, so
+# repository hooks do not run for them. Command-scoped only.
+HOOKS_DISABLED_CONFIG = {"core.hooksPath": os.devnull}
+# Checkpoint commits also use a fixed identity and never depend on signing.
 BROKER_COMMIT_CONFIG = {
     **BROKER_IDENTITY,
     "commit.gpgSign": "false",
-    "core.hooksPath": os.devnull,
+    **HOOKS_DISABLED_CONFIG,
 }
 
 _identifier = TypeAdapter(Identifier)
@@ -131,7 +133,8 @@ class GitWorkspaceBroker:
         base_ref = self._candidate_ref(candidate_id, "base")
         self._update_ref(base_ref, current, self._zero, check=True)
         try:
-            self._git("worktree", "add", "--detach", str(path), current)
+            # Hooks disabled: a post-checkout hook must not run project side effects.
+            self._git("worktree", "add", "--detach", str(path), current, hooks_disabled=True)
         except Exception as exc:
             # Unregister the candidate so no ref claims it exists. Only this
             # candidate's ref is removed; other refs and worktrees are untouched.
@@ -280,26 +283,48 @@ class GitWorkspaceBroker:
 
     # --- internals ---
 
-    def _git(self, *args: str, cwd: Path | None = None, broker_commit: bool = False) -> str:
-        return self._run(args, cwd=cwd, broker_commit=broker_commit).stdout.strip()
+    def _git(
+        self,
+        *args: str,
+        cwd: Path | None = None,
+        hooks_disabled: bool = False,
+        broker_commit: bool = False,
+    ) -> str:
+        return self._run(
+            args, cwd=cwd, hooks_disabled=hooks_disabled, broker_commit=broker_commit
+        ).stdout.strip()
 
     def _run(
         self,
         args: tuple[str, ...],
         *,
         cwd: Path | None = None,
+        hooks_disabled: bool = False,
         broker_commit: bool = False,
         check: bool = True,
         stdin: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        """Run a local Git subcommand.
+
+        hooks_disabled: broker-owned operation; repository hooks do not run.
+        broker_commit: broker checkpoint commit; hooks disabled, fixed identity,
+        signing off. Both apply to this command only; the repository's
+        persistent config and hook files are never changed.
+        """
         if args[0] not in ALLOWED_GIT_SUBCOMMANDS:
             raise WorkspaceBrokerError(f"git {args[0]} is not permitted in the broker.")
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+        config = (
+            BROKER_COMMIT_CONFIG
+            if broker_commit
+            else HOOKS_DISABLED_CONFIG
+            if hooks_disabled
+            else {}
+        )
         options: list[str] = []
+        for key, value in config.items():
+            options += ["-c", f"{key}={value}"]
         if broker_commit:
-            # Command-scoped only; the repository's config and hooks are untouched.
-            for key, value in BROKER_COMMIT_CONFIG.items():
-                options += ["-c", f"{key}={value}"]
             # These environment variables would otherwise override user.name/email.
             env |= {
                 "GIT_AUTHOR_NAME": BROKER_IDENTITY["user.name"],

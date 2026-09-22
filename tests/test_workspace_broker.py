@@ -581,6 +581,85 @@ def test_broker_identity_overrides_identity_environment(repo, broker, monkeypatc
     assert git(repo, "log", "-1", "--format=%cn <%ce>", checkpoint.commit) == identity
 
 
+def install_post_checkout(hooks_dir, marker):
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook = hooks_dir / "post-checkout"
+    hook.write_text(f"#!/bin/sh\necho ran >> '{marker}'\nexit 1\n")
+    hook.chmod(0o755)
+    return hook
+
+
+def local_config(repo):
+    return git(repo, "config", "--local", "--list")
+
+
+def hooks_path_setting(repo):
+    process = subprocess.run(
+        ["git", "-C", str(repo), "config", "--local", "--get", "core.hooksPath"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return process.stdout.strip() if process.returncode == 0 else None
+
+
+def test_candidate_creation_runs_no_post_checkout_hook(repo, broker, tmp_path):
+    marker = tmp_path / "post-checkout-ran"
+    hook = install_post_checkout(repo / ".git" / "hooks", marker)
+    hook_script = hook.read_text()
+    config_before = local_config(repo)
+    state = broker.accepted_state()
+
+    candidate = broker.create_candidate(state)
+
+    assert not marker.exists()
+    # Creation is otherwise unchanged: exact commit, base ref, detached worktree.
+    assert git(candidate.local_path, "rev-parse", "HEAD") == state.accepted_commit
+    base = f"refs/cloudeo/workspaces/demo/candidates/{candidate.candidate_id}/base"
+    assert git(repo, "rev-parse", base) == state.accepted_commit
+    worktrees = git(repo, "worktree", "list", "--porcelain").split("\n\n")
+    entry = next(w for w in worktrees if f"worktree {candidate.local_path}" in w)
+    assert "detached" in entry.splitlines()
+    # The repository's hook and config are exactly as they were.
+    assert hook.read_text() == hook_script
+    assert local_config(repo) == config_before
+    assert hooks_path_setting(repo) is None
+    # The hook is live for an ordinary, non-broker Git operation.
+    with pytest.raises(subprocess.CalledProcessError):
+        git(repo, "worktree", "add", "--detach", str(tmp_path / "user-worktree"), "HEAD")
+    assert marker.read_text() == "ran\n"
+
+
+def test_candidate_creation_overrides_configured_hooks_path(repo, broker, tmp_path):
+    marker = tmp_path / "custom-hook-ran"
+    install_post_checkout(repo / "project-hooks", marker)
+    git(repo, "config", "--local", "core.hooksPath", "project-hooks")
+    config_before = local_config(repo)
+
+    broker.create_candidate(broker.accepted_state())
+
+    assert not marker.exists()
+    assert hooks_path_setting(repo) == "project-hooks"
+    assert local_config(repo) == config_before
+    with pytest.raises(subprocess.CalledProcessError):
+        git(repo, "checkout", "-q", "-b", "user-branch")
+    assert marker.exists()
+
+
+def test_rollback_still_works_with_post_checkout_hook(repo, broker, root, tmp_path, monkeypatch):
+    marker = tmp_path / "post-checkout-ran"
+    install_post_checkout(repo / ".git" / "hooks", marker)
+    fixed = uuid.UUID(int=3)
+    monkeypatch.setattr(git_module.uuid, "uuid4", lambda: fixed)
+    (root / "demo" / fixed.hex).mkdir(parents=True)
+    (root / "demo" / fixed.hex / "occupied").write_text("x\n")
+    before_refs = git(repo, "for-each-ref", "refs/cloudeo")
+    with pytest.raises(git_module.GitCommandError, match="worktree add"):
+        broker.create_candidate(broker.accepted_state())
+    assert git(repo, "for-each-ref", "refs/cloudeo") == before_refs
+    assert not marker.exists()
+
+
 # --- Candidate creation rollback ---
 
 

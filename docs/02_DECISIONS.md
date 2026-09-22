@@ -342,15 +342,27 @@ reachable through a `rejected` ref, so the evidence is not lost. The returned
 `RejectionRecord` carries the reason; storing reasons and richer evidence
 durably is future work.
 
-**Side-effect-free checkpoint commits:** A checkpoint captures state; it is not
-project validation. A commit created by `checkpoint_candidate()` runs with
-command-scoped settings only: the fixed broker identity (also set through the
-`GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment variables, which would
-otherwise take precedence), `commit.gpgSign=false`, and `core.hooksPath` set to
-the null device. Repository hooks therefore do not run for broker commits, and
-signing configuration cannot block them. The repository's hooks and persistent
-config are not modified. Commits an executor makes itself in a candidate are
-outside this guarantee.
+**Hook-isolated broker operations:** Broker operations manage state; they are
+not project validation. Two broker-controlled Git operations run with
+`core.hooksPath` set to the null device for that command only, so no repository
+hook runs:
+
+1. candidate creation (`git worktree add` in `create_candidate()`), which would
+   otherwise run the repository's `post-checkout` hook;
+2. checkpoint commits created by `checkpoint_candidate()`, which would
+   otherwise run `pre-commit`, `prepare-commit-msg`, `commit-msg`, and
+   `post-commit`.
+
+Checkpoint commits additionally use the fixed broker identity (also set through
+the `GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment variables, which would
+otherwise take precedence) and `commit.gpgSign=false`, so signing configuration
+cannot block them. The command-scoped setting also overrides a `core.hooksPath`
+configured in the repository. The repository's hook files and persistent
+config are never modified.
+
+Outside this guarantee: anything an executor runs inside a candidate, including
+commits it makes itself and other Git commands. The broker does not disable
+hooks for those.
 
 **Candidate creation rollback:** The candidate's `base` ref is created before
 `git worktree add`. If the worktree cannot be created, only that ref is deleted
