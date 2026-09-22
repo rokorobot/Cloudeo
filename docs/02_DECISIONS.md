@@ -231,3 +231,35 @@ echoed as separate fields.
 
 **Status:** Proposed only; not implemented or wired into `Controller.run()`.
 See `12_EXECUTION_REQUEST_AND_OUTCOME_PROPOSAL.md`.
+
+**Amendment (2026-09-23, `feat/execution-contracts`):** Implemented as types,
+mappers, and dispatch only (`src/cloudeo/execution/contracts.py`,
+`treg_backend.py`, `uhp_backend.py`, `dispatch.py`). Still not used by
+`Controller.run()`. Deviations from the proposal:
+
+1. `HarnessTaskExecution` composes the existing `UHPTaskRequest` as `task`
+   instead of copying its fields, so there is one UHP request definition. It
+   rejects a task without `harness_id`, so the server default never hides which
+   harness was selected.
+2. Neither request carries `attempt_id` or `profile_id` yet. No caller exists
+   to supply them; they arrive with controller integration.
+3. `ExecutionStatus` adds `unknown`, used when Cloudeo could not observe the
+   final task state. Such a task may have been accepted or still be running,
+   so it is neither `failed` nor `cancelled`. For request-level UHP failures,
+   only an HTTP 4xx rejection other than 408 maps to `failed`. HTTP 408, 5xx,
+   any other HTTP status, transport failures, and protocol failures map to
+   `unknown`. An explicit `UHPTaskResult` status is always kept as returned.
+   Structured error fields are kept in every case, and nothing is retried.
+4. Proposed `evidence` became `raw_output`: Treg stdout verbatim, or UHP output
+   items verbatim, with no synthetic wrapper. Proposed `cost` became
+   `ExecutionCost` with `direct_tool_economics` (kept exactly as the Treg path
+   produced it, dict or model) and `harness_usage` (UHP usage, or None).
+5. Runtime identity fields are `requested_*` / `actual_*`. `actual_harness`
+   is set only when the server echoes `metadata.harness_id`. Treg identity is
+   `requested_tool` only; the Treg call ID stays in economics.
+6. `artifacts` is an empty list of dicts; no artifact type is defined until a
+   backend reports artifacts.
+7. Backends use two explicit protocols (`DirectToolExecutionBackend`,
+   `HarnessTaskExecutionBackend`) instead of a generic `ExecutionBackend[R]`.
+   The legacy `ExecutionBackend`/`TregExecutionBackend` are unchanged, and the
+   new `TregDirectToolBackend` wraps them.

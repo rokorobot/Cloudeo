@@ -1,7 +1,9 @@
 # 12 — Execution Request and Outcome (Proposal)
 
-**Status:** Proposed. Nothing in this document is implemented or wired into
-`Controller.run()`. It is the design checkpoint before UHP joins the controller.
+**Status:** Types, mappers, and dispatch implemented on
+`feat/execution-contracts`, with the deviations recorded in the ADR-013
+amendment (`02_DECISIONS.md`). Nothing is wired into `Controller.run()`. The
+sketches below are the original proposal, kept for history.
 
 **Inputs:** the merged `ExecutionBackend`/`TregExecutionBackend`
 (`src/cloudeo/execution/`), the standalone UHP client (`src/cloudeo/uhp/`), and

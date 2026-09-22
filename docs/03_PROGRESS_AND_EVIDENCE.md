@@ -456,3 +456,64 @@ Codex live task:
 
 Two-harness proof status: one harness (Claude Code) proven end to end; the
 Codex path reaches the runtime but is blocked by the provider account.
+
+
+---
+
+## 2026-09-23 — Execution contracts (types, mappings, dispatch)
+
+Branch `feat/execution-contracts`, from `main` at `e938442`. Scope is limited to
+types, mappers, and dispatch. `Controller.run()` does not use them, and it still
+calls the legacy `ExecutionBackend`/`TregExecutionBackend`, which are unchanged
+apart from naming the existing `TREG_ERROR:` marker as a constant.
+
+Implemented (`src/cloudeo/execution/`):
+
+- `contracts.py`: `ExecutionRequest` =
+  `DirectToolExecution` (`candidate: ToolCandidate`, `dry_run`) |
+  `HarnessTaskExecution` (`task: UHPTaskRequest`, must name `harness_id`),
+  discriminated on `kind`. `ExecutionOutcome` carries status, `output_text`,
+  `raw_output`, `ExecutionCost`, `duration_ms`, `ExecutionError`, `artifacts`,
+  `RuntimeIdentity`, and `native_result`.
+- `treg_backend.py`: `outcome_from_treg` and `TregDirectToolBackend`.
+- `uhp_backend.py`: `outcome_from_uhp`, `outcome_from_uhp_error`, and
+  `UHPHarnessTaskBackend`.
+- `dispatch.py`: `ExecutionDispatcher`, which matches on request type only.
+
+Semantics preserved:
+
+- Execution status covers runtime state only: `in_progress`, `completed`,
+  `failed`, `incomplete`, `cancelled`, `dry_run`, `unknown`. There are no
+  verification states.
+- Treg: `TREG_ERROR:` output is kept verbatim as `output_text`, so existing
+  validators still fail it. A normal-run error maps to `failed`. A dry run maps
+  to `dry_run`, and dry-run preparation errors still propagate. Legacy economics
+  are passed through unchanged, including values a failed attempt retains from
+  an earlier call.
+- UHP: all five response statuses map one-to-one. Partial output and unknown
+  output item types are kept. `actual_harness` stays None unless echoed.
+  Requested and actual model stay separate. Token usage is never converted to
+  money. For request-level failures, only an HTTP 4xx rejection other than 408
+  maps to `failed`. HTTP 408, 5xx, other HTTP statuses, transport failures, and
+  protocol failures map to `unknown`, never `cancelled`, because the task may
+  have been accepted. There are no retries.
+- `native_result` is the backend's own `ExecutionResult` or `UHPTaskResult`
+  object.
+- The dispatcher never selects a harness, a model, or a backend class. A missing
+  backend raises `ExecutionBackendUnavailable` and is never substituted.
+
+Validation:
+
+- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q`: **116 passed** (67 existing
+  unchanged, 49 new in `tests/test_execution_contracts.py`, including one case
+  per HTTP status for 400, 401, 404, 409, 422, 429, 408, 500, 502, 503, 504, and
+  307). No network calls; UHP paths use `httpx.MockTransport`.
+- Review hardening before merge: every `UHPHTTPError` had mapped to `failed`,
+  which overstated what Cloudeo knows after a 5xx or 408. The rule above
+  replaced it.
+- A test found that Pydantic's smart-mode union coerced a legacy economics dict
+  into `ExecutionEconomics`, dropping unknown keys. The field now uses
+  left-to-right union mode, and tests assert the dict is kept.
+- Ruff checks pass for the new and changed files.
+
+No live provider verification was performed in this milestone.
