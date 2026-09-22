@@ -290,3 +290,106 @@ is not built by the controller.
 **Status:** Implemented on `feat/execution-dispatch-adoption`; equivalence is
 checked against a golden captured at `10d4b71`. See
 `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-015 — Workspace Broker owns canonical accepted state
+
+**Decision:** Add a Workspace Broker (`src/cloudeo/workspace/`) that owns the
+canonical accepted state of a workspace. An executor may only produce a
+candidate state. Only a separate, explicit `promote` call can change the
+accepted state. The first implementation, `GitWorkspaceBroker`, uses a Git
+commit SHA as the checkpoint type.
+
+**Canonical vs candidate state:** `CanonicalWorkspaceState` is an explicit
+`(workspace_id, accepted_commit)`, stored in the ref
+`refs/cloudeo/workspaces/<id>/accepted`. It is never a branch or `HEAD`, and
+the broker never checks out, resets, or moves a branch in the canonical
+repository. A `CandidateWorkspace` is a detached Git worktree created at the
+exact accepted commit, outside the repository's working tree. A
+`WorkspaceCheckpoint` is an immutable commit that descends from the candidate's
+base and was recorded by the broker.
+
+**Why executor completion cannot change canonical state:** An executor exiting,
+`ExecutionOutcome.status == "completed"`, changed files, locally passing tests,
+and a harness saying it is done are all claims made by, or about, the party
+being checked. Acceptance criteria V2-D03 and V2-D04 require that a failed audit
+cannot advance the accepted checkpoint, and that an auditor can inspect the
+candidate independently. The broker therefore has no automatic promotion path;
+a future verifier-driven caller decides.
+
+**Optimistic concurrency:** A candidate records the accepted commit it began
+from. Promotion requires the accepted commit to still equal that base. If
+accepted moved from A to B after candidate C began from A, promoting C fails as
+stale and B is kept. There is no auto-rebase, force-reset, or history rewrite;
+every promotion is a fast-forward. Only commits the broker recorded as
+checkpoints for that candidate and workspace can be promoted.
+
+**Atomic terminal decisions:** Promotion is one `git update-ref --stdin`
+transaction (`start` … `prepare` / `commit`). It verifies the `rejected`
+marker is absent, compare-and-swaps `accepted` from the base to the checkpoint
+commit, and creates the `promoted` marker, which fails if it already exists.
+Rejection is likewise one transaction: it verifies `promoted` is absent and
+creates `rejected`. Either every ref in a transaction changes or none does. A
+promote and a reject racing for the same candidate can never both succeed, and
+a failed promotion leaves `accepted` and both markers unchanged. A changed
+`accepted` is reported as `StaleCandidateError`; an existing decision as
+`CandidateStateError`. There are no retries.
+
+**Rejection:** leaves accepted state unchanged and keeps the rejected commit
+reachable through a `rejected` ref, so the evidence is not lost. The returned
+`RejectionRecord` carries the reason; storing reasons and richer evidence
+durably is future work.
+
+**Hook-isolated broker operations:** Broker operations manage state; they are
+not project validation. Two broker-controlled Git operations run with
+`core.hooksPath` set to the null device for that command only, so no repository
+hook runs:
+
+1. candidate creation (`git worktree add` in `create_candidate()`), which would
+   otherwise run the repository's `post-checkout` hook;
+2. checkpoint commits created by `checkpoint_candidate()`, which would
+   otherwise run `pre-commit`, `prepare-commit-msg`, `commit-msg`, and
+   `post-commit`.
+
+Checkpoint commits additionally use the fixed broker identity (also set through
+the `GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment variables, which would
+otherwise take precedence) and `commit.gpgSign=false`, so signing configuration
+cannot block them. The command-scoped setting also overrides a `core.hooksPath`
+configured in the repository. The repository's hook files and persistent
+config are never modified.
+
+Outside this guarantee: anything an executor runs inside a candidate, including
+commits it makes itself and other Git commands. The broker does not disable
+hooks for those.
+
+**Candidate creation rollback:** The candidate's `base` ref is created before
+`git worktree add`. If the worktree cannot be created, only that ref is deleted
+(compare-and-delete against the expected commit), and the original error is
+raised. A failed creation never leaves a registered candidate, and no other ref
+or worktree is touched.
+
+**Relationship to HarnessRouter sessions:** A UHP session keeps a conversation
+and a server-side working directory. It can expire, deleting it removes its
+files, and UHP 2026-09-12 defines no checkpoint, snapshot, or restore semantics.
+Harness sessions are therefore execution mechanisms, never canonical state.
+Switching harness starts from the accepted checkpoint, not from another
+harness's native session (V2-D05). Moving files between a candidate and a
+harness session is future work.
+
+**Relationship to LongHorizon roles:** The Manager chooses what to attempt
+against the current accepted state. An Executor works only in a candidate. The
+Auditor inspects the candidate checkpoint, as a commit, independently of the
+Executor's claims. Only after the audit passes does the controlling loop call
+`promote`; on failure it calls `reject`. LongHorizon is not integrated yet.
+
+**Constraints:** Only local Git subcommands run (enforced by an allowlist); no
+fetch, push, or remote access. Worktrees isolate working files, not trust: they
+share refs and objects with the repository, so a hostile local executor could
+move Cloudeo refs. Untrusted local executors need a separate clone or container.
+The broker is synchronous and not yet used by `Controller.run()` or the
+dispatcher.
+
+**Status:** Implemented on `feat/workspace-broker-foundation`. See
+`03_PROGRESS_AND_EVIDENCE.md`.

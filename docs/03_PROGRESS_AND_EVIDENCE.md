@@ -589,3 +589,89 @@ Validation:
   diff to the migration itself.
 
 UHP remains outside `Controller.run()`.
+
+
+---
+
+## 2026-09-23 — Workspace Broker foundation
+
+Branch `feat/workspace-broker-foundation`, from `main` at `c3e8d93`. It adds
+`src/cloudeo/workspace/` (`models.py`, `broker.py`, `git.py`) and ADR-015.
+`Controller.run()`, the dispatcher, the execution contracts, the UHP client, the
+API, and the database are unchanged. No LongHorizon, verification policy,
+Performance Memory, remote Git, or automatic promotion was added.
+
+Central invariant: an executor may produce a candidate state; only a separate
+`promote` call changes the canonical accepted state.
+
+Implemented:
+
+- Types: `CanonicalWorkspaceState`, `CandidateWorkspace` (its `local_path` is
+  local and internal only), `WorkspaceCheckpoint`, `CandidateInspection`,
+  `PromotionResult`, `RejectionRecord`, plus typed errors
+  (`StaleCandidateError`, `ForeignCheckpointError`, `NothingToCheckpointError`,
+  `CandidateStateError`, `WorkspaceConflictError`).
+- `WorkspaceBroker` protocol: `accepted_state`, `create_candidate`,
+  `inspect_candidate`, `checkpoint_candidate`, `promote`, `reject`, `cleanup`.
+- `GitWorkspaceBroker`: all state is kept in Git refs under
+  `refs/cloudeo/workspaces/<id>/`, with no database. Candidates are detached
+  worktrees at the accepted commit. A checkpoint commits the candidate's changes
+  as the broker identity, or captures descendant commits the executor made.
+  Promotion is one atomic `update-ref --stdin` transaction: a compare-and-swap
+  fast-forward of the accepted ref, creation of the `promoted` marker, and
+  verification that no `rejected` marker exists. Rejection is one transaction
+  too, and keeps the rejected commit reachable. Candidate worktree creation and
+  broker checkpoint commits run no repository hooks, using command-scoped
+  settings only. Checkpoint commits also ignore signing configuration. A failed
+  `git worktree add` rolls back the candidate's `base` ref. `cleanup` removes
+  only the worktree and refuses to drop uncheckpointed changes unless
+  `discard=True`.
+
+Validation:
+
+- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q`: **193 passed** (142 existing
+  unchanged, 51 in `tests/test_workspace_broker.py`). Tests use temporary
+  repositories with isolated Git config and no remote.
+- Hook isolation for candidate creation (3 of the 51):
+  - a `post-checkout` hook that writes a marker and exits 1 does not run
+    during `create_candidate()`. The candidate still starts at the accepted
+    commit, with its `base` ref and a detached worktree;
+  - the same hook still runs for an ordinary `git worktree add`, proving the
+    repository was not reconfigured;
+  - a repository-configured `core.hooksPath` is overridden for the broker
+    command only and is still set afterwards; the local config is identical;
+  - rollback on a failed `worktree add` still works with the hook installed.
+
+  With the `hooks_disabled` flag removed, the two hook-detection tests fail.
+- State-integrity hardening (12 of the 48):
+  - promotion updates `accepted` and `promoted` together;
+  - a stale or failed promotion transaction changes no ref;
+  - promote-after-reject and reject-after-promote transactions change nothing,
+    even when the pre-checks are bypassed to force a race;
+  - a threaded promote-vs-reject race, repeated for 8 rounds, never records
+    both decisions;
+  - rejection leaves accepted state and the canonical checkout unchanged;
+  - `pre-commit`, `prepare-commit-msg`, `commit-msg`, and `post-commit` hooks do
+    not run for broker checkpoints but still block an ordinary commit;
+  - a local `commit.gpgSign=true` with a failing `gpg.program` does not affect
+    broker checkpoints but blocks an ordinary commit;
+  - the broker identity wins over the `GIT_AUTHOR_*` and `GIT_COMMITTER_*`
+    environment variables;
+  - a failed `worktree add` leaves no candidate ref, and leaves the blocking
+    directory, other candidates, refs, and worktrees untouched.
+- Covered: explicit accepted commit (not branch `HEAD`); idempotent,
+  non-replacing initialization; exact candidate content; candidate edits and
+  promotion leave the canonical checkout's HEAD, branch, files, and status
+  unchanged; isolation between candidates; real descendant checkpoint commits;
+  empty and repeated checkpoints refused; executor commits captured; rewritten
+  history refused; promotion only on `promote`; stale candidates refused; a
+  simulated concurrent move of accepted defeats promotion via compare-and-swap;
+  commits made outside the broker, unrelated histories, other workspaces, and
+  tampered candidate identities refused; rejection keeps accepted state and the
+  rejected commit (also after cleanup); promote and reject decisions are final;
+  dirty-state inspection and cleanup; only allowlisted local Git subcommands
+  run.
+- The test run created no `refs/cloudeo` refs or worktrees in the Cloudeo
+  repository itself.
+
+No live execution, harness, or provider verification was performed.
