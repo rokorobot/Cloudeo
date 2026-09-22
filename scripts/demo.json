@@ -1,0 +1,30 @@
+{
+  "objective": "Find the professional email address for Ada Example at Example Robotics.",
+  "state": {
+    "person": "Ada Example",
+    "company": "Example Robotics",
+    "domain": "example.com"
+  },
+  "success_criteria": "Return a professional email that belongs to the named person and matches the employer domain.",
+  "candidates": [
+    {
+      "id": "hunter",
+      "description": "Professional email finder by domain and full name.",
+      "treg_tool_id": "hunter.people.email.find",
+      "query": {
+        "domain": "example.com",
+        "full_name": "Ada Example"
+      }
+    },
+    {
+      "id": "tomba",
+      "description": "Alternative professional email enrichment provider.",
+      "treg_tool_id": "tomba.email.find",
+      "query": {
+        "domain": "example.com",
+        "full_name": "Ada Example"
+      }
+    }
+  ],
+  "dry_run": false
+}
