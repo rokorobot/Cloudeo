@@ -358,3 +358,52 @@ Validation:
 Known legacy limitations deliberately preserved: shared/stale execution economics,
 duplicate candidate ranking, and unknown Jev choice lookup in dry-run. These
 remain separately scoped work, not fixes bundled into the extraction.
+
+
+---
+
+## 2026-09-22 — UHP client foundation (standalone)
+
+Added an internal `cloudeo.uhp` package (`client.py`, `models.py`) built on the
+existing `httpx`/`pydantic` dependencies. It is not wired into the controller:
+`Controller.run()`, `TregExecutionBackend`, `ToolCandidate`, Jev routing,
+verification, `RunRequest`/`RunResponse`, configuration, and the database schema
+are unchanged. The v0.1 path remains Objective → Jev → Treg → verification →
+SQLite.
+
+Protocol source: UHP `2026-09-12`, checked against the machine-readable
+`protocol/schema/uhp-2026-09-12.schema.json` and OpenAPI file in
+HarnessRouter/harnessrouter at `v0.23.7` (`809392d602e34e36f0468943035c54d3350af885`).
+Every request sends `UHP-Version: 2026-09-12`; a successful response whose
+`UHP-Version` header is missing or different is rejected as a protocol error.
+
+Validation:
+
+- `uv run pytest -q`: **67 passed** (33 existing unchanged, 34 new mock-transport
+  UHP cases in `tests/test_uhp_client.py`). No Docker or network required.
+- Ruff checks pass for the new package, tests, and `dev/uhp_smoke.py`.
+
+HarnessRouter CE local development instance (`dev/harnessrouter.compose.yaml`):
+
+- Image `harnessrouter/harnessrouter@sha256:d8794a4cbaaac8920548b2e1474e84d9c54e754119f700d2817765ec89837ced`
+  (Docker Hub tag `0.23.7`; source tag `v0.23.7` = commit `809392d`).
+- Bound to `127.0.0.1:18810` only; named volume `cloudeo-harnessrouter-dev-data`
+  at `/data`; `restart: "no"`; backends `codex,claude` with Codex `0.154.0` and
+  Claude Code `2.1.280` pinned. Runs under Docker Desktop on the Windows host and
+  is reachable from WSL at the same loopback address.
+
+Live discovery through `UHPClient` (`GET /v1/uhp`, unauthenticated):
+
+- Implementation: HarnessRouter Community Edition `0.23.7`.
+- Versions `2026-09-12`, `2026-08-11`; default `2026-09-12`; conformance class
+  `full`; response header `UHP-Version: 2026-09-12`.
+- Capabilities all `true`: streaming, sessions, cancellation, files_input,
+  files_output, session_listing, harness_management, session_sharing,
+  idempotency, plugins.
+
+Not yet proven: `GET /v1/harnesses` returns HTTP 401 without a HarnessRouter API
+key. The CE body is `{"detail":"sign in to continue"}` with no UHP error
+envelope and no `UHP-Version` header (the client preserved it as `http_error`
+with `protocol_version=None`). Harness/model discovery, a live task, and the
+two-harness proof are blocked on a Console-created API key and provider
+credentials for Codex and Claude Code. No live task has been run.
