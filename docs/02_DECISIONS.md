@@ -393,3 +393,82 @@ dispatcher.
 
 **Status:** Implemented on `feat/workspace-broker-foundation`. See
 `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-016 — LongHorizon AgentAdapter backed by UHP execution
+
+**Decision:** Add an optional `cloudeo.longhorizon` package with
+`UHPHarnessAgentAdapter`, which implements LongHorizon-Harness's `AgentAdapter`
+protocol. Each `run_episode()` call runs one bounded harness task through the
+existing `ExecutionDispatcher` and `UHPHarnessTaskBackend`, using an explicit
+`HarnessExecutionProfile` (harness ID, model, optional step limit). The result
+is mapped onto LongHorizon's real `EpisodeResult`.
+
+**Pinned upstream:** LongHorizon-Harness `v0.1.7`, commit
+`ff76d6a4c0a4f6d7dfeb2fc2adcf51ccb87a3b9a` (a lightweight tag;
+https://github.com/AMAP-ML/LongHorizon-Harness, MIT). It is installed through
+the optional `longhorizon` extra as a Git dependency on that exact commit, and
+`uv.lock` records the same commit. The PyPI release `lh-harness==0.1.7` was
+checked: its wheel and sdist hashes match PyPI, and every source file is
+byte-identical to that commit. It additionally ships three compiled web-UI
+files that are not in the source and cannot be verified from it, so the
+package does not exactly correspond to the source and is not used. A Git
+install omits those files by upstream design; the adapter does not use them.
+Installations that only use Treg or UHP do not install LongHorizon, and no core
+module imports it.
+
+**AgentAdapter boundary:** The contract is
+`run_episode(prompt, env, budget, live_trajectory_path=None) -> EpisodeResult`.
+The adapter makes no routing decision; harness and model come only from the
+profile. Every episode is a new UHP session, and `previous_response_id` is
+never set, so each episode has a fresh executor context (V2-E02). The
+LongHorizon `EpisodeBudget` becomes the UHP `timeout_seconds`. No local
+cancellation is added. The live trajectory path is not written; the UHP output
+items are returned in `actions_log` instead.
+
+**Lossy status mapping, native state preserved:**
+
+| Cloudeo `ExecutionOutcome.status` | `EpisodeResult.status` |
+| --- | --- |
+| `completed` | `done` |
+| `failed` | `error` |
+| `cancelled` | `cancelled` |
+| `incomplete` with an explicit budget reason (`max_steps`, `max_step`, `timeout`, `timeout_seconds`, `max_output_tokens`) | `timeout` |
+| `incomplete` with any other reason or none | `error` |
+| `unknown` | `error`, with `runtime_state_unobserved` |
+| `in_progress` | `timeout` if the episode budget was exhausted, otherwise `error`; both with `runtime_state_unobserved` |
+
+`unknown` and `in_progress` are never mapped to `cancelled`.
+`EpisodeResult.metadata` always carries `cloudeo_runtime_status`,
+`requested_harness`, `actual_harness`, `requested_model`, `actual_model`,
+`model_fallback`, `response_id`, `session_id`, `protocol_version`, `usage`,
+`execution_duration_ms`, `execution_error`, `incomplete_details`, and
+`supports_workspace_sync`. Nothing is inferred: `actual_harness` stays `None`
+when HarnessRouter does not echo it. Role text is exposed through LongHorizon's
+`assistant_visible_output` key; `actions_log` holds the raw UHP output items.
+
+**`done` is not verification:** `EpisodeResult.status == "done"` means only that
+the harness task completed. Independent audit and Cloudeo verification decide
+success.
+
+**Ownership:** LongHorizon owns the objective and cross-round orchestration
+(V2-E01). The Workspace Broker owns accepted code state (ADR-015). A
+HarnessRouter session is execution state only. Cloudeo chooses the profile
+outside the adapter.
+
+**Workspace limitation:** The harness works in its HarnessRouter session
+workspace, not in the LongHorizon `Environment` passed to `run_episode()`,
+which the adapter never calls. File changes made by the harness are therefore
+invisible to anything inspecting that Environment. The adapter declares
+`supports_workspace_sync = False`. It may back manager, final-response, and
+other text-only roles. It is not eligible for file-mutating executor roles or
+for auditors that inspect the workspace. Any future Cloudeo role-binding layer
+must reject binding it to a role that needs shared workspace visibility while
+`supports_workspace_sync` is false. A candidate<->UHP file bridge is required
+before those roles can use it.
+
+**Status:** Implemented on `feat/longhorizon-adapter-foundation`. The
+LongHorizon manager loop is not run from Cloudeo, and `Controller.run()` is
+unchanged. See `03_PROGRESS_AND_EVIDENCE.md`.

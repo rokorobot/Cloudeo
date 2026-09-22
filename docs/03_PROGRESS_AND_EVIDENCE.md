@@ -675,3 +675,74 @@ Validation:
   repository itself.
 
 No live execution, harness, or provider verification was performed.
+
+
+---
+
+## 2026-09-23 — Test hygiene: mock-loop engine disposal
+
+Merged `fix/test-mock-loop-dispose-engine` into `main` (`e552d7a`).
+`tests/test_mock_loop.py` now disposes its aiosqlite engine. This removes a
+`ResourceWarning` that already existed on main and was attributed to whichever
+later test ran garbage collection. On the merged main: 193 passed, zero
+`ResourceWarning`s across four runs, and a pass with `-W error::ResourceWarning`.
+Test-only change.
+
+---
+
+## 2026-09-23 — LongHorizon AgentAdapter foundation
+
+Branch `feat/longhorizon-adapter-foundation`, from `main` at `e552d7a`. It adds
+the optional `cloudeo.longhorizon` package and ADR-016. `Controller.run()`, the
+dispatcher, execution contracts, UHP client, Workspace Broker, API, and
+database are unchanged. The LongHorizon manager loop is not run from Cloudeo.
+
+Upstream pin:
+
+- LongHorizon-Harness `v0.1.7`, commit
+  `ff76d6a4c0a4f6d7dfeb2fc2adcf51ccb87a3b9a`, is installed through the
+  `longhorizon` extra as a Git dependency on that commit. `uv.lock` adds only
+  `lh-harness 0.1.7` from that commit; no other locked version changed.
+- The PyPI `lh-harness==0.1.7` wheel and sdist match their PyPI hashes, and all
+  source files are byte-identical to the commit. Both also contain three
+  compiled web-UI files that are not in the source. The PyPI package is
+  therefore not an exact match, and the Git pin is used instead.
+
+Implemented:
+
+- `HarnessExecutionProfile(harness_id, model, max_step=None)`: explicit and
+  frozen.
+- `UHPHarnessAgentAdapter(profile, dispatcher)`: implements LongHorizon's
+  `AgentAdapter`. `run_episode()` sends one `HarnessTaskExecution` per episode
+  (new session, no `previous_response_id`, `timeout_seconds` equal to the
+  `EpisodeBudget`) through `ExecutionDispatcher`, and maps the outcome with
+  `episode_result_from_outcome()`. `supports_workspace_sync = False`. The
+  LongHorizon `Environment` is never called.
+- The status mapping and metadata keys are as listed in ADR-016.
+
+Validation:
+
+- `UV_NO_SYNC=1 UV_OFFLINE=1 uv run pytest -q` with the `longhorizon` extra:
+  **228 passed**, no skips (193 existing unchanged, 35 in
+  `tests/test_longhorizon_adapter.py`).
+- In an isolated environment without the extra: 193 passed, and the adapter
+  module was skipped. No core module imports `lh_harness`, and importing the
+  adapter raises a clear "requires the optional 'longhorizon' extra" error.
+- Adapter tests use LongHorizon's real `AgentAdapter`, `Environment`,
+  `EpisodeBudget`, and `EpisodeResult`, plus the real dispatcher,
+  `UHPHarnessTaskBackend`, and `UHPClient` over a mocked HTTP transport. The
+  real network transport is blocked, and the test Environment fails on any
+  call.
+- Covered: protocol conformance and matching signature; the
+  `supports_workspace_sync` flag; exact profile and fresh-session request
+  payloads; exactly one dispatched request per episode; every status mapping,
+  including budget and non-budget `incomplete`, `unknown` after a transport
+  timeout and after a 503, and `in_progress` within and after the episode
+  budget; `unknown` and `in_progress` never `cancelled`; complete metadata for
+  every runtime state; `actual_harness=None` kept; echoed harness and model
+  fallback kept separate; usage, protocol, and response and session IDs;
+  diagnostic-only marking when there is no text output; rejection of dry-run
+  and direct-tool outcomes; explicit profile validation.
+- Ruff passes for the new package and tests.
+
+No live harness, provider, or HarnessRouter calls were made.
