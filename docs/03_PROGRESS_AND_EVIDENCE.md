@@ -1146,3 +1146,196 @@ Mutation checks (each change was reverted afterwards):
 Ruff passes.
 
 No live provider, harness, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — Auditor-result normalization
+
+Branch `feat/longhorizon-promotion-gate`, from `main` at `b91ab83` (commit
+`2e5bca8`). It adds `src/cloudeo/longhorizon/audit_result.py` (`normalize_auditor_result`,
+`AuditorVerification`, `AuditorFailure`) and the ADR-019 amendment. No
+existing module changed, and LongHorizon is not modified.
+
+Validation (all offline):
+
+- With the `longhorizon` extra: **516 passed** (429 existing unchanged, 87 in
+  `tests/test_longhorizon_audit_result.py`). Without the extra: 319 passed and
+  5 skipped (the four LongHorizon modules and one bridge test).
+- Focused suites: normalizer 87, workspace auditor 43, workspace executor 31,
+  LongHorizon adapter 35, bridge 105.
+
+Tests in `tests/test_longhorizon_audit_result.py` (the numbers in brackets are
+parametrized cases):
+
+- **Normal reports:**
+  - `test_valid_report_is_verified` [1];
+  - `test_valid_but_incomplete_report_is_not_verified` [1];
+  - `test_longhorizon_acceptance_guard_still_applies` [1]: LongHorizon
+    downgrades blocking constraints.
+- **Mutation:** `test_mutation_detected_is_blocked_and_list_preserved` [1]
+  (native keys; `added`, `changed`, `deleted`, and `type_changed` are kept
+  exactly).
+- **Unusable reports:**
+  - `test_missing_report_is_blocked` [3]: empty, whitespace, or a valid
+    report present only in `actions_log`;
+  - `test_malformed_report_is_blocked` [1];
+  - `test_conflicting_visible_outputs_are_ambiguous` [1];
+  - `test_identical_visible_outputs_follow_longhorizon_precedence` [1];
+  - `test_no_read_only_evidence_is_blocked` [1].
+- **Failures:**
+  - `test_runtime_failure_is_auditor_error` [5]: authentication, rate limit,
+    generic provider error, timeout, and cancelled, each even with a perfect
+    report present;
+  - `test_cloudeo_audit_boundary_codes` [5]: drift, staleness, invalid
+    evidence, and an unavailable candidate are `BLOCKED`; an upload failure is
+    `AUDITOR_ERROR`.
+- **Repair:**
+  - `test_manager_repair_shape_does_not_use_repaired_actions_log` [1]: the
+    pinned manager's corrected-result shape stays `BLOCKED` /
+    `report_malformed`, sourced from the primary visible output;
+  - `test_repair_is_used_only_when_explicitly_passed` [1];
+  - `test_1_malformed_original_with_positive_repair_is_capped_at_not_verified`
+    [1]: text, parsed fields, source, and repair metadata are kept, with
+    reason `report_repaired_not_verification_authority`;
+  - `test_2_repaired_negative_report_is_not_verified` [1];
+  - `test_structured_evidence_does_not_make_a_repaired_report_verified` [1];
+  - `test_3_unacceptable_repair_is_blocked` [5]: a failed repair, a repair
+    that is still malformed, one only in `actions_log`, a mutated repair, or an
+    ambiguous one;
+  - `test_repair_is_ignored_when_primary_report_is_valid` [1];
+  - `test_repair_cannot_rescue_a_mutated_or_failed_primary` [1];
+  - `test_4_no_repair_turns_a_failed_audit_into_verified` [36]: 12 failure
+    conditions × a malformed, empty, or valid primary, each with a positive
+    repair. The conditions are a runtime error, a provider authentication
+    error, a timeout, cancellation, a native mutation, a Cloudeo mutation, no
+    read-only evidence, a guard without a verdict, drift, staleness, invalid
+    evidence, and a transport failure. None is `VERIFIED`, and the repair is
+    never considered.
+- **Sweep:** `test_extraction_or_execution_failure_is_never_verified` [12].
+- **Evidence:** `test_upstream_metadata_is_preserved_unmodified` [1].
+- **With the real `UHPWorkspaceAuditorAdapter`:**
+  - `test_real_read_only_audit_is_verified`;
+  - `test_real_auditor_mutation_is_blocked_with_paths`;
+  - `test_real_local_drift_is_blocked`;
+  - `test_real_runtime_failure_is_auditor_error`;
+  - `test_real_malformed_audit_with_positive_repair_is_not_verified`.
+
+Mutation checks (each change was reverted afterwards):
+
+| Deliberate change | Tests that fail |
+| --- | --- |
+| LongHorizon's own source precedence, which falls back to `actions_log` | 8 |
+| No read-only evidence requirement | 7 (including the `no_read_only_evidence` and `guard_without_verdict` cases with a valid primary) |
+| Repair parsed the way the pinned manager does | 3 (the positive-repair cap test, the negative-repair test, and the real-adapter repair test) |
+| No repair cap | 3 (the two capped-repair unit tests and the real-adapter repair test) |
+
+Ruff passes.
+
+No live provider, harness, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — Verified checkpoint and promotion gate
+
+Branch `feat/longhorizon-promotion-gate`, from `main` at `b91ab83`, after the
+normalizer (`2e5bca8`) and its documentation fix (`6fce086`); the gate is commit
+`7a191c0`. It adds `src/cloudeo/longhorizon/promotion_gate.py`, the helper
+`current_content_sha256()` in `src/cloudeo/bridge/audit.py`, and ADR-020. The
+broker, bridge transport, adapters, normalizer, and LongHorizon are unchanged.
+
+**The race identified:** the audit inspects state A, the workspace becomes B,
+and promotion accepts B on A's verification. A recheck of `HEAD` and the
+content hash before checkpointing is necessary but not sufficient, because
+`checkpoint_candidate()` commits whatever the worktree holds at that instant: a
+change between the recheck and the commit would be checkpointed.
+
+**The fix is a post-checkpoint proof from immutable commits.** After
+checkpointing, the gate reads the checkpoint commit from Git objects and
+requires two things:
+
+- its parent is the audited `HEAD`;
+- its content hash equals the audited content hash.
+
+Only then does it call `promote()`, which moves accepted state to that
+immutable commit through the broker's own compare-and-swap. The statuses are
+listed in ADR-020.
+
+A failed post-checkpoint check or promotion returns the checkpoint
+(`stage="refused_after_checkpoint"`, `checkpoint_created=True`) and keeps it
+and its ref, unaccepted, as evidence.
+
+Validation (all offline):
+
+- With the `longhorizon` extra: **545 passed** (516 existing unchanged, 29 in
+  `tests/test_longhorizon_promotion_gate.py`). Without the extra: 319 passed
+  and 6 skipped (the five LongHorizon modules and one bridge test).
+- Focused suites: gate 29, normalizer 87, workspace auditor 43, workspace
+  executor 31, LongHorizon adapter 35, bridge 105, Workspace Broker 51.
+- The verifications come from the real `UHPWorkspaceAuditorAdapter` (offline
+  fake HarnessRouter) and `normalize_auditor_result()`. The broker is the
+  real `GitWorkspaceBroker`.
+
+Tests in `tests/test_longhorizon_promotion_gate.py` (the numbers in brackets
+are parametrized cases):
+
+- **Allowed:**
+  - `test_verified_and_current_is_promoted_exactly` [1]: evaluation is
+    read-only. The promoted commit's parent is the audited `HEAD`, and its
+    content hash equals the audited one.
+  - `test_already_checkpointed_audited_state_is_promoted` [1]: the audited
+    checkpoint is reused (`checkpoint_created=False`).
+  - `test_ignored_local_files_are_not_workspace_state` [1]: the trust boundary.
+  - `test_commit_content_matches_worktree_content_rules` [1].
+- **After the audit:**
+  - `test_workspace_changed_after_audit_is_denied` [4]: content hash changed,
+    a new dirty file, a deletion, or an executable bit. Each is refused before
+    any checkpoint.
+  - `test_head_changed_with_identical_files_is_denied` [1]: same files,
+    different version identity.
+  - `test_same_content_on_another_candidate_is_stale` [1].
+  - `test_accepted_state_moved_after_audit_is_stale` [1].
+- **Races:**
+  - `test_audit_then_change_then_gate` [1]: the audit-A → workspace-B
+    scenario.
+  - `test_race_between_recheck_and_checkpoint_is_denied` [1]: a change
+    injected at checkpoint time. It gives `WORKSPACE_CHANGED` /
+    `checkpoint_differs_from_audit` and `refused_after_checkpoint`. The
+    checkpoint is returned, its ref kept, and the candidate `HEAD` is that
+    commit, which holds the raced content. Accepted state is unchanged.
+  - `test_race_on_accepted_state_before_promote_is_denied` [1]: gives
+    `VERIFICATION_STALE`, and the checkpoint is kept.
+  - `test_caller_can_distinguish_how_far_the_gate_got` [1]:
+    `refused_before_checkpoint` (no checkpoint), `refused_after_checkpoint`
+    (with a checkpoint), and `promoted`.
+- **Verification contract:**
+  - `test_not_verified_blocked_and_auditor_error_are_denied` [1]: from real
+    audits.
+  - `test_repaired_prose_can_never_promote` [1]: including forged `VERIFIED`
+    results that carry repair provenance.
+  - `test_gate_consumes_the_contract_not_the_prose` [1].
+  - `test_forged_verified_without_mutation_verdict_is_denied` [1].
+- **Evidence:** `test_missing_or_malformed_evidence_is_denied` [8]: no content
+  hash, no `HEAD`, no candidate ID, a bad hash, a symbolic `HEAD`, a snapshot
+  changed during the audit, no accepted-state check, or no remote check.
+- **Other:** `test_nothing_to_promote` [1] and
+  `test_gate_uses_only_public_broker_calls` [1] (`inspect_candidate`,
+  `accepted_state`, `checkpoint_candidate`, `promote`).
+
+Mutation checks (each change was reverted afterwards):
+
+| Deliberate change | Tests that fail |
+| --- | --- |
+| No post-checkpoint commit verification | 2: the checkpoint-time race is then promoted (the race test and the stage test) |
+| No content comparison before checkpoint | 5 |
+| No content comparison anywhere | 7 |
+| No `HEAD` comparison | 1 |
+| No identity comparison | 1 |
+| Repair provenance not checked | 1 |
+| After-audit flags not required | 3 |
+| The created checkpoint dropped from post-checkpoint refusals | 3 |
+
+Ruff passes.
+
+No live provider, harness, or HarnessRouter calls were made.

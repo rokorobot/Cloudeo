@@ -1161,3 +1161,166 @@ bridge tests pass unmodified.
 **Status:** Implemented on `feat/longhorizon-workspace-auditor`; merged into
 `main` with a normal merge commit on top of `f3a71cb`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
+
+**Amendment (2026-09-23, `feat/longhorizon-promotion-gate`): normalized
+auditor verification.** `cloudeo.longhorizon.audit_result.normalize_auditor_result(primary,
+*, repair=None)` turns one auditor `EpisodeResult`, plus an optional format-repair
+episode, into one `AuditorVerification`. Its `status` is `VERIFIED`,
+`NOT_VERIFIED`, `BLOCKED`, or `AUDITOR_ERROR`, and it also carries a `reason`,
+the report text and its source, the parsed header fields, `format_repair`,
+the failure classification, and deep copies of the upstream and repair
+metadata.
+
+- **Ownership:** Cloudeo owns the normalized verification semantics.
+  LongHorizon remains the execution and auditing substrate. The control
+  header, parsing, acceptance-constraint guard, and runtime-failure
+  classification are delegated to LongHorizon's public functions
+  (`audit_report_from_episode_result`, `has_valid_auditor_control_header`,
+  `classify_agent_runtime_failure`, `VISIBLE_OUTPUT_KEYS`), and LongHorizon is
+  not modified.
+- **Native mutation keys:** workspace mutation evidence keeps LongHorizon's own
+  keys, `verifier_workspace_mutation_detected` and
+  `verifier_workspace_mutations`. No competing names are introduced.
+- **Fail-closed order:**
+  1. A mutation is `BLOCKED`.
+  2. A Cloudeo audit-boundary code (drift, staleness, invalid evidence, an
+     unavailable candidate) is `BLOCKED`. `workspace_upload_failed` is
+     `AUDITOR_ERROR`.
+  3. A runtime or provider failure, classified by LongHorizon, or
+     cancellation, is `AUDITOR_ERROR`.
+  4. Missing read-only guard evidence is `BLOCKED`.
+  5. A missing, ambiguous, or malformed report is `BLOCKED`.
+
+  Only after all of these checks is the report content read.
+- **Deterministic report source:** the report comes only from LongHorizon's
+  visible-output metadata keys, in LongHorizon's order, and is recorded as
+  `report_source`. `actions_log` is never a report source; this closes the
+  manager format-repair path in which a repaired `actions_log` loses to the
+  primary `assistant_visible_output`. Differing texts under several keys are
+  ambiguous. The selected text is given to LongHorizon's parser as the only
+  report it can see.
+- **Repair restores format only.** It is not verification authority. A
+  repaired report is used only when the caller passes the repair episode
+  explicitly, the primary report was malformed, and the repair episode is
+  itself acceptable: `done`, with no runtime failure or mutation, an
+  unambiguous source, and a valid header. The repaired text, parsed fields,
+  source, and repair metadata are all kept, with `format_repair="accepted"`.
+  Its status is capped at `NOT_VERIFIED`: a positive repaired conclusion gives
+  `report_repaired_not_verification_authority`, and a negative one gives
+  `report_not_complete`. An unacceptable repair leaves the result `BLOCKED`
+  (`format_repair="rejected"`). Repair is never considered when an earlier
+  check has already failed.
+- **No structured verification path:** no structured evidence can verify
+  without the auditor's own, unrepaired conclusion. The read-only guard,
+  snapshot, and accepted-state evidence prove only that the audit was
+  attributable and read-only, not what it concluded. `VERIFIED` therefore
+  requires the primary report itself to parse as `complete / clean / aligned`.
+- **`VERIFIED` is not a checkpoint or promotion decision.** That remains the
+  next milestone's gate, which must also recheck the audited snapshot.
+
+
+---
+
+## ADR-020 — Verified checkpoint and promotion gate
+
+**Decision:** Add `cloudeo.longhorizon.promotion_gate`. It provides a read-only
+`evaluate_promotion_gate()` and `checkpoint_and_promote_verified()`, which
+promote a candidate only when the exact state that was audited is the state
+being promoted. It closes this race:
+
+```
+audit state A → the workspace changes to state B → promotion accepts B on A's audit
+```
+
+**Verification contract:**
+
+- `AuditorVerification` (ADR-019 amendment) is the only verification contract
+  the gate consumes. The auditor's prose is never read or reinterpreted:
+  changing only `report_text` does not change the decision.
+- The verification must be `VERIFIED` and original, not repaired: its
+  `reason` is `report_complete`, and it carries no repair provenance
+  (`format_repair`, a `repair.*` source).
+- The mutation evidence must explicitly prove no verifier mutation
+  (`verifier_workspace_mutation_detected` is `False`, not missing), and there
+  must be no audit-invalid reasons.
+- The audit evidence must be present and well-formed:
+  - the commit IDs and the content SHA-256;
+  - the auditor's own after-audit checks, recorded as `true`
+    (`audit_snapshot_unchanged`, `accepted_state_unchanged`,
+    `auditor_remote_workspace_unchanged`).
+
+**Recheck immediately before the checkpoint.** Nothing captured at audit time
+is trusted:
+
+1. The audit identity must match the candidate's workspace, candidate, and
+   base.
+2. Accepted state must still equal the base.
+3. The current candidate `HEAD` must equal the audited `HEAD`.
+4. The current content hash, computed by exactly the snapshot rules
+   (`current_content_sha256`), must equal the audited content hash.
+
+**Why the recheck alone is not enough.** `checkpoint_candidate()` commits
+whatever the worktree holds at that instant, so a change between the recheck
+and the commit would be checkpointed. After checkpointing, the gate therefore
+verifies the checkpoint commit independently, from immutable Git objects
+(`rev-parse`, `ls-tree`, `cat-file`):
+
+- its parent equals the audited `HEAD`, or it is the audited `HEAD` itself
+  when the audited state was already a checkpoint;
+- its committed content hash equals the audited content hash. Symlinks and
+  submodules fail.
+
+Only that proven checkpoint is passed to `promote()`. The existing broker
+checks remain authoritative and are not bypassed: `promote()` still checks the
+stale base, ancestry, open/rejected state, and its atomic compare-and-swap on
+accepted state. Because the promoted commit is immutable, later worktree
+changes cannot reach accepted state.
+
+**Statuses:**
+
+| Status | Meaning |
+| --- | --- |
+| `VERIFIED_AND_CURRENT` | Allowed, or promoted |
+| `NOT_VERIFIED`, `BLOCKED`, `AUDITOR_ERROR` | Carried over from `AuditorVerification` with its reason |
+| `EVIDENCE_MISSING` | Missing or malformed audit evidence |
+| `VERIFICATION_STALE` | Identity mismatch, or accepted state moved, including at promote time |
+| `HEAD_CHANGED` | The candidate `HEAD` is not the audited one |
+| `WORKSPACE_CHANGED` | The content hash changed, or the checkpoint differs from the audit |
+| `NOTHING_TO_PROMOTE` | The audited state is the base |
+
+Any missing, stale, ambiguous, or contradictory evidence fails closed.
+
+**How far the gate got.** `GatedPromotionResult.stage` is
+`refused_before_checkpoint`, `refused_after_checkpoint`, or `promoted`, and
+`checkpoint_created` says whether this call created the checkpoint or reused
+an already-checkpointed audited state. A failed post-checkpoint check or
+promotion returns the checkpoint and does **not** delete it or its ref. It is
+candidate history, never accepted state, and it is kept as forensic evidence.
+Cleanup or rejection policy belongs to a later lifecycle layer.
+
+**Trust boundary.** The workspace snapshot proves the audited, Git-visible
+candidate state: tracked files plus untracked, non-ignored files, by content
+and executable bit. It does not claim identity over ignored runtime inputs
+such as `.env`, caches, external services, or undeclared environment state.
+Changing an ignored file after the audit does not block promotion. Those
+inputs need separate declared-input evidence if they become relevant to
+verification.
+
+**Out of scope:** LongHorizon manager behavior is intentionally outside this
+milestone. That includes the abort on an auditor `error`, the format-repair
+quirk, and the `workspace_path` mismatch. The gate uses only the candidate,
+the public broker API, and the normalized verification. LongHorizon is not
+modified.
+
+**Limitations:**
+
+- Executable state is compared as Git records it. A file whose execute bit is
+  set only for group or others, or a repository with `core.filemode=false`,
+  cannot match its audit and is refused.
+- The public broker still cannot report a rejected candidate. `promote()`
+  refuses one.
+- There is no live HarnessRouter proof; all validation is offline.
+
+**Status:** Implemented on `feat/longhorizon-promotion-gate`; merged into
+`main` with a normal merge commit on top of `b91ab83`.
+See `03_PROGRESS_AND_EVIDENCE.md`.
