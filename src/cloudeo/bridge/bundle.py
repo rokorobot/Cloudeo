@@ -30,6 +30,7 @@ from cloudeo.bridge.models import (
     BridgeFileEntry,
     BridgeLimits,
     DeltaManifest,
+    ErrorManifest,
     InputManifest,
 )
 from cloudeo.workspace.models import CandidateWorkspace
@@ -54,10 +55,28 @@ class BridgeValidationError(BridgeError):
     code = "invalid_bundle"
 
 
+class BridgeOutputTooLarge(BridgeValidationError):
+    """The executor's delta could not fit in one bridge artifact."""
+
+    code = "output_too_large"
+
+
 class BridgeConflictError(BridgeError):
-    """The candidate changed since it was sent; the candidate was not touched."""
+    """A sent file no longer matches locally; the candidate was not touched."""
 
     code = "workspace_conflict"
+
+
+class CandidateDriftError(BridgeError):
+    """The candidate changed while the remote episode ran; nothing was applied."""
+
+    code = "candidate_changed_during_execution"
+
+
+class BridgeUnsafePathError(BridgeError):
+    """A write would pass through a local symlink or into .git; nothing was applied."""
+
+    code = "unsafe_local_path"
 
 
 class BridgeApplyError(BridgeError):
@@ -93,6 +112,22 @@ def git(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
 class InputBundle:
     manifest: InputManifest
     archive: bytes
+    # SHA-256 of manifest.json exactly as sent; the returned delta must echo it.
+    manifest_sha256: str
+
+
+def manifest_sha256(manifest: InputManifest) -> str:
+    """Hash of the canonical manifest bytes, identical to the archive's manifest.json."""
+    return hashlib.sha256(helper._json_bytes(manifest.model_dump(mode="json"))).hexdigest()
+
+
+def _has_symlink_parent(root: Path, path: str) -> bool:
+    parent = root
+    for part in path.split("/")[:-1]:
+        parent = parent / part
+        if parent.is_symlink():
+            return True
+    return False
 
 
 def select_files(root: Path, limits: BridgeLimits) -> dict[str, tuple[bytes, bool]]:
@@ -113,6 +148,9 @@ def select_files(root: Path, limits: BridgeLimits) -> dict[str, tuple[bytes, boo
             raise BridgeInputError(str(exc)) from exc
         if helper.is_reserved(path):
             raise BridgeInputError(f"path collides with a bridge-reserved name: {path!r}")
+        if _has_symlink_parent(root, path):
+            # Never read project content through a symlinked directory.
+            raise BridgeInputError(f"symbolic-link parent directories are not supported: {path!r}")
         full = root / path
         try:
             mode = full.lstat().st_mode
@@ -134,6 +172,13 @@ def select_files(root: Path, limits: BridgeLimits) -> dict[str, tuple[bytes, boo
     return selected
 
 
+def _entries(files: dict[str, tuple[bytes, bool]]) -> tuple[BridgeFileEntry, ...]:
+    return tuple(
+        BridgeFileEntry(**helper.file_entry(path, data, executable))
+        for path, (data, executable) in sorted(files.items())
+    )
+
+
 def build_input_bundle(
     candidate: CandidateWorkspace, head_commit: str, run_id: str, limits: BridgeLimits
 ) -> InputBundle:
@@ -146,15 +191,40 @@ def build_input_bundle(
         candidate_id=candidate.candidate_id,
         base_commit=candidate.base_commit,
         head_commit=head_commit,
-        files=tuple(
-            BridgeFileEntry(**helper.file_entry(path, data, executable))
-            for path, (data, executable) in sorted(files.items())
-        ),
+        max_output_bundle_bytes=limits.max_output_bundle_bytes,
+        files=_entries(files),
     )
     archive = helper.build_archive(manifest.model_dump(mode="json"), files)
-    if len(archive) > limits.max_bundle_bytes:
+    if len(archive) > limits.max_input_bundle_bytes:
         raise BridgeInputError("the input bundle exceeds the upload limit")
-    return InputBundle(manifest=manifest, archive=archive)
+    return InputBundle(
+        manifest=manifest, archive=archive, manifest_sha256=manifest_sha256(manifest)
+    )
+
+
+def check_candidate_unchanged(root: Path, sent: InputManifest, limits: BridgeLimits) -> None:
+    """Optimistic concurrency: the snapshot that was sent is the apply precondition.
+
+    Rebuilds the candidate manifest with the same selection and hashing rules and
+    requires it to equal what was sent. Any local edit, addition, deletion, or
+    executable-bit change made while the remote episode ran is refused; the two
+    sides are never merged.
+    """
+    try:
+        current = _entries(select_files(root, limits))
+    except BridgeInputError as exc:
+        raise CandidateDriftError(f"the candidate can no longer be read as sent: {exc}") from exc
+    if current == sent.files:
+        return
+    before = {entry.path: entry for entry in sent.files}
+    now = {entry.path: entry for entry in current}
+    changes = sorted(
+        [f"added {p}" for p in now.keys() - before.keys()]
+        + [f"deleted {p}" for p in before.keys() - now.keys()]
+        + [f"modified {p}" for p in now.keys() & before.keys() if now[p] != before[p]]
+    )
+    shown = ", ".join(changes[:10]) + (", ..." if len(changes) > 10 else "")
+    raise CandidateDriftError(f"the candidate changed locally during execution: {shown}")
 
 
 # --- Output: validate the whole untrusted bundle before any mutation ---
@@ -191,9 +261,9 @@ def _unique_keys(pairs: list) -> dict:
 
 
 def validate_output_bundle(
-    data: bytes, sent: InputManifest, limits: BridgeLimits, staging_root: Path | None = None
+    data: bytes, sent: InputBundle, limits: BridgeLimits, staging_root: Path | None = None
 ) -> ValidatedDelta:
-    if len(data) > limits.max_bundle_bytes:
+    if len(data) > limits.max_output_bundle_bytes:
         raise BridgeValidationError("output bundle exceeds the compressed-size limit")
     staging = Path(tempfile.mkdtemp(prefix="cloudeo-bridge-", dir=staging_root))
     try:
@@ -203,7 +273,7 @@ def validate_output_bundle(
         raise
 
 
-def _validate(data: bytes, sent: InputManifest, limits: BridgeLimits, staging: Path):
+def _validate(data: bytes, sent: InputBundle, limits: BridgeLimits, staging: Path):
     # Headers plus the member data we accept bound the decompressed stream.
     cap = limits.max_total_bytes + limits.max_manifest_bytes + 1024 * (limits.max_files + 8)
     names: set[str] = set()
@@ -242,12 +312,23 @@ def _validate(data: bytes, sent: InputManifest, limits: BridgeLimits, staging: P
     if manifest_raw is None:
         raise BridgeValidationError("output bundle has no manifest")
     try:
-        json.loads(manifest_raw, object_pairs_hook=_unique_keys)
-        manifest = DeltaManifest.model_validate_json(manifest_raw)
+        parsed = json.loads(manifest_raw, object_pairs_hook=_unique_keys)
+        if isinstance(parsed, dict) and parsed.get("kind") == "error":
+            report = ErrorManifest.model_validate_json(manifest_raw)
+        else:
+            manifest = DeltaManifest.model_validate_json(manifest_raw)
     except (ValueError, ValidationError) as exc:
         raise BridgeValidationError(f"invalid output manifest: {exc}") from exc
+    if isinstance(parsed, dict) and parsed.get("kind") == "error":
+        _check_identity(report, sent)
+        if staged:
+            raise BridgeValidationError("an error report must not carry files")
+        raise BridgeOutputTooLarge(
+            f"the executor's delta ({report.delta_bytes} bytes) does not fit in one bridge "
+            f"artifact (limit {report.limit} bytes); nothing was applied"
+        )
     _check_identity(manifest, sent)
-    _check_paths(manifest, sent, staged)
+    _check_paths(manifest, sent.manifest, staged)
     return ValidatedDelta(
         manifest=manifest,
         staging=staging,
@@ -292,10 +373,15 @@ def _safe(path: str) -> str:
     return path
 
 
-def _check_identity(manifest: DeltaManifest, sent: InputManifest) -> None:
+def _check_identity(manifest: DeltaManifest | ErrorManifest, sent: InputBundle) -> None:
     for key in ("bridge_run_id", "workspace_id", "candidate_id", "base_commit"):
-        if getattr(manifest, key) != getattr(sent, key):
+        if getattr(manifest, key) != getattr(sent.manifest, key):
             raise BridgeValidationError(f"output {key} does not match this bridge run")
+    # Not a trust boundary: prevents applying a delta made from another snapshot.
+    if manifest.input_manifest_sha256 != sent.manifest_sha256:
+        raise BridgeValidationError(
+            "output input_manifest_sha256 does not match the snapshot sent for this run"
+        )
 
 
 def _check_paths(
@@ -343,18 +429,21 @@ def apply_delta(root: Path, delta: ValidatedDelta, sent: InputManifest) -> Appli
     """Plan fully, then mutate; restore project files if a write fails midway."""
     root = root.resolve()
     manifest = delta.manifest
-    ignored = _ignored(root, [entry.path for entry in manifest.added])
-    added = [entry for entry in manifest.added if entry.path not in ignored]
     sent_by_path = {entry.path: entry for entry in sent.files}
 
-    # Plan: every precondition is checked before the first mutation.
+    # Plan: every precondition is checked before the first mutation. Path safety
+    # comes first for every path in the delta, including ignored additions, so a
+    # symlinked parent or .git is refused outright (fail closed) and Git is never
+    # queried about a path beyond a symlink.
+    every = [entry.path for entry in (*manifest.changed, *manifest.added)]
+    targets = {path: _target(root, path) for path in [*every, *manifest.deleted]}
+    ignored = _ignored(root, [entry.path for entry in manifest.added])
+    added = [entry for entry in manifest.added if entry.path not in ignored]
     for path in [entry.path for entry in manifest.changed] + list(manifest.deleted):
-        target = _target(root, path)
-        expected = sent_by_path[path]
-        if not _matches(target, expected):
+        if not _matches(targets[path], sent_by_path[path]):
             raise BridgeConflictError(f"{path!r} changed locally since it was sent")
     for entry in added:
-        target = _target(root, entry.path)
+        target = targets[entry.path]
         if os.path.lexists(target):
             raise BridgeConflictError(f"{entry.path!r} was created locally since the send")
 
@@ -392,19 +481,29 @@ def _ignored(root: Path, paths: list[str]) -> set[str]:
 
 
 def _target(root: Path, path: str) -> Path:
-    """Resolve inside the candidate, never through a link out of it or into .git."""
-    target = root.joinpath(*path.split("/"))
-    parent = target.parent
-    real_parent = Path(os.path.realpath(parent))
-    if real_parent != root and root not in real_parent.parents:
-        raise BridgeConflictError(f"{path!r} resolves outside the candidate")
-    if real_parent == root / ".git" or (root / ".git") in real_parent.parents:
-        raise BridgeConflictError(f"{path!r} resolves into .git")
-    ancestor = parent
-    while ancestor != root:
-        if ancestor.is_symlink() or (ancestor.exists() and not ancestor.is_dir()):
+    """Resolve inside the candidate; never .git, never through any symlinked parent.
+
+    In a worktree `.git` is usually a file, so `.git` itself is refused as well as
+    anything under it. A symlinked parent is refused even when it is ignored or was
+    never part of the uploaded snapshot, so `candidate/some_link/file` cannot escape.
+    """
+    parts = path.split("/")
+    if parts[0].lower() == ".git":
+        raise BridgeUnsafePathError(f"{path!r} is .git or inside it")
+    target = root.joinpath(*parts)
+    ancestor = root
+    for part in parts[:-1]:
+        ancestor = ancestor / part
+        if ancestor.is_symlink():
+            raise BridgeUnsafePathError(f"{path!r} passes through the symlink {ancestor.name!r}")
+        if ancestor.exists() and not ancestor.is_dir():
             raise BridgeConflictError(f"{path!r} has a non-directory parent")
-        ancestor = ancestor.parent
+    real_parent = Path(os.path.realpath(target.parent))
+    if real_parent != root and root not in real_parent.parents:
+        raise BridgeUnsafePathError(f"{path!r} resolves outside the candidate")
+    git_path = root / ".git"
+    if real_parent == git_path or git_path in real_parent.parents:
+        raise BridgeUnsafePathError(f"{path!r} resolves into .git")
     return target
 
 

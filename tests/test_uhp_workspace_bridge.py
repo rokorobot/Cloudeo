@@ -461,6 +461,7 @@ async def test_upload_excludes_git_and_ignored_files(repo, broker, candidate, st
     assert not any(".git" in n.split("/") for n in names)
     assert all(b"SECRET=local-only" not in u["content"] for u in server.uploads.values())
     assert manifest["workspace_id"] == "demo"
+    assert manifest["max_output_bundle_bytes"] == BridgeLimits().max_output_bundle_bytes
     assert manifest["candidate_id"] == candidate.candidate_id
     assert manifest["base_commit"] == candidate.base_commit
     assert {e["path"]: e["executable"] for e in manifest["files"]}["bin/run.sh"] is True
@@ -491,9 +492,46 @@ async def test_task_request_is_one_fresh_session_with_explicit_profile(
 
 def test_input_bundle_is_deterministic(candidate, broker):
     head = broker.inspect_candidate(candidate).head_commit
-    first = build_input_bundle(candidate, head, "bridge_" + "a" * 32, BridgeLimits())
-    second = build_input_bundle(candidate, head, "bridge_" + "a" * 32, BridgeLimits())
+    run_id = "bridge_" + "a" * 32
+    first = build_input_bundle(candidate, head, run_id, BridgeLimits())
+    # Change only things that must not matter: mtimes and permission bits beyond
+    # the executable flag.
+    root = candidate.local_path
+    for path in root.rglob("*"):
+        if path.is_file() and ".git" not in path.parts:
+            os.utime(path, (1_000_000_000, 1_000_000_000))
+    os.chmod(root / "README.md", 0o600)
+    os.chmod(root / "bin/run.sh", 0o700)
+    second = build_input_bundle(candidate, head, run_id, BridgeLimits())
+
     assert first.archive == second.archive
+    assert first.manifest_sha256 == second.manifest_sha256
+
+    # gzip header: no embedded filename or comment, zero mtime.
+    header = first.archive[:10]
+    assert header[:3] == b"\x1f\x8b\x08"
+    assert header[3] & 0x18 == 0  # FNAME and FCOMMENT unset
+    assert header[4:8] == b"\0\0\0\0"
+    with tarfile.open(fileobj=io.BytesIO(first.archive), mode="r:gz") as tar:
+        members = tar.getmembers()
+        manifest_bytes = tar.extractfile(helper.MANIFEST_MEMBER).read()
+    names = [m.name for m in members]
+    assert names[0] == helper.MANIFEST_MEMBER
+    assert names[1:] == sorted(names[1:])
+    for member in members:
+        assert member.isreg()
+        assert (member.uid, member.gid, member.uname, member.gname, member.mtime) == (
+            0,
+            0,
+            "",
+            "",
+            0,
+        )
+        assert member.mode in (0o644, 0o755)
+    modes = {m.name: m.mode for m in members}
+    assert modes["files/README.md"] == 0o644
+    assert modes["files/bin/run.sh"] == 0o755
+    assert hashlib.sha256(manifest_bytes).hexdigest() == first.manifest_sha256
 
 
 async def test_symlink_in_candidate_fails_before_upload(broker, candidate, staging, tmp_path):
@@ -647,9 +685,14 @@ async def test_remote_symlink_means_no_artifact(repo, broker, candidate, staging
 # --- Crafted (hostile) bundles ---
 
 
+def input_sha(manifest):
+    """SHA-256 of the canonical input manifest, as the helper computes it."""
+    return hashlib.sha256(helper._json_bytes(manifest)).hexdigest()
+
+
 def identity(manifest):
     keys = ("bridge_run_id", "workspace_id", "candidate_id", "base_commit")
-    return {key: manifest[key] for key in keys}
+    return {**{key: manifest[key] for key in keys}, "input_manifest_sha256": input_sha(manifest)}
 
 
 def build_delta(manifest, added=None, changed=None, deleted=(), **override):
@@ -774,14 +817,25 @@ def hostile(kind):
             return raw_archive([("manifest.json", "file", raw.encode())])
         if kind == "no_manifest":
             return raw_archive([("files/new.txt", "file", b"x")])
-        if kind in ("bridge_run_id", "workspace_id", "candidate_id", "base_commit"):
+        if kind in (
+            "bridge_run_id",
+            "workspace_id",
+            "candidate_id",
+            "base_commit",
+            "input_manifest_sha256",
+        ):
             wrong = {
                 "bridge_run_id": "bridge_" + "f" * 32,
                 "workspace_id": "other",
                 "candidate_id": "f" * 32,
                 "base_commit": "0" * 40,
+                # Identity fields right, but made from a different snapshot.
+                "input_manifest_sha256": "0" * 64,
             }[kind]
             return build_delta(m, added={"new.txt": b"x"}, **{kind: wrong})
+        if kind == "git_file":
+            e = {**evil, "path": ".git"}
+            return raw_archive([manifest_member(m, added=[e]), ("files/.git", "file", b"evil")])
         if kind == "delete_unsent":
             return build_delta(m, deleted=[".env"])
         if kind == "change_unsent":
@@ -809,9 +863,10 @@ ATTACKS = [
     "traversal", "absolute", "git_dir", "git_case", "backslash", "symlink", "hardlink",
     "dir", "fifo", "char", "hash_mismatch", "undeclared_member", "missing_member",
     "outside_prefix", "duplicate_member", "duplicate_manifest_keys", "no_manifest",
-    "bridge_run_id", "workspace_id", "candidate_id", "base_commit", "delete_unsent",
-    "change_unsent", "add_existing", "file_parent_conflict", "excluded_path",
-    "reserved_path", "malformed", "not_gzip", "truncated",
+    "bridge_run_id", "workspace_id", "candidate_id", "base_commit",
+    "input_manifest_sha256", "git_file", "delete_unsent", "change_unsent",
+    "add_existing", "file_parent_conflict", "excluded_path", "reserved_path",
+    "malformed", "not_gzip", "truncated",
 ]  # fmt: skip
 
 
@@ -838,6 +893,8 @@ EXPECTED_REASON = {
     "workspace_id": "workspace_id does not match",
     "candidate_id": "candidate_id does not match",
     "base_commit": "base_commit does not match",
+    "input_manifest_sha256": "input_manifest_sha256 does not match the snapshot sent",
+    "git_file": r"\.git",
     "delete_unsent": "was not sent",
     "change_unsent": "was not sent",
     "add_existing": "was already sent",
@@ -867,38 +924,69 @@ async def test_hostile_bundle_leaves_candidate_untouched(
     assert not (tmp_path / "escape.txt").exists()
 
 
-async def test_oversized_output_bundle_is_refused(repo, broker, candidate, staging, tmp_path):
+async def test_non_cooperative_oversized_artifact_is_refused(
+    repo, broker, candidate, staging, tmp_path
+):
+    """An artifact over the output cap is refused even if the helper was bypassed."""
     before = snapshot(repo, candidate)
     big = os.urandom(300_000)
     server = FakeHarnessRouter(
         tmp_path, output=lambda run_id, m: build_delta(m, added={"big.bin": big})
     )
-    limits = BridgeLimits(max_bundle_bytes=200_000)
+    limits = BridgeLimits(max_output_bundle_bytes=200_000)
     result = await run_bridge(broker, candidate, server, staging, limits)
-    assert result.workspace_sync_status == "failed"
-    assert result.error.code in {"invalid_bundle", "artifact_download_failed"}
+    assert (result.workspace_sync_status, result.error.code) == ("failed", "invalid_bundle")
+    assert "size limit" in result.error.message
     assert snapshot(repo, candidate) == before
+
+
+async def test_delta_too_large_for_one_artifact_fails_clearly(
+    repo, broker, candidate, staging, tmp_path
+):
+    before = snapshot(repo, candidate)
+    server = FakeHarnessRouter(
+        tmp_path, work=lambda ws: (ws / "big.bin").write_bytes(os.urandom(300_000))
+    )
+    limits = BridgeLimits(max_output_bundle_bytes=100_000)
+    result = await run_bridge(broker, candidate, server, staging, limits)
+    operation, returncode, stderr = server.helper_runs[-1]
+    assert (operation, returncode) == ("pack-delta", 3)
+    assert "does not fit in one bridge artifact" in stderr
+    assert (result.workspace_sync_status, result.error.code) == ("failed", "output_too_large")
+    assert "limit 100000 bytes" in result.error.message
+    assert snapshot(repo, candidate) == before
+
+
+def test_default_limits_fit_harnessrouter_caps():
+    limits = BridgeLimits()
+    harnessrouter_cap = 25 * 1024 * 1024  # upload and produced-file defaults, both 25 MiB
+    assert limits.max_input_bundle_bytes <= harnessrouter_cap
+    assert limits.max_output_bundle_bytes <= harnessrouter_cap
 
 
 # --- Validator limits (direct) ---
 
 
-def sent_manifest(broker, candidate):
+def sent_bundle(broker, candidate):
     head = broker.inspect_candidate(candidate).head_commit
-    return build_input_bundle(candidate, head, "bridge_" + "b" * 32, BridgeLimits()).manifest
+    return build_input_bundle(candidate, head, "bridge_" + "b" * 32, BridgeLimits())
+
+
+def delta_for(sent, **changes):
+    return build_delta(sent.manifest.model_dump(mode="json"), **changes)
 
 
 def test_too_many_files_is_refused(broker, candidate, staging):
-    sent = sent_manifest(broker, candidate)
-    data = build_delta(sent.model_dump(), added={f"n{i}.txt": b"x" for i in range(3)})
+    sent = sent_bundle(broker, candidate)
+    data = delta_for(sent, added={f"n{i}.txt": b"x" for i in range(3)})
     with pytest.raises(BridgeValidationError, match="too many"):
         validate_output_bundle(data, sent, BridgeLimits(max_files=2), staging)
     assert list(staging.iterdir()) == []
 
 
 def test_single_file_and_total_size_limits(broker, candidate, staging):
-    sent = sent_manifest(broker, candidate)
-    data = build_delta(sent.model_dump(), added={"a.bin": b"x" * 2000, "b.bin": b"y" * 2000})
+    sent = sent_bundle(broker, candidate)
+    data = delta_for(sent, added={"a.bin": b"x" * 2000, "b.bin": b"y" * 2000})
     with pytest.raises(BridgeValidationError, match="per-file"):
         validate_output_bundle(data, sent, BridgeLimits(max_file_bytes=1000), staging)
     with pytest.raises(BridgeValidationError, match="total-size"):
@@ -906,29 +994,182 @@ def test_single_file_and_total_size_limits(broker, candidate, staging):
 
 
 def test_decompression_bomb_is_bounded(broker, candidate, staging):
-    sent = sent_manifest(broker, candidate)
-    bomb = build_delta(sent.model_dump(), added={"zeros.bin": b"\0" * 5_000_000})
+    sent = sent_bundle(broker, candidate)
+    bomb = delta_for(sent, added={"zeros.bin": b"\0" * 5_000_000})
     assert len(bomb) < 20_000
     limits = BridgeLimits(max_file_bytes=10_000_000, max_total_bytes=100_000)
     with pytest.raises(BridgeValidationError):
         validate_output_bundle(bomb, sent, limits, staging)
 
 
-# --- Conflicts and apply failures ---
+# --- Candidate drift (optimistic concurrency) ---
 
 
-async def test_local_change_during_run_is_a_conflict(repo, broker, candidate, staging, tmp_path):
+def _modify_untouched(root):
+    (root / "src/app.py").write_text("print('changed locally')\n")
+
+
+def _add_local(root):
+    (root / "local_new.txt").write_text("created locally during the run\n")
+
+
+def _delete_local(root):
+    (root / "src/app.py").unlink()
+
+
+def _chmod_local(root):
+    os.chmod(root / "src/app.py", 0o755)
+
+
+def _modify_remote_deleted(root):
+    (root / "docs/old.md").write_text("locally revived while remote deleted it\n")
+
+
+def _modify_remote_changed(root):
+    (root / "README.md").write_text("newer local change\n")
+
+
+def _create_remote_added(root):
+    (root / "tools.sh").write_text("#!/bin/sh\necho created locally\n")
+
+
+DRIFT = {
+    "modified_existing_file": _modify_untouched,
+    "added_local_file": _add_local,
+    "deleted_local_file": _delete_local,
+    "executable_bit_change": _chmod_local,
+    "local_edit_of_remotely_deleted_file": _modify_remote_deleted,
+    "local_edit_of_remotely_changed_file": _modify_remote_changed,
+    "local_create_of_remotely_added_path": _create_remote_added,
+}
+
+
+@pytest.mark.parametrize("name", list(DRIFT))
+async def test_candidate_drift_during_run_applies_nothing(
+    repo, broker, candidate, staging, tmp_path, name
+):
+    seen = {}
+
     def work(ws):
         standard_work(ws)
-        (candidate.local_path / "README.md").write_text("edited locally meanwhile\n")
+        DRIFT[name](candidate.local_path)  # the local change races the remote episode
+        seen["after_local_change"] = snapshot(repo, candidate)
 
     server = FakeHarnessRouter(tmp_path, work=work)
     result = await run_bridge(broker, candidate, server, staging)
-    assert (result.workspace_sync_status, result.error.code) == ("failed", "workspace_conflict")
-    root = candidate.local_path
-    assert (root / "README.md").read_text() == "edited locally meanwhile\n"
-    assert (root / "docs/old.md").exists()
-    assert not (root / "tools.sh").exists()
+    assert result.outcome.status == "completed"
+    assert result.workspace_sync_status == "failed"
+    assert result.error.code == "candidate_changed_during_execution", result.error
+    # Zero remote changes: the candidate is exactly as the local change left it.
+    assert snapshot(repo, candidate) == seen["after_local_change"]
+    assert result.added_paths == result.changed_paths == result.deleted_paths == ()
+
+
+async def test_ignored_local_change_is_not_drift(broker, candidate, staging, tmp_path):
+    def work(ws):
+        standard_work(ws)
+        (candidate.local_path / ".env").write_text("SECRET=rotated-locally\n")
+
+    server = FakeHarnessRouter(tmp_path, work=work)
+    result = await run_bridge(broker, candidate, server, staging)
+    assert result.workspace_sync_status == "synced"
+    assert (candidate.local_path / ".env").read_text() == "SECRET=rotated-locally\n"
+
+
+async def test_symlinked_parent_created_during_run_applies_nothing(
+    repo, broker, candidate, staging, tmp_path
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "app.py").write_text("print('app')\n")  # same content: reads look unchanged
+    seen = {}
+
+    def work(ws):
+        (ws / "src/app.py").write_text("print('remote change')\n")
+        root = candidate.local_path
+        (root / "src/app.py").unlink()
+        (root / "src").rmdir()
+        (root / "src").symlink_to(outside, target_is_directory=True)
+        seen["after"] = snapshot(repo, candidate)
+
+    server = FakeHarnessRouter(tmp_path, work=work)
+    result = await run_bridge(broker, candidate, server, staging)
+    assert (result.workspace_sync_status, result.error.code) == (
+        "failed",
+        "candidate_changed_during_execution",
+    )
+    # Git lists the new `src` link itself, so either symlink rule can fire first.
+    assert "symbolic link" in result.error.message or "symbolic-link" in result.error.message
+    assert (outside / "app.py").read_text() == "print('app')\n"
+    assert snapshot(repo, candidate) == seen["after"]
+
+
+def test_apply_refuses_symlinked_parent_before_any_mutation(broker, candidate, staging, tmp_path):
+    """Even with the drift check bypassed, no write passes through a local symlink."""
+    sent = sent_bundle(broker, candidate)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (candidate.local_path / "lib").symlink_to(outside, target_is_directory=True)
+    delta = validate_output_bundle(
+        delta_for(sent, added={"lib/evil.txt": b"x", "zz_first.txt": b"y"}),
+        sent,
+        BridgeLimits(),
+        staging,
+    )
+    before = tree(candidate.local_path)
+    with pytest.raises(BridgeError) as caught:
+        bundle_module.apply_delta(candidate.local_path, delta, sent.manifest)
+    assert caught.value.code == "unsafe_local_path"
+    assert list(outside.iterdir()) == []
+    assert tree(candidate.local_path) == before
+
+
+@pytest.mark.parametrize("path", [".git", ".git/config", ".GIT/hooks/x"])
+def test_apply_never_targets_git(candidate, path):
+    with pytest.raises(BridgeError) as caught:
+        bundle_module._target(candidate.local_path.resolve(), path)
+    assert caught.value.code == "unsafe_local_path"
+    assert (candidate.local_path / ".git").is_file()  # a worktree's .git is a file
+
+
+# --- Runtime gating ---
+
+
+async def test_incomplete_with_valid_delta_syncs_but_stays_incomplete(
+    repo, broker, candidate, staging, tmp_path
+):
+    a = accepted(repo)
+    server = FakeHarnessRouter(tmp_path, work=standard_work, status="incomplete")
+    result = await run_bridge(broker, candidate, server, staging)
+    assert result.outcome.status == "incomplete"
+    assert result.workspace_sync_status == "synced"
+    assert not hasattr(result, "verified")
+    assert accepted(repo) == a
+
+
+# --- One UHP deployment ---
+
+
+def test_bridge_refuses_a_dispatcher_on_another_uhp_client(broker, tmp_path):
+    server = FakeHarnessRouter(tmp_path)
+    files_client = UHPClient("http://uhp.test/api/harness", transport=httpx.MockTransport(server))
+    task_client = UHPClient("http://uhp.test/api/harness", transport=httpx.MockTransport(server))
+    dispatcher = ExecutionDispatcher(harness_task=UHPHarnessTaskBackend(task_client))
+    with pytest.raises(ValueError, match="different UHPClient"):
+        UHPWorkspaceBridge(broker, files_client, dispatcher)
+    assert server.requests == []
+
+
+def test_bridge_refuses_a_non_uhp_harness_backend(broker, tmp_path):
+    class OtherBackend:
+        async def execute(self, request):
+            raise AssertionError("never called")
+
+    client = UHPClient("http://uhp.test/api/harness", transport=httpx.MockTransport(lambda r: None))
+    with pytest.raises(TypeError, match="not a UHP backend"):
+        UHPWorkspaceBridge(broker, client, ExecutionDispatcher(harness_task=OtherBackend()))
+    with pytest.raises(ValueError, match="no harness-task backend"):
+        UHPWorkspaceBridge(broker, client, ExecutionDispatcher())
 
 
 async def test_filesystem_failure_mid_apply_rolls_back(

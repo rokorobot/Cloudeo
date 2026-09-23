@@ -20,6 +20,7 @@ from cloudeo.bridge.bundle import (
     InputBundle,
     apply_delta,
     build_input_bundle,
+    check_candidate_unchanged,
     new_run_id,
     validate_output_bundle,
 )
@@ -31,6 +32,7 @@ from cloudeo.bridge.models import (
 )
 from cloudeo.execution.contracts import ExecutionOutcome, HarnessTaskExecution
 from cloudeo.execution.dispatch import ExecutionDispatcher
+from cloudeo.execution.uhp_backend import UHPHarnessTaskBackend
 from cloudeo.uhp.client import UHPClient, UHPError
 from cloudeo.uhp.models import UHPFile, UHPTaskRequest
 from cloudeo.workspace.broker import WorkspaceBroker
@@ -82,8 +84,18 @@ class UHPWorkspaceBridge:
         limits: BridgeLimits | None = None,
         staging_root: Path | None = None,
     ):
-        if dispatcher.harness_task is None:
+        # Uploads, the task, the session listing, and the download must all reach the
+        # same UHP deployment, so the task must run on this very client.
+        backend = dispatcher.harness_task
+        if backend is None:
             raise ValueError("The dispatcher has no harness-task backend.")
+        if not isinstance(backend, UHPHarnessTaskBackend):
+            raise TypeError("The dispatcher's harness-task backend is not a UHP backend.")
+        if backend.client is not client:
+            raise ValueError(
+                "The dispatcher's UHP backend uses a different UHPClient than the bridge's "
+                "file operations; all bridge traffic must reach one UHP deployment."
+            )
         self.broker = broker
         self.client = client
         self.dispatcher = dispatcher
@@ -174,22 +186,24 @@ class UHPWorkspaceBridge:
         artifact = matches[0]
         if not artifact.container_id:
             return result("failed", "output_artifact_invalid", "The artifact has no container_id.")
-        if artifact.size is not None and artifact.size > self.limits.max_bundle_bytes:
+        limit = self.limits.max_output_bundle_bytes
+        if artifact.size is not None and artifact.size > limit:
             return result("failed", "invalid_bundle", "The output artifact exceeds the size limit.")
         try:
             content = await self.client.download_container_file(
-                artifact.container_id, artifact.id, max_bytes=self.limits.max_bundle_bytes
+                artifact.container_id, artifact.id, max_bytes=limit
             )
         except UHPError as exc:
             return result("failed", "artifact_download_failed", str(exc))
 
         try:
-            delta = validate_output_bundle(
-                content.content, bundle.manifest, self.limits, self.staging_root
-            )
+            delta = validate_output_bundle(content.content, bundle, self.limits, self.staging_root)
         except BridgeError as exc:
             return result("failed", exc.code, str(exc))
         try:
+            # The snapshot that was sent is the apply precondition: any local change
+            # made while the harness ran means zero remote changes are applied.
+            check_candidate_unchanged(candidate.local_path, bundle.manifest, self.limits)
             applied = apply_delta(candidate.local_path, delta, bundle.manifest)
         except BridgeError as exc:
             return result("failed", exc.code, str(exc))

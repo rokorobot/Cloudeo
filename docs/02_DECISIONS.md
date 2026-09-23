@@ -514,7 +514,8 @@ HarnessRouter `809392d602e34e36f0468943035c54d3350af885`):
    `__pycache__/`, `.venv/`, `venv/`, `.cache/`, and `.next/` at any depth.
    **Neither is authoritative project state**, so the bridge does not
    reconstruct the project from them. It uses a helper-produced delta instead.
-   HarnessRouter's default upload cap is 25 MiB (`HARNESS_UPLOAD_MAX_BYTES`).
+   HarnessRouter's default upload cap is 25 MiB (`HARNESS_UPLOAD_MAX_BYTES`),
+   and so is its produced-file cap (`HARNESS_RESP_MAX_FILE_BYTES`).
 
 **Transport:**
 
@@ -522,15 +523,19 @@ HarnessRouter `809392d602e34e36f0468943035c54d3350af885`):
    (`git ls-files --cached --others --exclude-standard -z`): tracked files plus
    untracked, non-ignored files, NUL-separated. `.git` is never selected, and
    ignored files (for example `.env`) are never sent. Tracked files deleted in
-   the working tree are not sent. Symbolic links, submodules, nested
-   repositories, non-UTF-8 paths, and paths colliding with bridge names fail
-   before anything is uploaded.
+   the working tree are not sent. Symbolic links, paths under a symlinked
+   directory, submodules, nested repositories, non-UTF-8 paths, and paths
+   colliding with bridge names fail before anything is uploaded.
 2. Build a deterministic input bundle
-   `.cloudeo-bridge-input-<run>.tar.gz` (`manifest.json` plus
-   `files/<path>`; mtime 0, uid/gid 0, mode 0644 or 0755). The input manifest
-   records the format, bridge run ID (`bridge_<32 hex>`), `workspace_id`,
-   `candidate_id`, `base_commit`, `head_commit`, and each file's path, size,
-   SHA-256, and executable bit.
+   `.cloudeo-bridge-input-<run>.tar.gz`. It contains `manifest.json` plus
+   `files/<path>`, in sorted order, with mtime 0, uid/gid 0, empty user and
+   group names, mode 0644 or 0755, and a gzip header with no filename and
+   mtime 0. Building the same snapshot twice produces identical bytes and the
+   same manifest hash, which a test checks. The input manifest records the
+   format, bridge run ID (`bridge_<32 hex>`), `workspace_id`, `candidate_id`,
+   `base_commit`, `head_commit`, `max_output_bundle_bytes`, and each file's
+   path, size, SHA-256, and executable bit. The SHA-256 of these canonical
+   manifest bytes is kept as the run's `input_manifest_sha256`.
 3. Upload the stdlib-only helper `.cloudeo-bridge-helper.py`
    (`src/cloudeo/bridge/remote_helper.py`, Python 3.8+) and the bundle through
    `POST /v1/files`.
@@ -542,24 +547,65 @@ HarnessRouter `809392d602e34e36f0468943035c54d3350af885`):
 5. `pack-delta` compares the final tree with the input manifest and writes
    `cloudeo-bridge-output-<run>.tar.gz`, a delta containing added and changed
    files (with size, SHA-256, and executable bit) and an explicit deleted-path
-   list. Unchanged files do not come back. It excludes `.git` and
-   `__pycache__` at any depth, the root runtime directories `.claude`,
-   `.codex`, and `.harness`, and bridge-reserved root names. It refuses
-   symbolic links and special files, so no output is produced.
+   list. Unchanged files do not come back. The delta manifest echoes the
+   identity fields and the `input_manifest_sha256` of the snapshot it was made
+   from. It excludes `.git` and `__pycache__` at any depth, the root runtime
+   directories `.claude`, `.codex`, and `.harness`, and bridge-reserved root
+   names. It refuses symbolic links and special files, so no output is
+   produced. If the delta archive would exceed `max_output_bundle_bytes`, it
+   writes a tiny error artifact (`kind: "error"`, `error: "delta_too_large"`)
+   instead and exits with status 3. There is no splitting into several
+   artifacts.
 6. Using `ExecutionOutcome.runtime.session_id`, list the session's files and
    select exactly one artifact whose filename, and path where the server
    reports one, is this run's exact output name. Download it through the
    configured client by `container_id` and `file_id`; a `download_url` host is
    never followed.
-7. Validate the whole bundle, then apply it to the same candidate.
+7. Validate the whole bundle. Then check that the candidate has not drifted
+   (below). Only then apply the delta to the same candidate.
 
-**Runtime and sync are separate:** `WorkspaceBridgeResult` carries the
+**Optimistic concurrency (candidate drift):** The snapshot that was sent is the
+apply precondition. Immediately before applying any delta, the bridge rebuilds
+the candidate's manifest with the same selection and hashing rules and requires
+it to equal the manifest that was sent. A locally changed, added, or deleted
+file, or a changed executable bit, made while the remote episode ran fails the
+sync with `candidate_changed_during_execution`, and zero remote changes are
+applied. In particular:
+
+- a remote delete cannot delete a locally modified file;
+- a remote change cannot overwrite a newer local change;
+- a remote addition cannot overwrite a path created locally during the run.
+
+The two mutations are never merged. Ignored local files, such as `.env`, are
+outside the snapshot, so editing them is not drift. A per-file content and
+mode check at apply time remains as a second line of defense.
+
+**One UHP deployment:** Uploads, the task, the session listing, and the
+download must reach the same UHP server. `UHPWorkspaceBridge` refuses
+construction unless the dispatcher's harness-task backend is a
+`UHPHarnessTaskBackend` whose `client` is the very `UHPClient` the bridge uses
+for file operations.
+
+**Artifact size caps:** HarnessRouter CE's default caps are 25 MiB for uploads
+(`HARNESS_UPLOAD_MAX_BYTES`) and 25 MiB per produced file
+(`HARNESS_RESP_MAX_FILE_BYTES`, in `_collect_produced`, which also takes only
+the first `HARNESS_RESP_MAX_FILES`, 25, per turn). `BridgeLimits` sets
+`max_input_bundle_bytes` and `max_output_bundle_bytes` to 20 MiB each. An
+oversized delta fails clearly as `output_too_large`, from the helper's error
+artifact. An oversized artifact produced without the helper fails as
+`invalid_bundle`.
+
+**Runtime gating and sync are separate:** `WorkspaceBridgeResult` carries the
 `ExecutionOutcome` unchanged, plus `workspace_sync_status` (`synced`,
 `skipped`, or `failed`), the run and session IDs, the added, changed, deleted,
 and ignored paths, and a structured error.
 
+- `completed`: a valid delta may sync.
+- `incomplete`: a valid delta may sync. The outcome stays `incomplete`, and
+  nothing implies verification.
 - `unknown` or `in_progress`: `skipped`; the remote workspace is not read.
-- `failed` or `cancelled`: `skipped`; remote state is not imported.
+- `failed` or `cancelled`: `skipped`. Remote state is not applied even if an
+  artifact exists. A later policy layer may deliberately add salvage.
 - `completed` or `incomplete` without a valid artifact, or without a
   `session_id`: `failed`.
 - In every case other than `synced`, the candidate is unchanged.
@@ -581,20 +627,29 @@ mean checkpointed. Checkpointed does not mean promoted.
   - symlinks, hardlinks, directories, devices, FIFOs, and sparse members;
   - duplicate or undeclared members;
   - a missing or duplicate-key manifest;
-  - run, workspace, candidate, or `base_commit` mismatch;
+  - a mismatched run ID, `workspace_id`, `candidate_id`, `base_commit`, or
+    `input_manifest_sha256`. The hash does not make the executor trusted; it
+    prevents applying a delta made for another run or snapshot;
   - size or hash mismatch;
   - a path listed twice in the delta;
   - added paths that were sent, and changed or deleted paths that were not;
   - file-versus-directory conflicts;
-  - compressed-size, total-size, per-file-size, and file-count limits
-    (`BridgeLimits`: 20 MiB, 256 MiB, 32 MiB, and 10,000 files by default).
+  - output compressed-size, total-size, per-file-size, and file-count limits
+    (`BridgeLimits` defaults: 20 MiB, 256 MiB, 32 MiB, and 10,000 files).
 - Only paths that were sent can be changed or deleted, and only if their
   current content and mode still match what was sent. Otherwise the result is
   `workspace_conflict`. A remote-created path that local `.gitignore` rules
   ignore (checked with `git check-ignore`) is not imported; it is reported in
   `ignored_paths`. Tracked files remain eligible.
-- Writes resolve through real parent directories inside the candidate and
-  never into `.git`. The bridge's own Git use is limited to `ls-files` and
+- **Local path safety:** In a worktree `.git` is usually a file, so apply
+  refuses `.git` itself as well as `.git/...`, in any case. Every path in the
+  delta, including ignored additions, is refused with `unsafe_local_path`
+  before the first mutation if any existing parent inside the candidate is a
+  symlink, or if its real parent resolves outside the candidate or into
+  `.git`. So `candidate/some_link/file` cannot escape through an ignored or
+  local symlink that was never part of the uploaded snapshot. This check runs
+  before Git is queried about ignore rules, because Git refuses paths beyond a
+  symlink. The bridge's own Git use is limited to `ls-files` and
   `check-ignore`.
 
 **Failure atomicity:** Validation failures cause zero candidate mutation.

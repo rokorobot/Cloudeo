@@ -783,9 +783,9 @@ Implemented:
 
 Validation (all offline):
 
-- With the `longhorizon` extra: **309 passed** (228 existing unchanged, 59 in
+- With the `longhorizon` extra: **328 passed** (228 existing unchanged, 78 in
   `tests/test_uhp_workspace_bridge.py`, 22 in `tests/test_uhp_files.py`).
-  Without the extra: 273 passed, 2 skipped (the LongHorizon adapter module and
+  Without the extra: 292 passed, 2 skipped (the LongHorizon adapter module and
   one bridge test that needs it).
 - The end-to-end tests use the real `GitWorkspaceBroker`,
   `CandidateWorkspace`, `ExecutionDispatcher`, `UHPHarnessTaskBackend`,
@@ -805,15 +805,47 @@ Validation (all offline):
   worktree `.git` file, HEADs, the canonical branch, and `refs/cloudeo`, for:
   `unknown`, `in_progress`, `failed`, `cancelled`, and `incomplete` without an
   artifact; a missing session ID; a listing failure; a missing, duplicate, or
-  other-run artifact; a remote symlink; an oversized bundle; and 30 hostile
+  other-run artifact; a remote symlink; an oversized bundle; and 32 hostile
   bundles. Each hostile bundle is refused as `invalid_bundle` for its specific
-  reason. Staging is cleaned up.
+  reason; the 32 include a mismatched `input_manifest_sha256` and a bare `.git`
+  path. Staging is cleaned up.
 - Direct validator tests cover file-count, per-file, total-size, and
   decompression-bomb limits.
-- A local edit made during the run is a `workspace_conflict`, and the local
-  edit survives. A disk failure mid-apply rolls back to the exact
-  pre-application state. A failed rollback raises the original error with the
-  rollback failure attached.
+- A disk failure mid-apply rolls back to the exact pre-application state. A
+  failed rollback raises the original error with the rollback failure
+  attached.
+
+Bridge invariants added before merge (same branch):
+
+- Candidate drift: seven local-change scenarios made while the remote episode
+  runs each fail with `candidate_changed_during_execution`, and the candidate
+  is exactly as the local change left it. The scenarios are: a modified,
+  added, or deleted file; an executable-bit change; a local edit of a file the
+  remote deleted; a newer local edit of a file the remote changed; and a local
+  file created where the remote added one. Editing an ignored `.env` is not
+  drift. Removing the drift check makes all seven fail.
+- One UHP deployment: a dispatcher whose UHP backend uses a different
+  `UHPClient`, a non-UHP harness backend, or no harness backend is refused at
+  construction, before any request.
+- Output cap: HarnessRouter's produced-file cap (`HARNESS_RESP_MAX_FILE_BYTES`,
+  25 MiB) was verified in the pinned source, and input and output limits are
+  20 MiB each. A delta that cannot fit makes the helper write an error
+  artifact and exit 3, and the sync fails as `output_too_large`. An oversized
+  artifact produced without the helper fails as `invalid_bundle`.
+- Determinism: after changing file mtimes and permission bits (0600 and 0700),
+  a rebuilt input bundle is byte-identical with the same manifest hash. Member
+  order, uid/gid, user and group names, mtimes, 0644/0755 modes, and the gzip
+  header (no filename, mtime 0) are asserted.
+- Identity: the delta must echo `input_manifest_sha256`. Removing that check
+  makes its test fail.
+- Local path safety: a symlinked `src` directory swapped in during the run is
+  caught as drift, and the outside target is untouched. With the drift check
+  bypassed, apply still refuses a path through a local symlink as
+  `unsafe_local_path` before any mutation. `.git`, `.git/...`, and `.GIT/...`
+  are refused.
+- Runtime gating: `incomplete` with a valid delta syncs and stays
+  `incomplete`. `failed` and `cancelled` are skipped without reading the
+  remote workspace, even when an artifact exists.
 - UHP file operations: the multipart upload carries `UHP-Version`,
   authorization, filename, content type, and `purpose`; typed parsing keeps
   extra fields; downloads return exact bytes, including JSON-looking and

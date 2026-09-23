@@ -119,6 +119,7 @@ def _read_input(root: str, run_id: str) -> tuple:
     if not os.path.isfile(path):
         raise BridgeHelperError(f"input archive {input_archive_name(run_id)} not found")
     manifest = None
+    manifest_sha256 = None
     files = {}
     with tarfile.open(path, mode="r:gz") as tar:
         for member in tar:
@@ -127,6 +128,7 @@ def _read_input(root: str, run_id: str) -> tuple:
             data = tar.extractfile(member).read()
             if member.name == MANIFEST_MEMBER:
                 manifest = json.loads(data)
+                manifest_sha256 = hashlib.sha256(data).hexdigest()
             elif member.name.startswith(FILES_PREFIX):
                 files[check_relpath(member.name[len(FILES_PREFIX) :])] = data
             else:
@@ -135,11 +137,11 @@ def _read_input(root: str, run_id: str) -> tuple:
         raise BridgeHelperError("input manifest missing or of an unknown format")
     if manifest.get("kind") != "input" or manifest.get("bridge_run_id") != run_id:
         raise BridgeHelperError("input manifest does not belong to this bridge run")
-    return manifest, files
+    return manifest, manifest_sha256, files
 
 
 def unpack(root: str, run_id: str) -> dict:
-    manifest, files = _read_input(root, run_id)
+    manifest, _, files = _read_input(root, run_id)
     declared = {entry["path"]: entry for entry in manifest["files"]}
     if set(declared) != set(files):
         raise BridgeHelperError("input archive members do not match its manifest")
@@ -193,8 +195,12 @@ def scan(root: str) -> dict:
     return found
 
 
+class DeltaTooLarge(BridgeHelperError):
+    pass
+
+
 def pack_delta(root: str, run_id: str) -> dict:
-    manifest, _ = _read_input(root, run_id)
+    manifest, manifest_sha256, _ = _read_input(root, run_id)
     before = {entry["path"]: entry for entry in manifest["files"]}
     now = scan(root)
     added, changed, returned = [], [], {}
@@ -208,22 +214,31 @@ def pack_delta(root: str, run_id: str) -> dict:
             changed.append(entry)
         returned[path] = (data, entry["executable"])
     deleted = sorted(p for p in before if p not in now and not is_excluded(p))
-    delta = {
+    identity = {
         "format": FORMAT,
-        "kind": "delta",
         "bridge_run_id": run_id,
         "workspace_id": manifest["workspace_id"],
         "candidate_id": manifest["candidate_id"],
         "base_commit": manifest["base_commit"],
-        "added": added,
-        "changed": changed,
-        "deleted": deleted,
+        "input_manifest_sha256": manifest_sha256,
     }
+    delta = {**identity, "kind": "delta", "added": added, "changed": changed, "deleted": deleted}
     archive = build_archive(delta, returned)
+    limit = manifest["max_output_bundle_bytes"]
+    too_large = len(archive) > limit
+    if too_large:
+        # One artifact only: report the overflow explicitly instead of splitting.
+        error = {**identity, "kind": "error", "error": "delta_too_large"}
+        archive = build_archive({**error, "delta_bytes": len(archive), "limit": limit}, {})
     temp = os.path.join(root, f".cloudeo-bridge-tmp-{run_id}")
     with open(temp, "wb") as handle:
         handle.write(archive)
     os.replace(temp, os.path.join(root, output_archive_name(run_id)))
+    if too_large:
+        raise DeltaTooLarge(
+            f"the delta does not fit in one bridge artifact ({limit} bytes); "
+            "an error artifact was written instead"
+        )
     return _identity(manifest, added=len(added), changed=len(changed), deleted=len(deleted))
 
 
@@ -241,6 +256,9 @@ def main(argv: list | None = None) -> int:
     root = os.path.abspath(args.root)
     try:
         result = (unpack if args.operation == "unpack" else pack_delta)(root, args.run_id)
+    except DeltaTooLarge as exc:
+        print(f"cloudeo-bridge-helper: error: {exc}", file=sys.stderr)
+        return 3
     except (BridgeHelperError, OSError, ValueError, KeyError, tarfile.TarError) as exc:
         print(f"cloudeo-bridge-helper: error: {exc}", file=sys.stderr)
         return 2

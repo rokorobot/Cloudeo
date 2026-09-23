@@ -19,7 +19,10 @@ class BridgeLimits:
     """Explicit bounds for both directions of the bridge."""
 
     # Below HarnessRouter CE's default 25 MiB upload cap (HARNESS_UPLOAD_MAX_BYTES).
-    max_bundle_bytes: int = 20 * MiB
+    max_input_bundle_bytes: int = 20 * MiB
+    # Below HarnessRouter CE's default 25 MiB produced-file cap
+    # (HARNESS_RESP_MAX_FILE_BYTES); the whole delta must fit in one artifact.
+    max_output_bundle_bytes: int = 20 * MiB
     max_total_bytes: int = 256 * MiB
     max_files: int = 10_000
     max_file_bytes: int = 32 * MiB
@@ -45,19 +48,35 @@ class InputManifest(_Strict):
     candidate_id: Identifier
     base_commit: CommitSha
     head_commit: CommitSha
+    # The helper refuses to emit a delta artifact larger than this.
+    max_output_bundle_bytes: int = Field(gt=0)
     files: tuple[BridgeFileEntry, ...]
 
 
-class DeltaManifest(_Strict):
+class _OutputIdentity(_Strict):
     format: Literal[FORMAT]
-    kind: Literal["delta"]
     bridge_run_id: str
     workspace_id: str
     candidate_id: str
     base_commit: str
+    # SHA-256 of the canonical input manifest actually sent for this run.
+    input_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DeltaManifest(_OutputIdentity):
+    kind: Literal["delta"]
     added: tuple[BridgeFileEntry, ...]
     changed: tuple[BridgeFileEntry, ...]
     deleted: tuple[str, ...]
+
+
+class ErrorManifest(_OutputIdentity):
+    """Written by the helper when the delta cannot fit in one artifact."""
+
+    kind: Literal["error"]
+    error: Literal["delta_too_large"]
+    delta_bytes: int = Field(ge=0)
+    limit: int = Field(ge=0)
 
 
 class WorkspaceBridgeTask(_Strict):
