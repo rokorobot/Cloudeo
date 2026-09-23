@@ -457,7 +457,12 @@ async def test_stale_candidate_is_an_executor_error_without_remote_calls(
     assert snapshot(repo, candidate) == before
 
 
-async def test_promoted_candidate_is_an_executor_error(repo, broker, candidate, staging, tmp_path):
+async def test_candidate_whose_base_moved_by_its_own_promotion_is_stale(
+    repo, broker, candidate, staging, tmp_path
+):
+    # Only the staleness check (public accepted_state()) catches this. The
+    # public broker protocol exposes no lifecycle state, so the adapter does
+    # not detect "promoted" (or "rejected") as such.
     (candidate.local_path / "done.txt").write_text("x\n")
     broker.promote(broker.checkpoint_candidate(candidate, "accepted"))
     server = FakeHarnessRouter(tmp_path, work=standard_work)

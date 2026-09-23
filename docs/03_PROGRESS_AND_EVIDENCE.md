@@ -938,47 +938,73 @@ Validation (all offline):
   `UHPWorkspaceBridge`, `UHPClient`, `ExecutionDispatcher`,
   `UHPHarnessTaskBackend`, and LongHorizon's `AgentAdapter`, `Environment`,
   `EpisodeBudget`, and `EpisodeResult`, with the offline fake HarnessRouter.
-- A: accepted A → executor episode → the candidate is modified, added, and
-  deleted, and is dirty. Then:
-  - accepted is still A, and the candidate `HEAD` is still A;
+- Test names are in `tests/test_longhorizon_workspace_executor.py`; the
+  numbers in brackets count parametrized cases.
+- `test_a_executor_changes_candidate_but_never_accepted_state` [1]: accepted A
+  → one executor episode → the candidate is modified, added, and deleted, and
+  is dirty. Afterwards:
+  - accepted state and the candidate `HEAD` are both still A;
   - there are no checkpoint refs and no promoted or rejected markers;
   - `independently_verified` is false.
-
-  A spy broker shows that the only broker calls are `inspect_candidate` and
-  `accepted_state`.
-- B: `completed` with a missing output artifact, or with no session ID, gives
-  `error` with `workspace_sync_failed: <code>`, and the candidate is unchanged.
-- C–F: `unknown` (a transport timeout), `failed`, `cancelled`, and
-  `in_progress` keep the ADR-016 mapping. The sync is skipped and the candidate
-  is unchanged.
-- G: `incomplete` with a valid partial delta syncs and keeps the budget mapping
-  (`max_steps` → `timeout`, `interrupted` → `error`).
-- H: a local edit during the remote run gives `error` with
-  `candidate_changed_during_execution`, and the local edit survives.
-- I: the profile's harness, model, step limit, and budget timeout are sent.
-  Two episodes use two fresh sessions with no `previous_response_id`, and the
+- `test_executor_uses_only_read_only_broker_calls` [1]: a spy broker records
+  that the only calls are `inspect_candidate` and `accepted_state`.
+- `test_b_completed_without_sync_is_error` [2]: `completed` with
+  `output_artifact_missing` or `missing_session_id` gives `error` with
+  `workspace_sync_failed: <code>`, and the candidate is unchanged.
+- `test_c_unknown_runtime` [1]: a transport timeout gives `unknown` → `error`
+  with `runtime_state_unobserved`. The sync is skipped and the candidate is
+  unchanged.
+- `test_d_e_f_non_completed_runtime` [3]: `failed` → `error`, `cancelled` →
+  `cancelled`, `in_progress` → `error` with `runtime_state_unobserved`. The
+  sync is skipped and the candidate is unchanged.
+- `test_g_incomplete_keeps_budget_mapping_and_records_partial_sync` [2]: a
+  valid partial delta syncs, with `max_steps` → `timeout` and `interrupted` →
+  `error`.
+- `test_h_candidate_drift_is_not_done_and_local_edit_survives` [1]: gives
+  `error` with `workspace_sync_failed: candidate_changed_during_execution`.
+- `test_i_profile_budget_and_fresh_session_per_episode` [1]: the profile's
+  harness, model, step limit, and per-episode budget timeouts are sent. Two
+  episodes use two distinct sessions with no `previous_response_id`, and the
   second returns only its own delta.
-- J: runtime evidence (usage, echoed model, fallback, response and session IDs)
-  and workspace evidence are both present.
-- K: the capability flags are `True` for the executor and `False` for the base
-  adapter, and the executor conforms to `AgentAdapter`.
-- L: the full 7-role × 2-adapter matrix. It fails closed for a subclass, an
-  unknown object, the unknown role names `agent` and `auditor`, and a mixed
-  binding set, and the role keywords match the pinned manager's signature.
-- M, N: an Environment that fails on any call is never touched, and no
-  trajectory file is created.
-- Candidate lifecycle: stale (another candidate promoted), itself promoted,
-  cleaned up, forged, and unsendable (a symlink) each return `error` before
-  any HarnessRouter request. The stale candidate is byte-for-byte unchanged,
-  and the cleaned-up candidate is not recreated. The adapter has no code path
-  to `create_candidate()`, `checkpoint_candidate()`, `promote()`, or
-  `reject()`.
+- `test_j_metadata_keeps_runtime_evidence_and_adds_workspace_evidence` [1].
+- `test_k_capability_flags` [1] and `test_executor_conforms_to_agent_adapter`
+  [1]: the executor is `True`, and the base adapter is still `False`.
+- `test_l_role_eligibility_matrix` [7]: every role against both adapters.
+- `test_role_eligibility_fails_closed_for_unknowns` [1]: a subclass, an unknown
+  object, the unknown roles `agent` and `auditor`, and a mixed binding set are
+  all refused.
+- `test_role_keywords_match_pinned_manager` [1]: the role keywords match the
+  signature of the pinned manager's `_run_impl`.
+- `test_m_n_environment_untouched_and_no_trajectory_fabricated` [1].
+- Candidate checks, public broker API only; each returns `error` with no
+  HarnessRouter request:
+  - `test_stale_candidate_is_an_executor_error_without_remote_calls` [1]:
+    another candidate was promoted, and the candidate is byte-for-byte
+    unchanged.
+  - `test_candidate_whose_base_moved_by_its_own_promotion_is_stale` [1]:
+    caught only as staleness, not recognized as promoted.
+  - `test_cleaned_up_candidate_is_an_executor_error` [1]: the candidate is not
+    recreated.
+  - `test_foreign_candidate_is_an_executor_error` [1].
+  - `test_unsendable_candidate_is_an_executor_error` [1]: a symlink.
+  - `test_executor_requires_a_workspace_capable_bridge` [1].
+- The adapter source contains no call to `create_candidate()`,
+  `checkpoint_candidate()`, `promote()`, `reject()`, `cleanup()`, private broker
+  methods, broker refs, or the Environment.
 - Mutation checks:
   - Removing the completed+unsynced → `error` rule fails 3 tests (B ×2, H).
-  - Removing the staleness check fails 2 tests (stale, promoted).
+  - Removing the staleness check fails the 2 staleness tests.
 - Ruff passes.
 
-Known limitation: a rejected candidate is not detectable through the public
-broker API (ADR-018).
+Known limitations (ADR-018):
+
+- The public WorkspaceBroker protocol exposes no terminal lifecycle state, so
+  the adapter cannot distinguish an open candidate from a promoted or rejected
+  one. Lifecycle ownership must be enforced by future orchestration or by a
+  public broker lifecycle query.
+- The LongHorizon executor prompt may name `config.workspace_path` while
+  execution happens in a fresh remote session workspace. Safety inside the full
+  `manager.run()` flow is unproven, and is a prerequisite test for the
+  role-binding milestone. `manager.run()` compatibility is not claimed.
 
 No live provider, harness, or HarnessRouter calls were made.

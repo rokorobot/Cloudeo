@@ -824,31 +824,61 @@ actual harness and model, `model_fallback`, `response_id`, `session_id`,
 `added_paths`, `changed_paths`, `deleted_paths`, `ignored_paths`, and
 `independently_verified: False`, which is always false.
 
-**Candidate lifecycle:** Before any upload, the adapter checks the candidate
-with existing broker semantics. `inspect_candidate()` must succeed (the
-candidate's identity and worktree), and `accepted_state()` must still equal the
-candidate's `base_commit`. Failures return an `EpisodeResult` with
-`status="error"` and `cloudeo_runtime_status=None`, and no HarnessRouter
-request is made:
+**Candidate checks (public broker API only):** The adapter checks the candidate
+before any upload, using only the public `WorkspaceBroker` protocol. It never
+calls private `GitWorkspaceBroker` methods such as `_require_open()` and never
+reads broker-owned refs. `inspect_candidate()` must succeed, which proves the
+candidate's identity and worktree. `accepted_state()` must still equal the
+candidate's `base_commit`. On failure the adapter returns an `EpisodeResult`
+with `status="error"` and `cloudeo_runtime_status=None`, and makes no
+HarnessRouter request.
 
-- `candidate_unavailable`: a foreign or forged candidate, a cleaned-up
-  worktree, or a candidate the bridge refuses to send (for example a symlink).
-- `candidate_stale`: accepted state moved after the candidate was created. This
-  includes a candidate that was itself promoted.
-- `workspace_upload_failed`: a UHP error while uploading.
+- `candidate_unavailable`: a foreign or forged candidate, a missing or
+  cleaned-up worktree, or a candidate the bridge refuses to send, for example
+  one containing a symlink. The bridge's own `inspect_candidate()` and
+  input-building failures also map here; they happen before anything is
+  uploaded.
+- `candidate_stale`: the candidate's base no longer equals accepted state.
+- `workspace_upload_failed`: a UHP error while uploading, before any task is
+  submitted.
 
 The adapter never recreates the candidate, never creates a second one, and
-never switches accepted state.
+never switches accepted state. The Workspace Broker's semantics are unchanged
+by this milestone.
+
+**Lifecycle state is not visible (public protocol limitation):** The current
+WorkspaceBroker public protocol does not expose terminal candidate lifecycle
+state. UHPWorkspaceExecutorAdapter therefore cannot independently distinguish
+an open candidate from one already marked promoted/rejected using only the
+public broker interface. Future orchestration must enforce lifecycle
+ownership, or the Broker protocol must gain an explicit public lifecycle query.
+
+`inspect_candidate()` deliberately verifies only ownership and worktree state.
+A candidate whose own promotion advanced accepted state fails the staleness
+check, but only because accepted state moved. It is not recognized as
+promoted. A rejected candidate leaves accepted state unchanged, so it passes
+both checks. The adapter makes no claim to detect either state.
 
 **Environment:** The executor's filesystem is the bound candidate, not the
 LongHorizon `Environment` passed to `run_episode()`. That Environment is
 accepted for protocol compatibility and never called. The pinned manager still
 uses its Environment itself: it writes round prompts there, and takes
-screenshots for GUI steps. Its executor prompt also names
-`config.workspace_path`, which is not the candidate's path. A future
-manager-integration layer must set that path consistently, or tell the
-executor that the candidate snapshot is authoritative. The transport
-instructions from ADR-017 already do the latter.
+screenshots for GUI steps.
+
+**Workspace path mismatch in manager prompts (unproven):** The pinned
+LongHorizon executor prompt may contain `config.workspace_path`, which comes
+from the LongHorizon Environment. Execution actually happens in a fresh remote
+HarnessRouter session workspace, where the bridge has extracted the candidate
+snapshot. The bridge transport instructions (ADR-017) tell the harness to work
+in the current extracted project directory. That has **not** been proven safe
+inside the full LongHorizon `manager.run()` prompt flow, where the manager's
+prompt may name a different path. This branch does not rewrite LongHorizon
+prompts and does not claim `manager.run()` compatibility. The later
+role-binding and manager-integration milestone must, as a prerequisite, test
+the manager's real executor prompt through the bridge. That test must show
+that the harness works only in the extracted snapshot and that the delta lands
+in the candidate. Otherwise that milestone must reconcile `workspace_path`
+explicitly.
 
 **Trajectory:** The bridge does not stream a native LongHorizon trajectory.
 `live_trajectory_path` is accepted and never written, and no trajectory is
@@ -857,11 +887,16 @@ diagnostics-only when there is no assistant text.
 
 **Limitations:**
 
-- A rejected candidate cannot be detected through the public broker API.
-  `inspect_candidate()` does not check the open/rejected markers, and rejection
-  does not move accepted state. A rejected candidate therefore passes the
-  pre-flight check, although any later checkpoint or promotion of it still
-  fails in the broker.
+- No terminal lifecycle detection: the public WorkspaceBroker protocol does
+  not expose whether a candidate is open, promoted, or rejected, so the adapter
+  cannot tell them apart. Future orchestration must enforce lifecycle
+  ownership, or the Broker protocol must gain an explicit public lifecycle
+  query.
+- `workspace_path` prompt mismatch: the LongHorizon executor prompt may name
+  `config.workspace_path`, while execution happens in a fresh remote session
+  workspace. Safety inside the full `manager.run()` prompt flow is unproven,
+  and that is a prerequisite test for the role-binding milestone.
+  `manager.run()` compatibility is not claimed.
 - `in_progress` and `unknown` runs leave a remote session that may still be
   mutating. Nothing is applied from it.
 - No manager-loop integration, auditor, checkpoint, promotion, or rejection.

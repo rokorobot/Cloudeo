@@ -97,7 +97,12 @@ class UHPWorkspaceExecutorAdapter:
         return self._episode_result(result, budget, episode_ms)
 
     def _candidate_problem(self) -> tuple[str, str] | None:
-        """Existing broker semantics only: identity, worktree, and staleness."""
+        """Public broker API only: identity, worktree, and staleness.
+
+        The public WorkspaceBroker protocol exposes no terminal lifecycle
+        state, so an open candidate cannot be told apart from a promoted or
+        rejected one here (ADR-018).
+        """
         broker = self.bridge.broker
         try:
             broker.inspect_candidate(self.candidate)
