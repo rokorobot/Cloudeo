@@ -1146,3 +1146,90 @@ Mutation checks (each change was reverted afterwards):
 Ruff passes.
 
 No live provider, harness, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — Auditor-result normalization
+
+Same branch, `feat/longhorizon-workspace-auditor`, on top of `e409702`. It adds
+`src/cloudeo/longhorizon/audit_result.py` (`normalize_auditor_result`,
+`AuditorVerification`, `AuditorFailure`) and the ADR-019 amendment. No
+existing module changed, and LongHorizon is not modified.
+
+Validation (all offline):
+
+- With the `longhorizon` extra: **516 passed** (429 existing unchanged, 87 in
+  `tests/test_longhorizon_audit_result.py`). Without the extra: 319 passed and
+  5 skipped (the four LongHorizon modules and one bridge test).
+- Focused suites: normalizer 87, workspace auditor 43, workspace executor 31,
+  LongHorizon adapter 35, bridge 105.
+
+Tests in `tests/test_longhorizon_audit_result.py` (the numbers in brackets are
+parametrized cases):
+
+- **Normal reports:**
+  - `test_valid_report_is_verified` [1];
+  - `test_valid_but_incomplete_report_is_not_verified` [1];
+  - `test_longhorizon_acceptance_guard_still_applies` [1]: LongHorizon
+    downgrades blocking constraints.
+- **Mutation:** `test_mutation_detected_is_blocked_and_list_preserved` [1]
+  (native keys; `added`, `changed`, `deleted`, and `type_changed` are kept
+  exactly).
+- **Unusable reports:**
+  - `test_missing_report_is_blocked` [3]: empty, whitespace, or a valid
+    report present only in `actions_log`;
+  - `test_malformed_report_is_blocked` [1];
+  - `test_conflicting_visible_outputs_are_ambiguous` [1];
+  - `test_identical_visible_outputs_follow_longhorizon_precedence` [1];
+  - `test_no_read_only_evidence_is_blocked` [1].
+- **Failures:**
+  - `test_runtime_failure_is_auditor_error` [5]: authentication, rate limit,
+    generic provider error, timeout, and cancelled, each even with a perfect
+    report present;
+  - `test_cloudeo_audit_boundary_codes` [5]: drift, staleness, invalid
+    evidence, and an unavailable candidate are `BLOCKED`; an upload failure is
+    `AUDITOR_ERROR`.
+- **Repair:**
+  - `test_manager_repair_shape_does_not_use_repaired_actions_log` [1]: the
+    pinned manager's corrected-result shape stays `BLOCKED` /
+    `report_malformed`, sourced from the primary visible output;
+  - `test_repair_is_used_only_when_explicitly_passed` [1];
+  - `test_1_malformed_original_with_positive_repair_is_capped_at_not_verified`
+    [1]: text, parsed fields, source, and repair metadata are kept, with
+    reason `report_repaired_not_verification_authority`;
+  - `test_2_repaired_negative_report_is_not_verified` [1];
+  - `test_structured_evidence_does_not_make_a_repaired_report_verified` [1];
+  - `test_3_unacceptable_repair_is_blocked` [5]: a failed repair, a repair
+    that is still malformed, one only in `actions_log`, a mutated repair, or an
+    ambiguous one;
+  - `test_repair_is_ignored_when_primary_report_is_valid` [1];
+  - `test_repair_cannot_rescue_a_mutated_or_failed_primary` [1];
+  - `test_4_no_repair_turns_a_failed_audit_into_verified` [36]: 12 failure
+    conditions × a malformed, empty, or valid primary, each with a positive
+    repair. The conditions are a runtime error, a provider authentication
+    error, a timeout, cancellation, a native mutation, a Cloudeo mutation, no
+    read-only evidence, a guard without a verdict, drift, staleness, invalid
+    evidence, and a transport failure. None is `VERIFIED`, and the repair is
+    never considered.
+- **Sweep:** `test_extraction_or_execution_failure_is_never_verified` [12].
+- **Evidence:** `test_upstream_metadata_is_preserved_unmodified` [1].
+- **With the real `UHPWorkspaceAuditorAdapter`:**
+  - `test_real_read_only_audit_is_verified`;
+  - `test_real_auditor_mutation_is_blocked_with_paths`;
+  - `test_real_local_drift_is_blocked`;
+  - `test_real_runtime_failure_is_auditor_error`;
+  - `test_real_malformed_audit_with_positive_repair_is_not_verified`.
+
+Mutation checks (each change was reverted afterwards):
+
+| Deliberate change | Tests that fail |
+| --- | --- |
+| LongHorizon's own source precedence, which falls back to `actions_log` | 8 |
+| No read-only evidence requirement | 7 (including the `no_read_only_evidence` and `guard_without_verdict` cases with a valid primary) |
+| Repair parsed the way the pinned manager does | 3 (both repair-cap unit tests and the real-adapter repair test) |
+| No repair cap | 3 (the two capped-repair unit tests and the real-adapter repair test) |
+
+Ruff passes.
+
+No live provider, harness, or HarnessRouter calls were made.

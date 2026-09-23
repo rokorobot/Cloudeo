@@ -1161,3 +1161,59 @@ bridge tests pass unmodified.
 **Status:** Implemented on `feat/longhorizon-workspace-auditor`; merged into
 `main` with a normal merge commit on top of `f3a71cb`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
+
+**Amendment (2026-09-23, `feat/longhorizon-workspace-auditor`): normalized
+auditor verification.** `cloudeo.longhorizon.audit_result.normalize_auditor_result(primary,
+*, repair=None)` turns one auditor `EpisodeResult`, plus an optional format-repair
+episode, into one `AuditorVerification`. Its `status` is `VERIFIED`,
+`NOT_VERIFIED`, `BLOCKED`, or `AUDITOR_ERROR`, and it also carries a `reason`,
+the report text and its source, the parsed header fields, `format_repair`,
+the failure classification, and deep copies of the upstream and repair
+metadata.
+
+- **Ownership:** Cloudeo owns the normalized verification semantics.
+  LongHorizon remains the execution and auditing substrate. The control
+  header, parsing, acceptance-constraint guard, and runtime-failure
+  classification are delegated to LongHorizon's public functions
+  (`audit_report_from_episode_result`, `has_valid_auditor_control_header`,
+  `classify_agent_runtime_failure`, `VISIBLE_OUTPUT_KEYS`), and LongHorizon is
+  not modified.
+- **Native mutation keys:** workspace mutation evidence keeps LongHorizon's own
+  keys, `verifier_workspace_mutation_detected` and
+  `verifier_workspace_mutations`. No competing names are introduced.
+- **Fail-closed order:**
+  1. A mutation is `BLOCKED`.
+  2. A Cloudeo audit-boundary code (drift, staleness, invalid evidence, an
+     unavailable candidate) is `BLOCKED`. `workspace_upload_failed` is
+     `AUDITOR_ERROR`.
+  3. A runtime or provider failure, classified by LongHorizon, or
+     cancellation, is `AUDITOR_ERROR`.
+  4. Missing read-only guard evidence is `BLOCKED`.
+  5. A missing, ambiguous, or malformed report is `BLOCKED`.
+
+  Only after all of these checks is the report content read.
+- **Deterministic report source:** the report comes only from LongHorizon's
+  visible-output metadata keys, in LongHorizon's order, and is recorded as
+  `report_source`. `actions_log` is never a report source; this closes the
+  manager format-repair path in which a repaired `actions_log` loses to the
+  primary `assistant_visible_output`. Differing texts under several keys are
+  ambiguous. The selected text is given to LongHorizon's parser as the only
+  report it can see.
+- **Repair restores format only.** It is not verification authority. A
+  repaired report is used only when the caller passes the repair episode
+  explicitly, the primary report was malformed, and the repair episode is
+  itself acceptable: `done`, with no runtime failure or mutation, an
+  unambiguous source, and a valid header. The repaired text, parsed fields,
+  source, and repair metadata are all kept, with `format_repair="accepted"`.
+  Its status is capped at `NOT_VERIFIED`: a positive repaired conclusion gives
+  `report_repaired_not_verification_authority`, and a negative one gives
+  `report_not_complete`. An unacceptable repair leaves the result `BLOCKED`
+  (`format_repair="rejected"`). Repair is never considered when an earlier
+  check has already failed.
+- **No structured verification path:** no structured evidence can verify
+  without the auditor's own, unrepaired conclusion. The read-only guard,
+  snapshot, and accepted-state evidence prove only that the audit was
+  attributable and read-only, not what it concluded. `VERIFIED` therefore
+  requires the primary report itself to parse as `complete / clean / aligned`.
+- **`VERIFIED` is not a checkpoint or promotion decision.** That remains the
+  next milestone's gate, which must also recheck the audited snapshot.
