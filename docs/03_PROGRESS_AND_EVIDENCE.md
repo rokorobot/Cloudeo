@@ -1227,7 +1227,7 @@ Mutation checks (each change was reverted afterwards):
 | --- | --- |
 | LongHorizon's own source precedence, which falls back to `actions_log` | 8 |
 | No read-only evidence requirement | 7 (including the `no_read_only_evidence` and `guard_without_verdict` cases with a valid primary) |
-| Repair parsed the way the pinned manager does | 3 (both repair-cap unit tests and the real-adapter repair test) |
+| Repair parsed the way the pinned manager does | 3 (the positive-repair cap test, the negative-repair test, and the real-adapter repair test) |
 | No repair cap | 3 (the two capped-repair unit tests and the real-adapter repair test) |
 
 Ruff passes.
