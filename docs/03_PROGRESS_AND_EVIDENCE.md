@@ -1152,8 +1152,8 @@ No live provider, harness, or HarnessRouter calls were made.
 
 ## 2026-09-23 — Auditor-result normalization
 
-Same branch, `feat/longhorizon-workspace-auditor`, on top of `e409702`. It adds
-`src/cloudeo/longhorizon/audit_result.py` (`normalize_auditor_result`,
+Branch `feat/longhorizon-promotion-gate`, from `main` at `b91ab83` (commit
+`2e5bca8`). It adds `src/cloudeo/longhorizon/audit_result.py` (`normalize_auditor_result`,
 `AuditorVerification`, `AuditorFailure`) and the ADR-019 amendment. No
 existing module changed, and LongHorizon is not modified.
 
@@ -1239,8 +1239,9 @@ No live provider, harness, or HarnessRouter calls were made.
 
 ## 2026-09-23 — Verified checkpoint and promotion gate
 
-Same branch, `feat/longhorizon-workspace-auditor`, on top of `da4ea22`. It adds
-`src/cloudeo/longhorizon/promotion_gate.py`, the helper
+Branch `feat/longhorizon-promotion-gate`, from `main` at `b91ab83`, after the
+normalizer (`2e5bca8`) and its documentation fix (`6fce086`); the gate is commit
+`7a191c0`. It adds `src/cloudeo/longhorizon/promotion_gate.py`, the helper
 `current_content_sha256()` in `src/cloudeo/bridge/audit.py`, and ADR-020. The
 broker, bridge transport, adapters, normalizer, and LongHorizon are unchanged.
 

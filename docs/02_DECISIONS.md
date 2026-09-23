@@ -1162,7 +1162,7 @@ bridge tests pass unmodified.
 `main` with a normal merge commit on top of `f3a71cb`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
 
-**Amendment (2026-09-23, `feat/longhorizon-workspace-auditor`): normalized
+**Amendment (2026-09-23, `feat/longhorizon-promotion-gate`): normalized
 auditor verification.** `cloudeo.longhorizon.audit_result.normalize_auditor_result(primary,
 *, repair=None)` turns one auditor `EpisodeResult`, plus an optional format-repair
 episode, into one `AuditorVerification`. Its `status` is `VERIFIED`,
@@ -1321,5 +1321,5 @@ modified.
   refuses one.
 - There is no live HarnessRouter proof; all validation is offline.
 
-**Status:** Implemented on `feat/longhorizon-workspace-auditor`; not merged.
+**Status:** Implemented on `feat/longhorizon-promotion-gate`; not merged.
 See `03_PROGRESS_AND_EVIDENCE.md`.
