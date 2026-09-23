@@ -1426,3 +1426,296 @@ is never fabricated for a gate that did not run:
 **Status:** Implemented on `feat/manager-promotion-integration`; merged into
 `main` with a normal merge commit on top of `84e7591`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-022 — V2 control layer above the trust kernel
+
+**Status:** Accepted (2026-09-23); not yet implemented.
+
+**Decision:** Cloudeo v2 adds a control layer for Projects, WorkOrders,
+Execution Profiles, Memories, and Human Decisions **above** the trust kernel
+(Manager → Auditor → Normalizer → Promotion Gate → Workspace Broker,
+ADR-015 to ADR-021). The kernel stays unchanged and remains the sole
+acceptance authority.
+
+Cloudeo owns the project workflow: onboarding, WorkOrders, blocks, state,
+envelope, and escalation. LongHorizon owns the inside of each bounded
+autonomous coding episode. Cloudeo does not reimplement LongHorizon's agent
+loop.
+
+**Invariant (K1):** nothing in the control layer may write accepted state,
+write `refs/cloudeo`, call `promote()`, or bypass the gate. `PROMOTED` is
+reachable only from a kernel result with `promoted == true`.
+
+**Consequences:** the contract refines `07_TARGET_ARCHITECTURE_V2.md` §4.1
+(WorkOrder), specializes §4.3 (ExecutionProfile; see ADR-027), and replaces
+§5 profile selection for role-bound steps with stable role bindings. Where
+they disagree, the contract and ADR-022 to ADR-029 govern.
+
+---
+
+## ADR-023 — Project identity and in-repository Project Memory
+
+**Status:** Accepted (2026-09-23); not yet implemented.
+
+**Decision:**
+
+- A **ProjectTarget** maps to exactly one Workspace Broker workspace. The broker
+  remains the authority for the accepted baseline.
+- **Project Memory** is the accepted description of what exists: architecture,
+  components, interfaces, decisions, conventions, and limitations.
+  - It is stored in **human-readable tracked documents** under per-project
+    `memory_paths`, for example `docs/architecture/`, `docs/components/`, and
+    `docs/decisions/`.
+  - An optional machine index under `.cloudeo/project-memory/` only points into
+    those documents.
+  - Entries are claims with evidence anchors.
+  - Credentials and secrets never belong in Project Memory.
+
+**Update rule:**
+
+- Canonical Project Memory advances only by promotion, together with the code
+  it describes.
+- Candidate memory changes only after `CODE_APPROVED`, only by the
+  `memory_curator` role, and only within `memory_paths`. It then passes an
+  independent Memory Audit.
+- Memory never records planned or unverified work as existing.
+
+**Reason:** tracked memory is Git-visible candidate state, inside the audited
+snapshot and content hash (ADR-019, ADR-020). The existing gate therefore
+proves and promotes code and memory atomically. WorkOrder Memory and
+Performance Memory are separate stores and never live in the repository.
+
+---
+
+## ADR-024 — Context Intake is read-only and memory is a claim
+
+**Status:** Accepted (2026-09-23); not yet implemented.
+
+**Decision:** The `context_analyst` role reads Project Memory first, then
+verifies each relevant claim against its anchors in the code at the planned
+baseline. Each claim is reported as verified, contradicted, or unverifiable,
+with evidence.
+
+Intake runs on a read-only snapshot (reusing ADR-019 machinery) and never
+writes to any workspace. A contradicted claim becomes a proposed memory
+correction in the plan, for the user to approve.
+
+**Reason:** memory speeds orientation, but unchecked memory would let stale
+documentation steer execution.
+
+---
+
+## ADR-025 — Plan Approval Gate and the approved envelope
+
+**Status:** Accepted (2026-09-23); not yet implemented.
+
+**Decision:** No workspace write happens before the user approves a specific,
+immutable plan version. The `architecture_planner` proposes architecture
+changes, the `implementation_planner` turns them into blocks, and the user
+decides.
+
+The approved envelope contains:
+
+- the snapshotted Project Execution Profile version (shown, not renegotiated);
+- the blocks, their scopes, and the architecture changes;
+- the acceptance criteria;
+- the budget and the risk class.
+
+Any later plan change is a new version that needs approval again. Automatic
+behavior is limited to:
+
+- running bound primaries;
+- retries within budget;
+- approved fallbacks, only under their defined conditions.
+
+Material deviations always escalate (ADR-028). They are detected from
+evidence: deterministic scope and path checks, normalized audit findings, and
+accounting.
+
+---
+
+## ADR-026 — WorkOrder and ImplementationBlock state machines
+
+**Status:** Accepted (2026-09-23); not yet implemented.
+
+**Decision:**
+
+- **WorkOrder states:**
+  - main path: `DRAFT → CONTEXT_INTAKE → PLAN_PROPOSED → PLAN_APPROVED →
+    EXECUTING → FINAL_VERIFICATION → PROMOTED`;
+  - overlays: `USER_ATTENTION_REQUIRED`, `DEFERRED`, `ABORTED`.
+- **Blocks:**
+  - Each block runs as a **bounded LongHorizon manager run in a no-promotion,
+    verify-only wrapper** (a variant of ADR-021). Deterministic acceptance
+    checks and Cloudeo's normalization of the run's final audit follow.
+  - That yields `CODE_APPROVED`, or another bounded run within the attempt
+    budget, or `USER_ATTENTION_REQUIRED`.
+  - After `CODE_APPROVED`, the executor is finished for the block. If memory
+    impact exists, the `memory_curator` and then an independent
+    `memory_auditor` run.
+  - The block ends at `BLOCK_DONE`.
+
+`CODE_APPROVED` requires all of the following:
+
+- the deterministic checks pass;
+- the audit of the exact current candidate state is original `VERIFIED`,
+  never repaired;
+- the diff is within the declared scope, or covers a user-approved deviation.
+
+`BLOCK_DONE` additionally requires a passing Memory Audit where memory
+changed, and that only `memory_paths` changed after `CODE_APPROVED`.
+
+**Checkpoints:** an immutable candidate checkpoint is recorded through the
+broker at the end of the block, not at `CODE_APPROVED`, so it holds coherent
+code and synchronized memory.
+
+The **authoritative block state** is the `HEAD` plus content hash of the last
+approving audit: the code audit when no memory changed, otherwise the Memory
+Audit. The ADR-020 immutable-object principle then applies, without
+promotion:
+
+1. The current `HEAD` and content hash are re-read and must equal the
+   authoritative state.
+2. `checkpoint_candidate()` records the checkpoint.
+3. From Git objects, the checkpoint commit's parent must be the audited
+   `HEAD` (or the commit must be that `HEAD`), and its content hash must equal
+   the audited hash.
+
+Only a proven checkpoint makes the block `BLOCK_DONE`. A raced checkpoint is
+never labelled `BLOCK_DONE`: it stays as unaccepted candidate evidence, and
+the WorkOrder raises `USER_ATTENTION_REQUIRED` with
+`BLOCK_CHECKPOINT_MISMATCH`. Block checkpoints are candidate history only.
+
+**Final verification:** the candidate is frozen, and a fresh read-only final
+audit runs, then the normalizer, then the gate. No write-capable run takes
+place. Executor completion, LongHorizon `complete`, `CODE_APPROVED`, and
+`BLOCK_DONE` never imply acceptance.
+
+---
+
+## ADR-027 — ExecutionProfile hierarchy, roles, and stable role bindings
+
+**Status:** Accepted (2026-09-23); not yet implemented.
+
+**Decision:**
+
+- **`ExecutionProfile`** (07 §4.3) stays the generic, routable execution
+  configuration. It is specialized as `AgentProfile` (model/harness agents),
+  `DirectToolProfile` (Treg), `BrowserExecutionProfile` (Browser Use), and
+  `HumanExecutionProfile`.
+  - Profiles are immutable once used and carry a version fingerprint.
+  - The existing `HarnessExecutionProfile` is the runtime subset of an
+    AgentProfile.
+- **Roles** are distinct even when they map to the same profile:
+  - `context_analyst`, `architecture_planner`, `implementation_planner`,
+    `recovery_planner`;
+  - `episode_manager`, `primary_code_executor`, `code_auditor`,
+    `format_repair`;
+  - `memory_curator`, `memory_auditor`, `final_verifier`, `user_reporter`.
+  - Each role has a required workspace access. The `memory_curator` may write
+    only `memory_paths`.
+- **Project Execution Profile:** the role → primary ExecutionProfile bindings,
+  with ordered fallbacks and fallback conditions.
+  - It is **approved at project onboarding** and versioned in the Cloudeo
+    control store. Each WorkOrder snapshots the current version.
+  - Changing bindings is a separate, explicit, project-level user decision.
+  - Credentials never live in the repository.
+
+**Routing authority:**
+
+- Runtime routing decides which role or capability a step needs, not which
+  model.
+- A role uses its bound primary while it is available and allowed.
+- Fallbacks are used only under their defined conditions: unavailability, or
+  classified runtime/provider failures after the allowed retries, or a policy
+  prohibition. Every switch is recorded with evidence.
+- Performance Memory and Jev never select or switch profiles.
+
+**Independence:** auditor independence is cumulative per risk class. Each
+requirement is mandatory for its class.
+
+| Risk | Required |
+| --- | --- |
+| Low | a fresh session and a read-only workspace |
+| Medium | low, plus a different model family from the producer |
+| High | medium, plus a different inference provider from the producer |
+
+It is measured by role against the producer of the audited change:
+
+| Auditing role | Must be independent from |
+| --- | --- |
+| `code_auditor` | `primary_code_executor` |
+| `memory_auditor` | `memory_curator` |
+| `final_verifier` | every write-capable profile whose changes remain in the final candidate |
+
+If a requirement cannot be met, `USER_ATTENTION_REQUIRED` is raised with
+`INDEPENDENCE_UNAVAILABLE`. Cloudeo never weakens the policy automatically;
+only the user may explicitly revise or waive it, and the decision is recorded.
+`memory_auditor` is a separate binding; it may reference the same
+AgentProfile as `code_auditor` when policy allows.
+
+**Profile snapshot:** during normal execution a WorkOrder's profile snapshot
+is immutable. An active WorkOrder moves to a new project-level version only
+through `change_agent` (ADR-028) and a user-approved envelope amendment.
+
+---
+
+## ADR-028 — USER_ATTENTION_REQUIRED
+
+**Status:** Accepted (2026-09-23); not yet implemented.
+
+**Decision:** Whenever a WorkOrder cannot continue within the approved
+envelope, it enters `USER_ATTENTION_REQUIRED`. Examples include:
+
+- exhausted attempts or budget;
+- a material deviation;
+- an unavailable agent beyond its fallback conditions;
+- unachievable independence;
+- an `AUDITOR_ERROR`, or a non-`VERIFIED` audit beyond the retries;
+- a memory conflict, a block checkpoint mismatch, or baseline drift;
+- a promotion "not attempted" or "refused";
+- a risk class that requires a human.
+
+- One attention request shows **all** active reasons together, each with a
+  severity, evidence references, and advisory suggested solutions (from the
+  `recovery_planner` and Performance Memory, with their source). It supports
+  free-form conversation.
+- The user resolves it with `resume`, `replan`, `change_agent`,
+  `change_budget`, `defer`, or `abort`.
+- `change_agent` for an active WorkOrder follows a fixed path:
+  1. a new Project Execution Profile version (a project-level decision);
+  2. an explicit WorkOrder envelope amendment, which the user approves;
+  3. the WorkOrder then references the new version and resumes.
+
+  Nothing changes silently.
+- Each decision is recorded. `resume` requires every blocking reason to be
+  resolved or explicitly waived by the user.
+- Kernel refusals, including `refused_after_checkpoint` (with the kept
+  checkpoint as evidence), `AUDITOR_ERROR`, and baseline drift are never
+  silently retried or absorbed.
+
+---
+
+## ADR-029 — Performance Memory is advisory and bounded by approved policy
+
+**Status:** Accepted (2026-09-23); not yet implemented.
+
+**Decision:** Performance Memory keeps the 09 design (trusted-label rule,
+version fingerprints, cold start, learning stages). It stays separate from
+Project Memory and WorkOrder Memory and never lives in the repository. It
+learns only from verified labels, keyed by ExecutionProfile version
+fingerprint, role, and task class.
+
+It may **recommend** changes to the project's role bindings (a project-level
+user decision), and suggest options in attention requests, always showing
+sample size and uncertainty. It may **never** select or switch a profile,
+including among approved fallbacks, because it predicts better performance.
+It may never change an approved Project Execution Profile, plan, budget, risk
+class, or independence policy. Jev used for policy follows the same bound.
+
+**Storage:** the Cloudeo control store (SQLite initially) sits behind a
+storage interface with record versions and compare-and-swap transitions, so
+PostgreSQL can replace it without changing WorkOrder semantics.
