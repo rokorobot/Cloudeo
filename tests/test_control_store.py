@@ -1,7 +1,11 @@
 """Control store: persistence, CAS concurrency, evolution rules, reload (V2C-11/18/21/23)."""
 
 import json
+import os
 import sqlite3
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from control_helpers import (
@@ -125,6 +129,7 @@ def test_reload_revalidates_and_rejects_tampered_rows(store, tmp_path):
 # --- V2C-23: compare-and-swap ---
 
 
+@pytest.mark.negative
 def test_v2c_23_concurrent_writers_are_serialized_by_version(store):
     wo = persist_steps(store, HAPPY[:5])
     actor_a = store.get("wo-1")
@@ -145,6 +150,7 @@ def test_v2c_23_concurrent_writers_are_serialized_by_version(store):
     assert [e.event for e in store.events("wo-1")][-1] == "a"
 
 
+@pytest.mark.negative
 def test_v2c_23_stale_expected_version_is_refused(store):
     wo = persist_steps(store, HAPPY[:1])
     with pytest.raises(StaleWriteError):
@@ -156,6 +162,7 @@ def test_v2c_23_stale_expected_version_is_refused(store):
 # --- Evolution rules are enforced at the storage boundary ---
 
 
+@pytest.mark.negative
 def test_store_refuses_illegal_successors_even_when_built_directly(store):
     wo = persist_steps(store, HAPPY[:5])
     illegal = [
@@ -171,6 +178,7 @@ def test_store_refuses_illegal_successors_even_when_built_directly(store):
     assert store.get("wo-1") == wo
 
 
+@pytest.mark.negative
 def test_v2c_11_store_refuses_a_profile_snapshot_change_without_amendment(store):
     wo = persist_steps(store, HAPPY[:5])
     newer = project_profile(version=2, executor=OPUS_FALLBACK, fallbacks=())
@@ -200,6 +208,7 @@ def test_v2c_11_store_refuses_a_profile_snapshot_change_without_amendment(store)
     assert store.get("wo-1").execution_profile.version == 2
 
 
+@pytest.mark.negative
 def test_v2c_11_snapshot_must_be_a_stored_approved_profile(store):
     with pytest.raises(ControlStoreError, match="stored profile"):
         store.create(new_work_order(profile=project_profile(version=5)), event="created")
@@ -306,3 +315,64 @@ def test_v2c_21_aborted_work_order_keeps_its_full_history(store):
     assert wo.status == S.ABORTED and wo.candidate is not None
     assert len(store.replay("wo-1")) == wo.version
     assert store.replay("wo-1")[5].status == S.EXECUTING  # version 6
+
+
+@pytest.mark.negative
+def test_v2c_21_history_cannot_be_removed(store):
+    wo = persist_steps(store, HAPPY[:5])
+    reason = AttentionReason(code=AttentionCode.RISK_REQUIRES_HUMAN, summary="r", evidence=(ref(),))
+    wo = store.update(m.raise_attention(wo, reason), expected_version=wo.version, event="attention")
+    wo = store.update(
+        m.decide(
+            wo,
+            UserDecision(
+                action=UserAction.RESUME,
+                actor="robert",
+                at=NOW,
+                waived=(AttentionCode.RISK_REQUIRES_HUMAN,),
+            ),
+            accepted_baseline=BASE,
+        ),
+        expected_version=wo.version,
+        event="resume",
+    )
+    wo = store.update(
+        m.fail_attempt(
+            m.begin_attempt(wo, "b1", profile=project_profile().bindings[0].primary),
+            "b1",
+            ref("tests", "f1"),
+        ),
+        expected_version=wo.version,
+        event="failed",
+    )
+    erasures = (
+        lambda: wo.evolve(attention=()),  # attention history
+        lambda: wo.evolve(evidence=()),  # evidence of the failed attempt
+        lambda: wo.evolve(approvals=(), candidate=None, blocks=()),  # the approved plan
+    )
+    for erase in erasures:
+        # Refused by the model validators or by check_evolution(), never stored.
+        with pytest.raises((EvolutionError, ValidationError)):
+            store.update(erase(), expected_version=wo.version, event="erase")
+    assert store.get("wo-1") == wo
+
+
+def test_v2c_18_canonical_profile_hash_is_stable_across_processes():
+    """Serialized records and their hashes must not depend on the hash seed."""
+    script = (
+        "import sys; sys.path.insert(0, 'tests'); "
+        "from control_helpers import project_profile; p = project_profile(); "
+        "print(p.canonical_sha256(), p.model_dump_json())"
+    )
+    outputs = {
+        subprocess.run(
+            [sys.executable, "-c", script],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=Path(__file__).resolve().parents[1],
+        ).stdout
+        for seed in range(8)
+    }
+    assert len(outputs) == 1

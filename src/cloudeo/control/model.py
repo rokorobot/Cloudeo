@@ -18,7 +18,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from cloudeo.workspace.models import CommitSha, Identifier
 
@@ -190,6 +190,12 @@ class RoleBinding(_Frozen):
     primary: ProfileRef
     fallbacks: tuple[ProfileRef, ...] = ()
     fallback_conditions: frozenset[FallbackCondition] = frozenset()
+
+    @field_serializer("fallback_conditions")
+    def _sorted_conditions(self, conditions: frozenset[FallbackCondition]) -> list[str]:
+        # Set iteration order depends on the process hash seed; serialized
+        # records and their canonical hashes must not (V2C-18, store checks).
+        return sorted(str(condition) for condition in conditions)
 
     @model_validator(mode="after")
     def _distinct(self):

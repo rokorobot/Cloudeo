@@ -1562,9 +1562,31 @@ Implemented:
   - Project Execution Profile versions are immutable and sequential, and a
     WorkOrder's snapshot must be a stored, approved version.
 
-Traceability: 8 PASS, 11 PARTIAL, 4 UNIMPLEMENTED (`14_V2C_TRACEABILITY.md`).
-Every PARTIAL and UNIMPLEMENTED obligation has a strict expected-failure test,
-and a meta-test keeps the contract, the matrix, and the document in sync.
+**Traceability** (`14_V2C_TRACEABILITY.md`): each invariant has exactly one
+status. The result is **8 ENFORCED, 15 DEFERRED, 0 NOT_APPLICABLE**.
+
+- ENFORCED needs a guard plus positive and `negative`-marked rejection tests.
+- DEFERRED is held by a strict expected-failure test that names the invariant,
+  so an unexpected pass fails CI. Foundation guards for deferred invariants
+  are listed as supporting evidence only. For example, checkpoint integrity
+  (V2C-19) stays DEFERRED although the model validates a supplied proof.
+
+Meta-tests enforce:
+
+- one status and existing named tests per invariant;
+- strict, invariant-named xfails for every DEFERRED obligation;
+- a real negative test for every ENFORCED invariant;
+- agreement between the contract, the matrix, and the document, with no
+  `TODO`;
+- no generic `mark_block_done()`: `prove_block_checkpoint` is the only
+  `BLOCK_DONE` setter.
+
+Bug found and fixed during the gate: `RoleBinding.fallback_conditions` is a
+`frozenset`, and its serialized order depended on the process hash seed. The
+canonical hash of the same profile therefore differed between processes, which
+could make the store's immutability and stored-snapshot checks fail
+intermittently. It now serializes sorted. A regression test compares the hash
+across `PYTHONHASHSEED` 0 to 7; it fails without the fix.
 
 Architecture question raised (not resolved in code): the contract says that
 baseline drift needs "a new approval", but it defines no transition that

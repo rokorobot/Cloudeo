@@ -97,6 +97,7 @@ def test_memory_impact_block_goes_through_curation_and_memory_audit():
     assert block.checkpoint.proves(block.memory_audit.audited_state)
 
 
+@pytest.mark.negative
 @pytest.mark.parametrize(
     "call",
     [
@@ -114,35 +115,53 @@ def test_illegal_transitions_are_rejected_with_a_reason(call):
 # --- V2C-01: no promotion or accepted-state access from the control layer ---
 
 
+FORBIDDEN_MODULES = (
+    "cloudeo.workspace.broker",
+    "cloudeo.workspace.git",
+    "cloudeo.bridge",
+    "cloudeo.longhorizon",
+    "subprocess",
+)
+FORBIDDEN_CALLS = {"promote", "checkpoint_candidate", "reject", "cleanup"}
+
+
+def k1_violations(source: str) -> list[str]:
+    """Accepted-state access that K1 forbids in the control layer."""
+    tree = ast.parse(source)
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            names = (
+                [node.module] if isinstance(node, ast.ImportFrom) else [a.name for a in node.names]
+            )
+            found += [f"import {n}" for n in names if n and n.startswith(FORBIDDEN_MODULES)]
+        is_call = isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        if is_call and node.func.attr in FORBIDDEN_CALLS:
+            found.append(f"call {node.func.attr}")
+    found += [f"string {s}" for s in ("refs/cloudeo", "update-ref") if s in source]
+    return found
+
+
 def test_v2c_01_control_layer_cannot_touch_accepted_state():
     package = Path(cloudeo.control.__file__).parent
-    forbidden_modules = (
-        "cloudeo.workspace.broker",
-        "cloudeo.workspace.git",
-        "cloudeo.bridge",
-        "cloudeo.longhorizon",
-        "subprocess",
-    )
     for path in package.glob("*.py"):
-        tree = ast.parse(path.read_text())
-        imported = {
-            node.module if isinstance(node, ast.ImportFrom) else alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Import | ast.ImportFrom)
-            for alias in (node.names if isinstance(node, ast.Import) else [None])
-        }
-        assert not any(
-            (name or "").startswith(forbidden)
-            for name in imported
-            for forbidden in forbidden_modules
-        ), path.name
-        called = {
-            node.func.attr
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        }
-        assert not called & {"promote", "checkpoint_candidate", "reject", "cleanup"}, path.name
-        assert "refs/cloudeo" not in path.read_text() and "update-ref" not in path.read_text()
+        assert k1_violations(path.read_text()) == [], path.name
+
+
+@pytest.mark.negative
+@pytest.mark.parametrize(
+    "source,violation",
+    [
+        ("from cloudeo.workspace.broker import WorkspaceBroker", "import cloudeo.workspace.broker"),
+        ("import cloudeo.longhorizon.promotion_gate", "import cloudeo.longhorizon.promotion_gate"),
+        ("import subprocess", "import subprocess"),
+        ("broker.promote(checkpoint)", "call promote"),
+        ("broker.checkpoint_candidate(candidate, 'm')", "call checkpoint_candidate"),
+        ("REF = 'refs/cloudeo/workspaces/demo/accepted'", "string refs/cloudeo"),
+    ],
+)
+def test_v2c_01_k1_checker_flags_forbidden_access(source, violation):
+    assert violation in k1_violations(source)
 
 
 # --- V2C-02: no workspace write before an approved plan ---
@@ -167,6 +186,7 @@ def test_v2c_02_no_candidate_or_blocks_before_plan_approval():
 # --- V2C-03: plan changes need a new version and a new approval ---
 
 
+@pytest.mark.negative
 def test_v2c_03_plan_versions_are_immutable_and_reapproval_is_required():
     wo = m.start_intake(new_work_order(), accepted_baseline=BASE)
     with pytest.raises(Rejected, match="plan_version"):
@@ -234,6 +254,7 @@ def test_v2c_04_promotion_needs_an_authoritative_final_audit_on_record():
         m.record_kernel_outcome(wo, outcome(promoted=True))
 
 
+@pytest.mark.negative
 def test_v2c_05_code_approved_and_block_done_never_imply_acceptance():
     wo = block_done(executing())
     assert wo.status == S.EXECUTING  # all blocks done is not promotion
@@ -246,6 +267,7 @@ def test_v2c_05_code_approved_and_block_done_never_imply_acceptance():
 # --- V2C-06 / V2C-07: CODE_APPROVED requirements ---
 
 
+@pytest.mark.negative
 @pytest.mark.parametrize(
     "tests_passed,audit_kwargs,change_kwargs,current,error",
     [
@@ -335,6 +357,7 @@ def test_v2c_06_approved_deviation_allows_out_of_scope_changes():
     assert wo.block("b1").status == B.CODE_APPROVED
 
 
+@pytest.mark.negative
 def test_v2c_07_repaired_audits_never_approve_memory_or_final_verification():
     wo = code_approved(executing(blocks=(spec(memory_impact=True),)))
     wo = m.begin_memory_curation(wo, "b1", profile=CURATOR)
@@ -389,6 +412,7 @@ def test_v2c_09_memory_audit_is_required_before_the_checkpoint():
 # --- V2C-11: profile snapshot ---
 
 
+@pytest.mark.negative
 def test_v2c_11_profile_snapshot_changes_only_by_an_approved_amendment():
     wo = executing()
     with pytest.raises(Rejected):
@@ -513,6 +537,7 @@ def test_v2c_15_material_deviation_always_escalates():
         )
 
 
+@pytest.mark.negative
 def test_v2c_16_all_active_reasons_together_and_resume_needs_them_resolved():
     wo = m.raise_attention(
         executing(),
@@ -566,6 +591,7 @@ def test_v2c_16_all_active_reasons_together_and_resume_needs_them_resolved():
     assert closed.resolved_codes == (AttentionCode.BUDGET_EXHAUSTED,)
 
 
+@pytest.mark.negative
 def test_v2c_16_attention_only_from_the_contract_states():
     with pytest.raises(Rejected):
         m.raise_attention(
