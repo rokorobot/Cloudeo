@@ -1,6 +1,6 @@
 # Cloudeo v2 — Control Architecture Contract
 
-**Status:** Proposed; architecture direction approved, amendments incorporated, final acceptance pending. Not implemented.\
+**Status:** Accepted (2026-09-23). Not yet implemented.\
 **Date:** 2026-09-23\
 **Decisions:** ADR-022 to ADR-029 in `02_DECISIONS.md`\
 **Foundation:** the trust kernel on `main` at `d7e7c67` (ADR-015 to ADR-021)
@@ -83,8 +83,10 @@ stable Project Execution Profile v1
 future WorkOrders snapshot the currently approved version
 ```
 
-A WorkOrder never renegotiates the role bindings. Changing them is a separate,
-explicit user decision that creates a new project-level version (§8.4).
+During normal execution a WorkOrder's profile snapshot is immutable. Changing
+role bindings is a separate, explicit user decision that creates a new
+project-level version. An active WorkOrder moves to it only through an
+explicit, user-approved envelope amendment (§8.4, §10).
 
 ### 3.2 WorkOrder path
 
@@ -116,9 +118,13 @@ memory update required?
    │                ↓
    │           Memory Audit           memory_auditor; independent
    │                ↓
-   └─────────── BLOCK_DONE
+   └──── authoritative block state (HEAD + content hash)
                     ↓
-          candidate checkpoint        immutable candidate history, never acceptance
+          checkpoint_candidate()
+                    ↓
+          verify checkpoint == audited block state   (ADR-020 principle, no promotion)
+                    ↓
+              BLOCK_DONE              proven candidate checkpoint; never acceptance
                     ↓
 next block … all blocks BLOCK_DONE
         ↓
@@ -489,8 +495,30 @@ Model names above are illustrative only.
 - The profile is approved **at project onboarding**. Each WorkOrder snapshots
   the currently approved version, and plan approval shows that version
   without renegotiating it.
+- During normal execution, the WorkOrder's profile snapshot is **immutable**.
 - Changing role bindings is a separate, explicit user decision. It creates a
   new project-level version, which later WorkOrders snapshot.
+- An **active** WorkOrder moves to a new version only by the `change_agent`
+  path:
+
+  ```text
+  USER_ATTENTION_REQUIRED
+          ↓
+  user chooses change_agent
+          ↓
+  new Project Execution Profile version
+          ↓
+  explicit WorkOrder envelope amendment
+          ↓
+  user approves that amendment
+          ↓
+  WorkOrder references the new profile version
+          ↓
+  resume
+  ```
+
+  Nothing changes silently, but the user can deliberately redirect an active
+  WorkOrder.
 - **Runtime routing decides which role or capability a step needs, not which
   model.** For a role, Cloudeo uses the bound primary while it is available
   and allowed.
@@ -546,9 +574,12 @@ BLOCK_RESULT     Cloudeo normalizes the run's final audit (normalize_auditor_res
 CODE_APPROVED                       the executor is finished for this block
   ├─ memory_impact present ─▶ MEMORY_CURATION (memory_curator) ─▶ MEMORY_AUDIT (memory_auditor)
   │                               └─ fail, bounded ─▶ MEMORY_CURATION
-  │                               └─ pass ─▶ BLOCK_DONE
-  └─ none ─────────────────────────────────────────────────────▶ BLOCK_DONE
-BLOCK_DONE        immutable candidate checkpoint via the broker (candidate history only)
+  │                               └─ pass ─▶ BLOCK_CHECKPOINT
+  └─ none ─────────────────────────────────────────────────────▶ BLOCK_CHECKPOINT
+BLOCK_CHECKPOINT  authoritative block state (HEAD + content hash) → checkpoint_candidate()
+                  → verify the checkpoint commit == authoritative block state
+  ├─ proven ──▶ BLOCK_DONE          immutable candidate checkpoint (candidate history only)
+  └─ differs ─▶ WorkOrder USER_ATTENTION_REQUIRED (BLOCK_CHECKPOINT_MISMATCH)
 Any state: attempts or budget exhausted, a material deviation, required independence
 unachievable, or a runtime failure beyond the fallback conditions ──▶ WorkOrder USER_ATTENTION_REQUIRED
 ```
@@ -563,17 +594,40 @@ unachievable, or a runtime failure beyond the fallback conditions ──▶ Work
 4. the audited state is still the current candidate state. This is the same
    identity check the gate uses: content hash and `HEAD`.
 
+**The authoritative block state** is the exact candidate state (`HEAD` plus
+content hash, by the audit snapshot rules) of the last audit that approved
+the block:
+
+- the **code audit** that produced `CODE_APPROVED`, when the block has no
+  memory impact;
+- the **Memory Audit** that passed, when memory changed. Its snapshot contains
+  the approved code plus the curated memory.
+
+**Before `BLOCK_DONE`, the checkpoint is proven to be that state.** This is the
+same immutable-object principle as ADR-020, without promotion:
+
+1. Re-read the candidate's `HEAD` and content hash. They must still equal the
+   authoritative block state; otherwise the block does not proceed.
+2. Record the checkpoint with `checkpoint_candidate()` through the broker.
+3. From immutable Git objects, verify the checkpoint commit. Its parent must
+   be the audited `HEAD` (or the commit must be the audited `HEAD` itself),
+   and its committed content hash must equal the audited content hash.
+
 **`BLOCK_DONE` means all of the following:**
 
 - the block is `CODE_APPROVED`;
 - any required memory curation has passed Memory Audit;
 - the curator changed only `memory_paths`;
-- the code is unchanged since `CODE_APPROVED`.
+- the code is unchanged since `CODE_APPROVED`;
+- the block checkpoint commit is **proven** to be the authoritative block
+  state.
 
-Only then is an immutable candidate checkpoint recorded, with
-`checkpoint_candidate()` through the broker. It holds coherent approved code
-together with its synchronized candidate memory. It is recovery and
-evidence history, never acceptance, and it never calls `promote()`.
+The proven checkpoint holds coherent approved code together with its
+synchronized candidate memory. It is recovery and evidence history, never
+acceptance, and it never calls `promote()`. A checkpoint that fails the proof
+(a raced checkpoint) is **never labelled `BLOCK_DONE`**. It stays as unaccepted
+candidate evidence, and the WorkOrder raises `USER_ATTENTION_REQUIRED` with
+`BLOCK_CHECKPOINT_MISMATCH`.
 
 ### 8.6 Auditor independence
 
@@ -583,14 +637,23 @@ Independence dimensions are **cumulative requirements**, not a single level:
 | --- | --- | --- | --- | --- |
 | Low | required | required | — | — |
 | Medium | required | required | required | — |
-| High | required | required | required | required (where available) |
+| High | required | required | required | required |
 
-The requirements apply to `code_auditor`, `memory_auditor`, and
-`final_verifier` relative to the profile that produced the audited change. If
-the bound profiles cannot meet the requirement for the WorkOrder's risk
-class, the WorkOrder raises `USER_ATTENTION_REQUIRED`
-(`INDEPENDENCE_UNAVAILABLE`). It never silently runs with weaker
-independence.
+Independence is measured against the **producer** of the audited change, by
+role:
+
+| Auditing role | Must be independent from |
+| --- | --- |
+| `code_auditor` | `primary_code_executor` |
+| `memory_auditor` | `memory_curator` |
+| `final_verifier` | every write-capable profile whose changes remain in the final candidate (every `primary_code_executor` and `memory_curator` profile used, including fallbacks) |
+
+Every requirement is mandatory for its risk class, including a different
+inference provider at high risk. If the bound profiles cannot meet a
+requirement, the WorkOrder raises `USER_ATTENTION_REQUIRED` with
+`INDEPENDENCE_UNAVAILABLE`. Cloudeo never weakens the policy automatically.
+Only the user can explicitly revise or waive it, and that decision is
+recorded.
 
 ---
 
@@ -646,7 +709,8 @@ AttentionRequest
 - reasons[]           # all active reasons
     - code            # e.g. BUDGET_EXHAUSTED, ATTEMPTS_EXHAUSTED, MATERIAL_DEVIATION,
                       #      AGENT_UNAVAILABLE, INDEPENDENCE_UNAVAILABLE, AUDITOR_ERROR,
-                      #      AUDIT_NOT_VERIFIED, MEMORY_CONFLICT, BASELINE_DRIFT,
+                      #      AUDIT_NOT_VERIFIED, MEMORY_CONFLICT, BLOCK_CHECKPOINT_MISMATCH,
+                      #      BASELINE_DRIFT,
                       #      PROMOTION_REFUSED, RISK_REQUIRES_HUMAN, PLAN_AMBIGUITY
     - severity        # blocking | warning
     - summary
@@ -662,7 +726,7 @@ User actions:
 | --- | --- |
 | `resume` | Continue in the same state, only if every blocking reason is resolved or explicitly waived by the user |
 | `replan` | A new plan version, which needs approval again |
-| `change_agent` | A new Project Execution Profile version, which is a project-level decision; the WorkOrder then snapshots it |
+| `change_agent` | A new Project Execution Profile version (a project-level decision), then an explicit envelope amendment for this WorkOrder that the user approves; only then does the WorkOrder reference the new version and resume (§8.4) |
 | `change_budget` | An approved budget amendment |
 | `defer` | Park the WorkOrder; rechecks run on resume (baseline, profile availability) |
 | `abort` | End the WorkOrder; evidence and candidate are kept |
@@ -818,16 +882,26 @@ the related milestone is complete.
   Memory Audit.
 - **V2C-10:** Context Intake is read-only and reports memory claims as
   verified, contradicted, or unverifiable, with evidence.
-- **V2C-11:** the Project Execution Profile is approved at onboarding. A
-  WorkOrder snapshots it and never renegotiates it; changing bindings creates
-  a new project-level version by explicit user decision.
+- **V2C-11:** the Project Execution Profile is approved at onboarding.
+  - A WorkOrder snapshots it, and the snapshot is immutable during normal
+    execution.
+  - Changing bindings creates a new project-level version by explicit user
+    decision.
+  - An active WorkOrder references a new version only after a user-approved
+    envelope amendment.
 - **V2C-12:** each role uses its bound primary while it is available and
   allowed. Fallbacks are used only under their defined conditions, and every
   switch is recorded with evidence.
 - **V2C-13:** Performance Memory and Jev never select or switch profiles and
   never change approved policy. They learn only from verified labels.
 - **V2C-14:** auditor independence meets every cumulative requirement for the
-  risk class. If it can't, `USER_ATTENTION_REQUIRED` is raised.
+  risk class.
+  - Independence is measured by role against the producer: `code_auditor`
+    against `primary_code_executor`, `memory_auditor` against
+    `memory_curator`, and `final_verifier` against every write-capable profile
+    whose changes remain.
+  - If a requirement can't be met, `INDEPENDENCE_UNAVAILABLE` is raised.
+  - The policy is never weakened automatically.
 - **V2C-15:** every material deviation (§9) raises `USER_ATTENTION_REQUIRED`
   and is never silently absorbed.
 - **V2C-16:** an attention request lists all active reasons with evidence and
@@ -836,8 +910,12 @@ the related milestone is complete.
   fallback conditions, and baseline drift always raise attention.
 - **V2C-18:** ExecutionProfiles are immutable once used, and every attempt
   records the exact version fingerprint.
-- **V2C-19:** a block checkpoint is recorded only at `BLOCK_DONE`, is candidate
-  history only, and never calls `promote()`.
+- **V2C-19:** a block becomes `BLOCK_DONE` only when its checkpoint commit is
+  proven from immutable Git objects to be the authoritative block state
+  (`HEAD` plus content hash of the last approving audit).
+  - A raced checkpoint is never labelled `BLOCK_DONE` and raises
+    `BLOCK_CHECKPOINT_MISMATCH`.
+  - Block checkpoints are candidate history only and never call `promote()`.
 - **V2C-20:** final verification runs no write-capable role; it is a fresh
   read-only audit, then the normalizer, then the gate.
 - **V2C-21:** `ABORTED` and `DEFERRED` keep all evidence and the candidate.
@@ -867,8 +945,8 @@ the related milestone is complete.
 | Q1 | Project Memory location | Human-readable tracked documents (e.g. `docs/architecture/`, `docs/components/`, `docs/decisions/`), per-project `memory_paths`, plus an optional machine index under `.cloudeo/project-memory/` |
 | Q2 | Project Execution Profile location | The Cloudeo control store is authoritative; versioned project-level bindings, snapshotted per WorkOrder; credentials never in the repo |
 | Q3 | Coding-loop mechanism | A bounded LongHorizon manager run per block, in a no-promotion / verify-only wrapper; Cloudeo owns the WorkOrder and block state around it |
-| Q4 | Block checkpoints | Yes, at `BLOCK_DONE`, after optional Memory Curator and Memory Audit; candidate history only |
-| Q5 | Auditor independence | Cumulative dimensions per risk class (§8.6); unachievable independence raises `USER_ATTENTION_REQUIRED` |
+| Q4 | Block checkpoints | Yes, at `BLOCK_DONE`, after optional Memory Curator and Memory Audit; the checkpoint is proven to be the authoritative audited block state; candidate history only |
+| Q5 | Auditor independence | Cumulative dimensions per risk class, measured by role against the producer (§8.6); all mandatory; unachievable independence raises `INDEPENDENCE_UNAVAILABLE`; only the user may revise or waive it |
 | Q6 | Final verification | A fresh direct read-only final audit → normalizer → gate; no write-capable manager run |
 | Q7 | Control store | SQLite behind a storage interface, with version/CAS fields designed now (§14.1) |
 | Q8 | Memory Audit binding | A separate `memory_auditor` role binding; it may reference the same AgentProfile as `code_auditor` when policy allows |

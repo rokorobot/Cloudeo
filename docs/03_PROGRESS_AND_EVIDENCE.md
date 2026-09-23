@@ -1488,6 +1488,26 @@ revision incorporates them:
   - SQLite behind a storage interface with compare-and-swap versions;
   - a separate `memory_auditor` binding.
 
+Third revision, the final consistency and trust amendments:
+
+- **Block checkpoint proof:** `BLOCK_DONE` requires the block checkpoint commit
+  to be proven from immutable Git objects to be the authoritative block state
+  (the last approving audit's `HEAD` plus content hash). A raced checkpoint
+  raises `BLOCK_CHECKPOINT_MISMATCH` and is never labelled `BLOCK_DONE`.
+- **Auditor independence by producer:** `code_auditor` against
+  `primary_code_executor`, `memory_auditor` against `memory_curator`, and
+  `final_verifier` against every remaining write-capable profile. A different
+  inference provider is mandatory at high risk. Unmet requirements raise
+  `INDEPENDENCE_UNAVAILABLE` and are never weakened automatically.
+- **`change_agent` for an active WorkOrder:** a new project version, then a
+  user-approved envelope amendment, then the WorkOrder references the new
+  version and resumes. The snapshot is otherwise immutable.
+- **Duplicate §9 bullet:** the reported duplicate "new dependency or a pin
+  change" bullet is not present in the committed contract (one occurrence at
+  `9083c3b` and at `0ddad9e`), so no change was needed.
+
+With these, the contract and ADR-022 to ADR-029 are **Accepted**.
+
 No code, test, dependency, or kernel change. Nothing described in the
 contract is implemented. Invariants V2C-01 to V2C-23 become test obligations
 for the milestones that implement them.

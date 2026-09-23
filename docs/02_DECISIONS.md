@@ -1432,8 +1432,7 @@ See `03_PROGRESS_AND_EVIDENCE.md`.
 
 ## ADR-022 — V2 control layer above the trust kernel
 
-**Status:** Proposed; architecture direction approved, amendments incorporated
-(`13_V2_CONTROL_ARCHITECTURE.md`).
+**Status:** Accepted (2026-09-23); not yet implemented.
 
 **Decision:** Cloudeo v2 adds a control layer for Projects, WorkOrders,
 Execution Profiles, Memories, and Human Decisions **above** the trust kernel
@@ -1459,7 +1458,7 @@ they disagree, the contract and ADR-022 to ADR-029 govern.
 
 ## ADR-023 — Project identity and in-repository Project Memory
 
-**Status:** Proposed; amendments incorporated.
+**Status:** Accepted (2026-09-23); not yet implemented.
 
 **Decision:**
 
@@ -1493,7 +1492,7 @@ Performance Memory are separate stores and never live in the repository.
 
 ## ADR-024 — Context Intake is read-only and memory is a claim
 
-**Status:** Proposed.
+**Status:** Accepted (2026-09-23); not yet implemented.
 
 **Decision:** The `context_analyst` role reads Project Memory first, then
 verifies each relevant claim against its anchors in the code at the planned
@@ -1511,7 +1510,7 @@ documentation steer execution.
 
 ## ADR-025 — Plan Approval Gate and the approved envelope
 
-**Status:** Proposed; amendments incorporated.
+**Status:** Accepted (2026-09-23); not yet implemented.
 
 **Decision:** No workspace write happens before the user approves a specific,
 immutable plan version. The `architecture_planner` proposes architecture
@@ -1540,7 +1539,7 @@ accounting.
 
 ## ADR-026 — WorkOrder and ImplementationBlock state machines
 
-**Status:** Proposed; amendments incorporated.
+**Status:** Accepted (2026-09-23); not yet implemented.
 
 **Decision:**
 
@@ -1570,8 +1569,25 @@ accounting.
 changed, and that only `memory_paths` changed after `CODE_APPROVED`.
 
 **Checkpoints:** an immutable candidate checkpoint is recorded through the
-broker **at `BLOCK_DONE`**, not at `CODE_APPROVED`, so it holds coherent code
-and synchronized memory. It is candidate history only.
+broker at the end of the block, not at `CODE_APPROVED`, so it holds coherent
+code and synchronized memory.
+
+The **authoritative block state** is the `HEAD` plus content hash of the last
+approving audit: the code audit when no memory changed, otherwise the Memory
+Audit. The ADR-020 immutable-object principle then applies, without
+promotion:
+
+1. The current `HEAD` and content hash are re-read and must equal the
+   authoritative state.
+2. `checkpoint_candidate()` records the checkpoint.
+3. From Git objects, the checkpoint commit's parent must be the audited
+   `HEAD` (or the commit must be that `HEAD`), and its content hash must equal
+   the audited hash.
+
+Only a proven checkpoint makes the block `BLOCK_DONE`. A raced checkpoint is
+never labelled `BLOCK_DONE`: it stays as unaccepted candidate evidence, and
+the WorkOrder raises `USER_ATTENTION_REQUIRED` with
+`BLOCK_CHECKPOINT_MISMATCH`. Block checkpoints are candidate history only.
 
 **Final verification:** the candidate is frozen, and a fresh read-only final
 audit runs, then the normalizer, then the gate. No write-capable run takes
@@ -1582,7 +1598,7 @@ place. Executor completion, LongHorizon `complete`, `CODE_APPROVED`, and
 
 ## ADR-027 — ExecutionProfile hierarchy, roles, and stable role bindings
 
-**Status:** Proposed; amendments incorporated.
+**Status:** Accepted (2026-09-23); not yet implemented.
 
 **Decision:**
 
@@ -1618,23 +1634,38 @@ place. Executor completion, LongHorizon `complete`, `CODE_APPROVED`, and
   prohibition. Every switch is recorded with evidence.
 - Performance Memory and Jev never select or switch profiles.
 
-**Independence:** auditor independence is cumulative per risk class.
+**Independence:** auditor independence is cumulative per risk class. Each
+requirement is mandatory for its class.
 
 | Risk | Required |
 | --- | --- |
 | Low | a fresh session and a read-only workspace |
-| Medium | low, plus a different model family from the executor |
-| High | medium, plus a different inference provider, where available |
+| Medium | low, plus a different model family from the producer |
+| High | medium, plus a different inference provider from the producer |
 
-If the requirement cannot be met, `USER_ATTENTION_REQUIRED` is raised.
+It is measured by role against the producer of the audited change:
+
+| Auditing role | Must be independent from |
+| --- | --- |
+| `code_auditor` | `primary_code_executor` |
+| `memory_auditor` | `memory_curator` |
+| `final_verifier` | every write-capable profile whose changes remain in the final candidate |
+
+If a requirement cannot be met, `USER_ATTENTION_REQUIRED` is raised with
+`INDEPENDENCE_UNAVAILABLE`. Cloudeo never weakens the policy automatically;
+only the user may explicitly revise or waive it, and the decision is recorded.
 `memory_auditor` is a separate binding; it may reference the same
 AgentProfile as `code_auditor` when policy allows.
+
+**Profile snapshot:** during normal execution a WorkOrder's profile snapshot
+is immutable. An active WorkOrder moves to a new project-level version only
+through `change_agent` (ADR-028) and a user-approved envelope amendment.
 
 ---
 
 ## ADR-028 — USER_ATTENTION_REQUIRED
 
-**Status:** Proposed; amendments incorporated.
+**Status:** Accepted (2026-09-23); not yet implemented.
 
 **Decision:** Whenever a WorkOrder cannot continue within the approved
 envelope, it enters `USER_ATTENTION_REQUIRED`. Examples include:
@@ -1644,7 +1675,7 @@ envelope, it enters `USER_ATTENTION_REQUIRED`. Examples include:
 - an unavailable agent beyond its fallback conditions;
 - unachievable independence;
 - an `AUDITOR_ERROR`, or a non-`VERIFIED` audit beyond the retries;
-- a memory conflict or baseline drift;
+- a memory conflict, a block checkpoint mismatch, or baseline drift;
 - a promotion "not attempted" or "refused";
 - a risk class that requires a human.
 
@@ -1652,9 +1683,14 @@ envelope, it enters `USER_ATTENTION_REQUIRED`. Examples include:
   severity, evidence references, and advisory suggested solutions (from the
   `recovery_planner` and Performance Memory, with their source). It supports
   free-form conversation.
-- The user resolves it with `resume`, `replan`, `change_agent` (a new
-  project-level Project Execution Profile version), `change_budget`,
-  `defer`, or `abort`.
+- The user resolves it with `resume`, `replan`, `change_agent`,
+  `change_budget`, `defer`, or `abort`.
+- `change_agent` for an active WorkOrder follows a fixed path:
+  1. a new Project Execution Profile version (a project-level decision);
+  2. an explicit WorkOrder envelope amendment, which the user approves;
+  3. the WorkOrder then references the new version and resumes.
+
+  Nothing changes silently.
 - Each decision is recorded. `resume` requires every blocking reason to be
   resolved or explicitly waived by the user.
 - Kernel refusals, including `refused_after_checkpoint` (with the kept
@@ -1665,7 +1701,7 @@ envelope, it enters `USER_ATTENTION_REQUIRED`. Examples include:
 
 ## ADR-029 — Performance Memory is advisory and bounded by approved policy
 
-**Status:** Proposed; amendments incorporated.
+**Status:** Accepted (2026-09-23); not yet implemented.
 
 **Decision:** Performance Memory keeps the 09 design (trusted-label rule,
 version fingerprints, cold start, learning stages). It stays separate from
