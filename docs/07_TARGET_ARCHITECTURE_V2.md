@@ -4,7 +4,7 @@
 **Date:** 2026-09-22  
 **Architecture principle:** Reuse mature upstream execution infrastructure. Keep Cloudeo focused on adaptive policy, verified state continuity, learning, and lifecycle governance.
 
-**Refined by (proposed):** `13_V2_CONTROL_ARCHITECTURE.md` and ADR-022 to ADR-029: WorkOrder (§4.1), ExecutionProfile → AgentProfile (§4.3), and the approved-envelope bound on routing and recovery (§5, §11).
+**Refined by (proposed):** `13_V2_CONTROL_ARCHITECTURE.md` and ADR-022 to ADR-029: WorkOrder (§4.1); ExecutionProfile kept as the generic profile and specialized into AgentProfile, DirectToolProfile, BrowserExecutionProfile, and HumanExecutionProfile (§4.3); stable, user-approved role bindings instead of per-step profile selection for role-bound steps (§5); recovery bounded by the approved envelope (§11).
 
 ## 1. Product-level objective
 

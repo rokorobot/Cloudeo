@@ -1452,11 +1452,42 @@ No live provider, harness, or HarnessRouter calls were made.
 
 Branch `docs/v2-control-architecture`, from `main` at `d7e7c67`. It adds
 `docs/13_V2_CONTROL_ARCHITECTURE.md`, a contract for the Project, WorkOrder,
-AgentProfile, Memory, and Human Decision layer above the completed trust
+Execution Profile, Memory, and Human Decision layer above the completed trust
 kernel, plus ADR-022 to ADR-029 (all **Proposed**). A pointer note is added to
 `07_TARGET_ARCHITECTURE_V2.md`.
 
+First draft `0ddad9e`. It was reviewed: the architecture direction was
+approved, and amendments were requested before acceptance. The second
+revision incorporates them:
+
+- **Planning roles:** separate `context_analyst`, `architecture_planner`,
+  `implementation_planner`, and `recovery_planner` roles.
+- **Memory Curator:** a dedicated `memory_curator` restricted to Project Memory
+  paths, so the coder no longer changes anything after `CODE_APPROVED`, plus
+  a separate `memory_auditor` binding.
+- **Onboarding:** the Project Execution Profile is approved at project
+  onboarding and snapshotted by each WorkOrder, never renegotiated per
+  WorkOrder.
+- **Routing:**
+  - Runtime routing decides which role is needed, not which model.
+  - Fallbacks are used only under defined failure or unavailability
+    conditions.
+  - Performance Memory and Jev may only recommend.
+- **Profiles:** `ExecutionProfile` is kept as the generic profile, with
+  `AgentProfile`, `DirectToolProfile`, `BrowserExecutionProfile`, and
+  `HumanExecutionProfile` as its specializations.
+- **Block checkpoints** are recorded at `BLOCK_DONE`, after Memory Curator and
+  Memory Audit.
+- **Decisions Q1 to Q8** are recorded:
+  - tracked human-readable memory documents plus an optional index;
+  - the control store is authoritative for profiles;
+  - a bounded LongHorizon verify-only run per block;
+  - `BLOCK_DONE` checkpoints;
+  - cumulative auditor independence dimensions;
+  - a direct read-only final audit, then the gate;
+  - SQLite behind a storage interface with compare-and-swap versions;
+  - a separate `memory_auditor` binding.
+
 No code, test, dependency, or kernel change. Nothing described in the
-contract is implemented; the contract's invariants (V2C-01 to V2C-20) become
-test obligations for the milestones that implement them. Open questions Q1 to
-Q8 await the user's decisions before implementation starts.
+contract is implemented. Invariants V2C-01 to V2C-23 become test obligations
+for the milestones that implement them.
