@@ -472,3 +472,155 @@ before those roles can use it.
 **Status:** Implemented on `feat/longhorizon-adapter-foundation`. The
 LongHorizon manager loop is not run from Cloudeo, and `Controller.run()` is
 unchanged. See `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-017 — UHP Workspace Bridge Foundation
+
+**Decision:** Add `cloudeo.bridge`, which moves a `CandidateWorkspace` into one
+fresh UHP session and brings the executor's changes back as a validated delta.
+The bridge may change the candidate's working tree and nothing else.
+
+**Canonical ownership:**
+
+- The Workspace Broker's accepted commit is canonical state (ADR-015).
+- A `CandidateWorkspace` is mutable executor state.
+- A HarnessRouter session workspace is temporary remote execution state.
+
+After a successful sync the candidate is simply dirty and uncheckpointed. The
+bridge never calls `checkpoint_candidate()`, `promote()`, or `reject()`; it
+calls only the broker's read-only `inspect_candidate()`. It never moves
+accepted state, a branch, or `HEAD`.
+
+**Protocol facts verified** in the pinned sources (UHP `2026-09-12`;
+HarnessRouter `809392d602e34e36f0468943035c54d3350af885`):
+
+1. Input is `POST /v1/files` (multipart `file`, optional `purpose`, default
+   `user_data`), then `{"type": "input_file", "file_id": ...}`.
+2. HarnessRouter writes task input files into the session working directory
+   under their upload filenames (`_write_input_files`).
+3. Artifacts are listed with `GET /v1/sessions/{session_id}/files`.
+4. Artifacts are downloaded as raw bytes from
+   `GET /v1/containers/{container_id}/files/{file_id}/content`.
+5. A session keeps one working directory across turns (Sessions §1).
+6. HarnessRouter also has implementation-specific by-path
+   `GET/PUT /v1/sessions/{sid}/files/{path:path}`. The bridge does not use
+   them.
+7. HarnessRouter's session listing and `.../files/archive` both apply
+   `_ws_visible`, which hides every path starting with `.`, the names
+   `.gitignore`, `AGENTS.md`, and `CLAUDE.md`, and the directories `.git/`,
+   `.harness/`, `.claude/`, `.codex/`, `tmp/`, `node_modules/`,
+   `__pycache__/`, `.venv/`, `venv/`, `.cache/`, and `.next/` at any depth.
+   **Neither is authoritative project state**, so the bridge does not
+   reconstruct the project from them. It uses a helper-produced delta instead.
+   HarnessRouter's default upload cap is 25 MiB (`HARNESS_UPLOAD_MAX_BYTES`).
+
+**Transport:**
+
+1. Select the candidate's files with Git semantics
+   (`git ls-files --cached --others --exclude-standard -z`): tracked files plus
+   untracked, non-ignored files, NUL-separated. `.git` is never selected, and
+   ignored files (for example `.env`) are never sent. Tracked files deleted in
+   the working tree are not sent. Symbolic links, submodules, nested
+   repositories, non-UTF-8 paths, and paths colliding with bridge names fail
+   before anything is uploaded.
+2. Build a deterministic input bundle
+   `.cloudeo-bridge-input-<run>.tar.gz` (`manifest.json` plus
+   `files/<path>`; mtime 0, uid/gid 0, mode 0644 or 0755). The input manifest
+   records the format, bridge run ID (`bridge_<32 hex>`), `workspace_id`,
+   `candidate_id`, `base_commit`, `head_commit`, and each file's path, size,
+   SHA-256, and executable bit.
+3. Upload the stdlib-only helper `.cloudeo-bridge-helper.py`
+   (`src/cloudeo/bridge/remote_helper.py`, Python 3.8+) and the bundle through
+   `POST /v1/files`.
+4. Submit exactly one `HarnessTaskExecution` through `ExecutionDispatcher`,
+   with the explicit harness and model, no `previous_response_id`, and input
+   made of the transport instructions (fenced, and separated from the user's
+   task) plus the two `input_file` references. The harness runs
+   `unpack --run-id`, does the task, then runs `pack-delta --run-id`.
+5. `pack-delta` compares the final tree with the input manifest and writes
+   `cloudeo-bridge-output-<run>.tar.gz`, a delta containing added and changed
+   files (with size, SHA-256, and executable bit) and an explicit deleted-path
+   list. Unchanged files do not come back. It excludes `.git` and
+   `__pycache__` at any depth, the root runtime directories `.claude`,
+   `.codex`, and `.harness`, and bridge-reserved root names. It refuses
+   symbolic links and special files, so no output is produced.
+6. Using `ExecutionOutcome.runtime.session_id`, list the session's files and
+   select exactly one artifact whose filename, and path where the server
+   reports one, is this run's exact output name. Download it through the
+   configured client by `container_id` and `file_id`; a `download_url` host is
+   never followed.
+7. Validate the whole bundle, then apply it to the same candidate.
+
+**Runtime and sync are separate:** `WorkspaceBridgeResult` carries the
+`ExecutionOutcome` unchanged, plus `workspace_sync_status` (`synced`,
+`skipped`, or `failed`), the run and session IDs, the added, changed, deleted,
+and ignored paths, and a structured error.
+
+- `unknown` or `in_progress`: `skipped`; the remote workspace is not read.
+- `failed` or `cancelled`: `skipped`; remote state is not imported.
+- `completed` or `incomplete` without a valid artifact, or without a
+  `session_id`: `failed`.
+- In every case other than `synced`, the candidate is unchanged.
+
+`completed` does not mean synced. Synced does not mean verified, and does not
+mean checkpointed. Checkpointed does not mean promoted.
+
+**Security:**
+
+- `.git` never crosses the bridge in either direction.
+- Ignored local files are not sent.
+- The downloaded archive is untrusted. It is decompressed through a bounded
+  reader (so a decompression bomb is refused) and validated as a whole, into a
+  staging directory outside the candidate, before the first mutation.
+- Rejected:
+  - absolute paths, `..`, backslashes, drive letters, NULs, and empty
+    components;
+  - `.git` in any case, excluded paths, and reserved names;
+  - symlinks, hardlinks, directories, devices, FIFOs, and sparse members;
+  - duplicate or undeclared members;
+  - a missing or duplicate-key manifest;
+  - run, workspace, candidate, or `base_commit` mismatch;
+  - size or hash mismatch;
+  - a path listed twice in the delta;
+  - added paths that were sent, and changed or deleted paths that were not;
+  - file-versus-directory conflicts;
+  - compressed-size, total-size, per-file-size, and file-count limits
+    (`BridgeLimits`: 20 MiB, 256 MiB, 32 MiB, and 10,000 files by default).
+- Only paths that were sent can be changed or deleted, and only if their
+  current content and mode still match what was sent. Otherwise the result is
+  `workspace_conflict`. A remote-created path that local `.gitignore` rules
+  ignore (checked with `git check-ignore`) is not imported; it is reported in
+  `ignored_paths`. Tracked files remain eligible.
+- Writes resolve through real parent directories inside the candidate and
+  never into `.git`. The bridge's own Git use is limited to `ls-files` and
+  `check-ignore`.
+
+**Failure atomicity:** Validation failures cause zero candidate mutation.
+Application is planned in full first. Each changed or deleted file is backed
+up, and every write goes to a temporary file followed by `os.replace`. If a
+filesystem operation fails midway, changed files are restored, added files
+removed, deleted files and pruned directories restored, and created
+directories removed; the result is then `apply_failed`. If the rollback itself
+fails, the original exception is raised with the rollback failure attached as
+a note and as `__context__`. `.git` is never touched.
+
+**Capability flags:** `UHPWorkspaceBridge.supports_workspace_sync = True`. The
+base `UHPHarnessAgentAdapter.supports_workspace_sync` stays `False`; only a
+future composed role-binding layer may advertise a LongHorizon adapter with
+workspace sync.
+
+**Limitations:**
+
+- The harness must cooperate by running the deterministic helper, and needs a
+  `python3` (3.8 or later) in its sandbox.
+- Symbolic links and submodules are not supported and fail explicitly.
+- Tracked files under the root runtime directories (`.claude`, `.codex`,
+  `.harness`) are sent but their changes are not returned.
+- Only regular-file content and the executable bit are transported.
+- No live provider or HarnessRouter proof yet; all validation is offline.
+- No LongHorizon role binding yet.
+
+**Status:** Implemented on `feat/uhp-workspace-bridge-foundation`; not merged.
+See `03_PROGRESS_AND_EVIDENCE.md`.

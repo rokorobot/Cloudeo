@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Self, TypeVar
 from urllib.parse import quote
 
@@ -9,6 +10,9 @@ from pydantic import ValidationError
 from cloudeo.uhp.models import (
     UHP_VERSION,
     UHPDiscovery,
+    UHPFile,
+    UHPFileContent,
+    UHPFileList,
     UHPHarness,
     UHPHarnessList,
     UHPHarnessModels,
@@ -108,6 +112,41 @@ class UHPClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    def _headers(self, *, authenticated: bool, idempotency_key: str | None = None) -> dict:
+        headers = {"UHP-Version": UHP_VERSION}
+        if authenticated and self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        if idempotency_key is not None:
+            if not 1 <= len(idempotency_key) <= 255:
+                raise ValueError("Idempotency-Key must have 1 to 255 characters")
+            headers["Idempotency-Key"] = idempotency_key
+        return headers
+
+    @staticmethod
+    def _transport_error(exc: httpx.RequestError) -> UHPTransportError:
+        return UHPTransportError(
+            "UHP transport failed; task execution may still be running.",
+            code="transport_error",
+            detail={"exception_type": type(exc).__name__},
+        )
+
+    @staticmethod
+    def _http_error(status: int, version: str | None, body: Any) -> UHPHTTPError:
+        # Version rejection can legitimately return another version. Keep the
+        # server's structured error and the actual header, not a replacement.
+        error = body.get("error") if isinstance(body, dict) else None
+        error = error if isinstance(error, dict) else {}
+        return UHPHTTPError(
+            error.get("message") or "UHP request failed without a structured error message.",
+            code=error.get("code") or "http_error",
+            detail=error.get("detail"),
+            error_type=error.get("type"),
+            param=error.get("param"),
+            http_status=status,
+            protocol_version=version,
+            body=body,
+        )
+
     async def _request(
         self,
         method: str,
@@ -116,29 +155,25 @@ class UHPClient:
         *,
         authenticated: bool = True,
         payload: dict[str, Any] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        form: dict[str, str] | None = None,
         timeout: httpx.Timeout | None = None,
         idempotency_key: str | None = None,
     ) -> T:
-        headers = {"UHP-Version": UHP_VERSION}
-        if authenticated and self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-        if idempotency_key is not None:
-            if not 1 <= len(idempotency_key) <= 255:
-                raise ValueError("Idempotency-Key must have 1 to 255 characters")
-            headers["Idempotency-Key"] = idempotency_key
+        headers = self._headers(authenticated=authenticated, idempotency_key=idempotency_key)
         kwargs: dict[str, Any] = {"headers": headers}
         if payload is not None:
             kwargs["json"] = payload
+        if files is not None:
+            kwargs["files"] = files
+        if form is not None:
+            kwargs["data"] = form
         if timeout is not None:
             kwargs["timeout"] = timeout
         try:
             response = await self._http.request(method, path, **kwargs)
         except httpx.RequestError as exc:
-            raise UHPTransportError(
-                "UHP transport failed; task execution may still be running.",
-                code="transport_error",
-                detail={"exception_type": type(exc).__name__},
-            ) from exc
+            raise self._transport_error(exc) from exc
 
         version = response.headers.get("UHP-Version")
         try:
@@ -147,18 +182,7 @@ class UHPClient:
             body = response.text
         context = {"http_status": response.status_code, "protocol_version": version, "body": body}
         if not response.is_success:
-            # Version rejection can legitimately return another version. Keep the
-            # server's structured error and the actual header, not a replacement.
-            error = body.get("error") if isinstance(body, dict) else None
-            error = error if isinstance(error, dict) else {}
-            raise UHPHTTPError(
-                error.get("message") or "UHP request failed without a structured error message.",
-                code=error.get("code") or "http_error",
-                detail=error.get("detail"),
-                error_type=error.get("type"),
-                param=error.get("param"),
-                **context,
-            )
+            raise self._http_error(response.status_code, version, body)
         if version != UHP_VERSION:
             raise UHPProtocolError(
                 "Missing or unexpected UHP-Version response header.",
@@ -233,3 +257,114 @@ class UHPClient:
             f"v1/responses/{_identifier(response_id)}/cancel",
             UHPTaskResult,
         )
+
+    # --- Files (UHP Files, conformance class Extended) ---
+
+    async def upload_file(
+        self,
+        filename: str,
+        content: bytes,
+        *,
+        media_type: str = "application/octet-stream",
+        purpose: str = "user_data",
+    ) -> UHPFile:
+        """POST /v1/files as multipart/form-data; reference the result as input_file."""
+        if not filename:
+            raise ValueError("A filename is required")
+        return await self._request(
+            "POST",
+            "v1/files",
+            UHPFile,
+            files={"file": (filename, content, media_type)},
+            form={"purpose": purpose},
+            timeout=httpx.Timeout(120.0, connect=10.0),
+        )
+
+    async def list_session_files(self, session_id: str) -> UHPFileList:
+        """GET /v1/sessions/{session_id}/files: the session's artifacts."""
+        return await self._request(
+            "GET", f"v1/sessions/{_identifier(session_id)}/files", UHPFileList
+        )
+
+    async def download_container_file(
+        self,
+        container_id: str,
+        file_id: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> UHPFileContent:
+        """GET the raw bytes of one artifact. A successful body is never decoded as JSON.
+
+        max_bytes bounds the download; a larger artifact is refused while streaming.
+        """
+        path = f"v1/containers/{_identifier(container_id)}/files/{_identifier(file_id)}/content"
+        headers = self._headers(authenticated=True)
+        try:
+            async with self._http.stream("GET", path, headers=headers) as response:
+                version = response.headers.get("UHP-Version")
+                if not response.is_success:
+                    raw = await _read_capped(response, _ERROR_BODY_MAX_BYTES)
+                    raise self._http_error(response.status_code, version, _decode_error(raw))
+                context = {"http_status": response.status_code, "protocol_version": version}
+                media_type = response.headers.get("Content-Type")
+                if version != UHP_VERSION:
+                    raise UHPProtocolError(
+                        "Missing or unexpected UHP-Version response header.",
+                        code="protocol_version_mismatch",
+                        detail={"content_type": media_type},
+                        **context,
+                    )
+                declared = response.headers.get("Content-Length")
+                if (
+                    max_bytes is not None
+                    and declared is not None
+                    and declared.isdigit()
+                    and int(declared) > max_bytes
+                ):
+                    raise UHPProtocolError(
+                        "Artifact exceeds the download limit.",
+                        code="content_too_large",
+                        detail={"limit": max_bytes, "declared": int(declared)},
+                        **context,
+                    )
+                content = await _read_capped(response, max_bytes, strict=True)
+        except httpx.RequestError as exc:
+            raise self._transport_error(exc) from exc
+        return UHPFileContent(
+            content=content,
+            media_type=media_type,
+            content_disposition=response.headers.get("Content-Disposition"),
+            protocol_version=version,
+        )
+
+
+_ERROR_BODY_MAX_BYTES = 64 * 1024
+
+
+async def _read_capped(
+    response: httpx.Response, limit: int | None, *, strict: bool = False
+) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if limit is not None and total > limit:
+            if strict:
+                raise UHPProtocolError(
+                    "Artifact exceeds the download limit.",
+                    code="content_too_large",
+                    http_status=response.status_code,
+                    protocol_version=response.headers.get("UHP-Version"),
+                    detail={"limit": limit},
+                )
+            chunks.append(chunk[: len(chunk) - (total - limit)])
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _decode_error(raw: bytes) -> Any:
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw.decode("utf-8", errors="replace")

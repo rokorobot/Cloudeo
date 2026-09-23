@@ -746,3 +746,81 @@ Validation:
 - Ruff passes for the new package and tests.
 
 No live harness, provider, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — UHP Workspace Bridge foundation
+
+Branch `feat/uhp-workspace-bridge-foundation`, from `main` at `a4030b7`. It adds
+`src/cloudeo/bridge/` and standard UHP file operations on `UHPClient`, and
+ADR-017. `Controller.run()`, the Workspace Broker, the execution contracts,
+the dispatcher, the LongHorizon adapter (still `supports_workspace_sync =
+False`), the API, and the database are unchanged. No LongHorizon role binding,
+routing, verification, automatic checkpoint, or automatic promotion was added.
+
+Protocol facts were verified in UHP `2026-09-12` and HarnessRouter
+`809392d602e34e36f0468943035c54d3350af885` before implementation (ADR-017).
+Key finding: HarnessRouter's session listing and archive hide dotfiles and
+several directories, so they are not authoritative project state.
+
+Implemented:
+
+- `UHPClient.upload_file()` (multipart `POST /v1/files`),
+  `list_session_files()`, and `download_container_file()` (streams raw bytes
+  with an optional size cap and never decodes a successful body). New
+  `UHPFile`, `UHPFileList`, and `UHPFileContent` types keep extra fields. The
+  existing request path now shares header, error, and transport helpers, with
+  unchanged behavior.
+- `cloudeo.bridge`:
+  - `remote_helper.py`: the uploaded stdlib helper (`unpack`, `pack-delta`).
+  - `bundle.py`: Git-based selection, the deterministic input bundle,
+    whole-bundle validation into staging, and planned delta application with
+    rollback.
+  - `bridge.py`: `UHPWorkspaceBridge.run(candidate, WorkspaceBridgeTask)`, one
+    task through `ExecutionDispatcher`.
+  - `models.py`: manifests, `BridgeLimits`, `WorkspaceBridgeResult`.
+
+Validation (all offline):
+
+- With the `longhorizon` extra: **309 passed** (228 existing unchanged, 59 in
+  `tests/test_uhp_workspace_bridge.py`, 22 in `tests/test_uhp_files.py`).
+  Without the extra: 273 passed, 2 skipped (the LongHorizon adapter module and
+  one bridge test that needs it).
+- The end-to-end tests use the real `GitWorkspaceBroker`,
+  `CandidateWorkspace`, `ExecutionDispatcher`, `UHPHarnessTaskBackend`,
+  `UHPClient`, and bridge helper (run as a subprocess). The fake HarnessRouter
+  behind `httpx.MockTransport` writes input files into the session working
+  directory and applies HarnessRouter's listing filter.
+- Architectural acceptance test: accepted A → candidate → bridge round trip
+  (modified text and binary, a new nested file, a deletion, a tracked dotfile,
+  executable bits) → candidate dirty, accepted still A. Then
+  `checkpoint_candidate()`, and accepted is still A. Only `promote()` advances
+  it. The bridge's only broker call is `inspect_candidate`.
+- The upload contains no `.git` entry and none of the ignored local files
+  (`.env`, `*.log`). The helper upload is byte-identical to the packaged
+  helper. Exactly one task request is sent: a fresh session with the explicit
+  harness and model.
+- Candidate unchanged, verified by a snapshot of every file and mode, the
+  worktree `.git` file, HEADs, the canonical branch, and `refs/cloudeo`, for:
+  `unknown`, `in_progress`, `failed`, `cancelled`, and `incomplete` without an
+  artifact; a missing session ID; a listing failure; a missing, duplicate, or
+  other-run artifact; a remote symlink; an oversized bundle; and 30 hostile
+  bundles. Each hostile bundle is refused as `invalid_bundle` for its specific
+  reason. Staging is cleaned up.
+- Direct validator tests cover file-count, per-file, total-size, and
+  decompression-bomb limits.
+- A local edit made during the run is a `workspace_conflict`, and the local
+  edit survives. A disk failure mid-apply rolls back to the exact
+  pre-application state. A failed rollback raises the original error with the
+  rollback failure attached.
+- UHP file operations: the multipart upload carries `UHP-Version`,
+  authorization, filename, content type, and `purpose`; typed parsing keeps
+  extra fields; downloads return exact bytes, including JSON-looking and
+  non-UTF-8 content; a missing or wrong `UHP-Version` is rejected; structured
+  413 and 404 errors are kept; size caps are enforced while streaming; there
+  are no retries.
+- The helper is checked to parse as Python 3.8 and to import only the
+  standard library.
+
+No live provider, harness, or HarnessRouter calls were made.
