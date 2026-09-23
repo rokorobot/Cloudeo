@@ -76,9 +76,7 @@ def git(cwd, *args):
 BINARY = bytes(range(256)) * 4
 
 
-@pytest.fixture
-def repo(tmp_path):
-    path = tmp_path / "canonical"
+def init_repo(path, extra=None):
     files = {
         "README.md": b"initial readme\n",
         "src/app.py": b"print('app')\n",
@@ -87,6 +85,7 @@ def repo(tmp_path):
         ".gitignore": b".env\n*.log\nbuild/\n",
         ".github/workflows/ci.yml": b"on: pull_request\n",
         "docs/old.md": b"obsolete\n",
+        **(extra or {}),
     }
     for name, data in files.items():
         (path / name).parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +95,20 @@ def repo(tmp_path):
     git(path, "add", "-A")
     git(path, "commit", "-q", "-m", "initial")
     return path
+
+
+@pytest.fixture
+def repo(tmp_path):
+    return init_repo(tmp_path / "canonical")
+
+
+def project_with(tmp_path, extra):
+    """A repo whose accepted commit tracks `extra`, its broker, and a candidate."""
+    repo = init_repo(tmp_path / "canonical", extra)
+    broker = GitWorkspaceBroker.initialize(
+        repo, "demo", git(repo, "rev-parse", "HEAD"), tmp_path / "candidates"
+    )
+    return repo, broker, broker.create_candidate(broker.accepted_state())
 
 
 @pytest.fixture
@@ -159,6 +172,14 @@ _HR_HIDE_PREFIXES = (
 _HR_HIDE_NAMES = {".gitignore", "AGENTS.md", "CLAUDE.md"}
 
 
+def hr_agent_doc(user_doc="Harness-configured instructions."):
+    """What pinned HarnessRouter `_write_agent_doc` writes: user doc + managed block."""
+    return (
+        f"{user_doc}\n\n<!-- harness-skills:begin -->\n## Workspace\n\n"
+        "Your working directory is this task's workspace.\n<!-- harness-skills:end -->\n"
+    ).encode()
+
+
 def hr_visible(path):
     """HarnessRouter CE 0.23.7 _ws_visible, copied for realism."""
     if path in _HR_HIDE_NAMES or path.startswith("."):
@@ -179,8 +200,19 @@ class FakeHarnessRouter:
         extra_files=(),
         task_reply=None,
         listing_reply=None,
+        bootstrap_doc="CLAUDE.md",
+        bootstrap_content=None,
+        before_unpack=None,
     ):
         self.remote = root / "remote"
+        # HarnessRouter's runner writes the backend's instruction doc after the
+        # input files and before the harness starts (`_write_agent_doc`).
+        self.bootstrap_doc = bootstrap_doc
+        self.bootstrap_content = (
+            bootstrap_content if bootstrap_content is not None else hr_agent_doc()
+        )
+        self.before_unpack = before_unpack
+        self.helper_outputs = []
         self.work = work
         self.status = status
         self.session_id = session_id
@@ -243,6 +275,7 @@ class FakeHarnessRouter:
             check=False,  # a failing pack-delta is itself a scenario under test
         )
         self.helper_runs.append((operation, process.returncode, process.stderr))
+        self.helper_outputs.append(process.stdout)
         return process.returncode
 
     def _task(self, request):
@@ -258,8 +291,12 @@ class FakeHarnessRouter:
             if part["type"] == "input_file":
                 upload = self.uploads[part["file_id"]]
                 (self.workspace / upload["filename"]).write_bytes(upload["content"])
-        if self.pack:
-            assert self._run_helper("unpack", run_id) == 0, self.helper_runs
+        if self.bootstrap_doc:
+            (self.workspace / self.bootstrap_doc).write_bytes(self.bootstrap_content)
+        if self.before_unpack:
+            self.before_unpack(self.workspace)
+        # A cooperative harness stops if unpack fails, so no delta is produced.
+        if self.pack and self._run_helper("unpack", run_id) == 0:
             if self.work:
                 self.work(self.workspace)
             self._run_helper("pack-delta", run_id)
@@ -552,7 +589,7 @@ def test_executable_bit_change_is_part_of_the_snapshot(candidate, broker):
 # --- Remote helper: unpack safety ---
 
 
-def _input_archive(ws, run_id, files):
+def _input_archive(ws, run_id, files, executable=()):
     manifest = {
         "format": helper.FORMAT,
         "kind": "input",
@@ -561,9 +598,9 @@ def _input_archive(ws, run_id, files):
         "candidate_id": "c" * 32,
         "base_commit": "1" * 40,
         "head_commit": "1" * 40,
-        "files": [helper.file_entry(p, d, False) for p, d in sorted(files.items())],
+        "files": [helper.file_entry(p, d, p in executable) for p, d in sorted(files.items())],
     }
-    data = helper.build_archive(manifest, {p: (d, False) for p, d in files.items()})
+    data = helper.build_archive(manifest, {p: (d, p in executable) for p, d in files.items()})
     (ws / helper.input_archive_name(run_id)).write_bytes(data)
 
 
@@ -608,6 +645,183 @@ async def test_symlink_in_candidate_fails_before_upload(broker, candidate, stagi
     with pytest.raises(BridgeInputError, match="symbolic links"):
         await run_bridge(broker, candidate, server, staging)
     assert server.requests == []
+
+
+# --- HarnessRouter bootstrap instruction docs ---
+
+PROJECT_DOC = b"# Project rules\nRun the tests before finishing.\n"
+
+
+def unpack_report(server):
+    return json.loads(server.helper_outputs[0])
+
+
+def synced_paths(result):
+    return set(result.added_paths + result.changed_paths + result.deleted_paths)
+
+
+async def test_a_bootstrap_claude_doc_is_removed_and_never_imported(
+    broker, candidate, staging, tmp_path
+):
+    seen = {}
+
+    def work(ws):
+        seen["exists_after_unpack"] = (ws / "CLAUDE.md").exists()
+        standard_work(ws)
+
+    server = FakeHarnessRouter(tmp_path, work=work)  # Claude-style bootstrap by default
+    result = await run_bridge(broker, candidate, server, staging)
+    assert unpack_report(server)["bootstrap_docs"] == {"CLAUDE.md": "removed"}
+    assert seen["exists_after_unpack"] is False
+    assert result.workspace_sync_status == "synced"
+    assert "CLAUDE.md" not in synced_paths(result) | set(result.ignored_paths)
+    assert not (candidate.local_path / "CLAUDE.md").exists()
+
+
+@pytest.mark.parametrize(
+    "doc,executable",
+    [("CLAUDE.md", False), ("AGENTS.md", False), ("AGENTS.md", True)],
+)
+async def test_b_c_tracked_project_doc_replaces_bootstrap_copy(tmp_path, staging, doc, executable):
+    _, broker, candidate = project_with(tmp_path, {doc: PROJECT_DOC})
+    if executable:
+        os.chmod(candidate.local_path / doc, 0o755)
+    seen = {}
+
+    def work(ws):
+        seen["bytes"] = (ws / doc).read_bytes()
+        seen["executable"] = os.access(ws / doc, os.X_OK)
+
+    server = FakeHarnessRouter(tmp_path, bootstrap_doc=doc, work=work)
+    result = await run_bridge(broker, candidate, server, staging)
+    assert unpack_report(server)["bootstrap_docs"] == {doc: "replaced"}
+    assert seen == {"bytes": PROJECT_DOC, "executable": executable}
+    assert result.workspace_sync_status == "synced"
+    assert doc not in synced_paths(result)  # unchanged project doc: no delta
+    assert (candidate.local_path / doc).read_bytes() == PROJECT_DOC
+
+
+async def test_d_agent_edit_of_project_agents_doc_syncs_as_changed(tmp_path, staging):
+    _, broker, candidate = project_with(tmp_path, {"AGENTS.md": PROJECT_DOC})
+    edited = PROJECT_DOC + b"Also update the changelog.\n"
+    server = FakeHarnessRouter(
+        tmp_path, bootstrap_doc="AGENTS.md", work=lambda ws: (ws / "AGENTS.md").write_bytes(edited)
+    )
+    result = await run_bridge(broker, candidate, server, staging)
+    assert result.workspace_sync_status == "synced"
+    assert result.changed_paths == ("AGENTS.md",)
+    assert (candidate.local_path / "AGENTS.md").read_bytes() == edited
+
+
+async def test_e_agent_created_agents_doc_syncs_as_added(broker, candidate, staging, tmp_path):
+    created = b"# Agent guide written during the task\n"
+    server = FakeHarnessRouter(
+        tmp_path, bootstrap_doc="AGENTS.md", work=lambda ws: (ws / "AGENTS.md").write_bytes(created)
+    )
+    result = await run_bridge(broker, candidate, server, staging)
+    assert unpack_report(server)["bootstrap_docs"] == {"AGENTS.md": "removed"}
+    assert result.workspace_sync_status == "synced"
+    assert result.added_paths == ("AGENTS.md",)
+    content = (candidate.local_path / "AGENTS.md").read_bytes()
+    assert content == created
+    assert helper.HARNESSROUTER_MANAGED_MARKER not in content
+
+
+@pytest.mark.parametrize("candidate_tracks_it", [False, True])
+async def test_f_unknown_unmarked_root_doc_fails_closed(tmp_path, staging, candidate_tracks_it):
+    extra = {"AGENTS.md": PROJECT_DOC} if candidate_tracks_it else {}
+    repo, broker, candidate = project_with(tmp_path, extra)
+    before = snapshot(repo, candidate)
+    unknown = b"# Something else put this here\n"
+    server = FakeHarnessRouter(
+        tmp_path, bootstrap_doc="AGENTS.md", bootstrap_content=unknown, work=standard_work
+    )
+    result = await run_bridge(broker, candidate, server, staging)
+    operation, returncode, stderr = server.helper_runs[0]
+    assert (operation, returncode) == ("unpack", 2)
+    assert "without the HarnessRouter marker" in stderr
+    assert (server.workspace / "AGENTS.md").read_bytes() == unknown  # not deleted
+    assert (result.workspace_sync_status, result.error.code) == (
+        "failed",
+        "output_artifact_missing",
+    )
+    assert snapshot(repo, candidate) == before
+
+
+@pytest.mark.parametrize("candidate_tracks_it", [False, True])
+async def test_g_symlinked_root_doc_is_never_followed(tmp_path, staging, candidate_tracks_it):
+    extra = {"CLAUDE.md": PROJECT_DOC} if candidate_tracks_it else {}
+    repo, broker, candidate = project_with(tmp_path, extra)
+    before = snapshot(repo, candidate)
+    outside = tmp_path / "outside-CLAUDE.md"
+    outside.write_bytes(hr_agent_doc())  # even a marked target must not be touched
+
+    server = FakeHarnessRouter(
+        tmp_path,
+        bootstrap_doc=None,
+        before_unpack=lambda ws: (ws / "CLAUDE.md").symlink_to(outside),
+        work=standard_work,
+    )
+    result = await run_bridge(broker, candidate, server, staging)
+    operation, returncode, stderr = server.helper_runs[0]
+    assert (operation, returncode) == ("unpack", 2)
+    assert "symlink" in stderr
+    assert outside.read_bytes() == hr_agent_doc()
+    assert (server.workspace / "CLAUDE.md").is_symlink()
+    assert result.workspace_sync_status == "failed"
+    assert snapshot(repo, candidate) == before
+
+
+@pytest.mark.parametrize("name", helper.MANAGED_ROOT_DOCS)
+def test_helper_reconciles_every_managed_root_doc(tmp_path, name):
+    run_id = "bridge_" + "f" * 32
+
+    def workspace(label, existing=None):
+        ws = tmp_path / label
+        ws.mkdir()
+        if existing is not None:
+            (ws / name).write_bytes(existing)
+        return ws
+
+    # Marked bootstrap, absent from the snapshot: removed before the baseline.
+    ws = workspace("removed", hr_agent_doc())
+    _input_archive(ws, run_id, {"a.txt": b"a"})
+    assert helper.main(["unpack", "--run-id", run_id, "--root", str(ws)]) == 0
+    assert not (ws / name).exists()
+
+    # Marked bootstrap, in the snapshot: replaced with exact bytes and exec state.
+    ws = workspace("replaced", hr_agent_doc())
+    _input_archive(ws, run_id, {name: PROJECT_DOC}, executable={name})
+    assert helper.main(["unpack", "--run-id", run_id, "--root", str(ws)]) == 0
+    assert (ws / name).read_bytes() == PROJECT_DOC
+    assert os.access(ws / name, os.X_OK)
+
+    # Unmarked but identical to the snapshot: accepted as-is.
+    ws = workspace("identical", PROJECT_DOC)
+    _input_archive(ws, run_id, {name: PROJECT_DOC})
+    assert helper.main(["unpack", "--run-id", run_id, "--root", str(ws)]) == 0
+
+    # Unmarked and not in the snapshot, or different from it: fail closed, keep it.
+    for label, files in (("unknown", {"a.txt": b"a"}), ("different", {name: b"other\n"})):
+        ws = workspace(label, PROJECT_DOC)
+        _input_archive(ws, run_id, files)
+        assert helper.main(["unpack", "--run-id", run_id, "--root", str(ws)]) == 2
+        assert (ws / name).read_bytes() == PROJECT_DOC
+
+    # A directory at the doc path is refused.
+    ws = workspace("directory")
+    (ws / name).mkdir()
+    _input_archive(ws, run_id, {"a.txt": b"a"})
+    assert helper.main(["unpack", "--run-id", run_id, "--root", str(ws)]) == 2
+    assert (ws / name).is_dir()
+
+
+@pytest.mark.parametrize("name", helper.MANAGED_ROOT_DOCS)
+def test_managed_root_docs_are_not_excluded_project_paths(tmp_path, name):
+    assert not helper.is_excluded(name)
+    assert bundle_module._safe(name) == name
+    (tmp_path / name).write_text("project doc\n")
+    assert name in helper.scan(str(tmp_path))
 
 
 # --- Selecting this run's artifact ---

@@ -783,9 +783,9 @@ Implemented:
 
 Validation (all offline):
 
-- With the `longhorizon` extra: **337 passed** (228 existing unchanged, 87 in
+- With the `longhorizon` extra: **355 passed** (228 existing unchanged, 105 in
   `tests/test_uhp_workspace_bridge.py`, 22 in `tests/test_uhp_files.py`).
-  Without the extra: 301 passed, 2 skipped (the LongHorizon adapter module and
+  Without the extra: 319 passed, 2 skipped (the LongHorizon adapter module and
   one bridge test that needs it).
 - The end-to-end tests use the real `GitWorkspaceBroker`,
   `CandidateWorkspace`, `ExecutionDispatcher`, `UHPHarnessTaskBackend`,
@@ -847,6 +847,29 @@ Bridge invariants added before merge (same branch):
 - Apply path safety runs before any Git ignore query; a test fails if
   `check-ignore` is reached for an unsafe path. The symlinked-`src` drift test
   asserts the exact, deterministic error message.
+- HarnessRouter bootstrap docs: pinned `runner/server.py::_write_agent_doc()`
+  writes `AGENTS.md`, `CLAUDE.md`, `QWEN.md`, or `GEMINI.md` (marked
+  `<!-- harness-skills:begin -->`) after the input files and before the
+  harness starts. `unpack` now reconciles those four root docs before writing
+  the snapshot; they are not excluded project paths (ADR-017). The fake
+  HarnessRouter reproduces that order, with a Claude-style `CLAUDE.md` by
+  default, so every end-to-end test runs under real bootstrap conditions.
+  - A: a bootstrap `CLAUDE.md` is removed at unpack and never imported.
+  - B, C: a tracked `CLAUDE.md` or `AGENTS.md` (including an executable one)
+    replaces the bootstrap copy with exact bytes and mode, and an unchanged
+    doc produces no delta.
+  - D: an agent edit to a tracked `AGENTS.md` syncs as changed.
+  - E: a new `AGENTS.md` created by the agent after the bootstrap copy was
+    removed syncs as added, without the marker.
+  - F: an unmarked, unknown `AGENTS.md` fails the unpack closed and is left in
+    place.
+  - G: a symlinked `CLAUDE.md` fails the unpack, and its target is untouched.
+  - Helper-level tests cover remove, replace (with executable bit),
+    identical, unknown, different, and directory cases for all four names, and
+    confirm the names are neither excluded nor refused by output validation.
+  - With reconciliation disabled, 15 tests fail. They include the main
+    round-trip test, which shows the generated `CLAUDE.md` leaking into the
+    candidate, and B/C/D, which show a tracked doc refused at unpack.
 - Determinism: after changing file mtimes and permission bits (0600 and 0700),
   a rebuilt input bundle is byte-identical with the same manifest hash. Member
   order, uid/gid, user and group names, mtimes, 0644/0755 modes, and the gzip

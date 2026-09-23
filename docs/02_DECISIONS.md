@@ -516,6 +516,48 @@ HarnessRouter `809392d602e34e36f0468943035c54d3350af885`):
    reconstruct the project from them. It uses a helper-produced delta instead.
    HarnessRouter's default upload cap is 25 MiB (`HARNESS_UPLOAD_MAX_BYTES`),
    and so is its produced-file cap (`HARNESS_RESP_MAX_FILE_BYTES`).
+8. Before the harness starts, and after writing the task's input files, the
+   runner's `_write_agent_doc()` always creates or overwrites a
+   backend-specific instruction document at the workspace root:
+   - `AGENTS.md` for codex, hermes, pi, dsh, opencode, cline, omp, goose,
+     kimi, aider, and openhands;
+   - `QWEN.md` for qwen;
+   - `GEMINI.md` for gemini;
+   - `CLAUDE.md` otherwise, for Claude Code.
+
+   Its managed block begins with `<!-- harness-skills:begin -->`, appended
+   after any user-authored harness doc. Without handling, a candidate that
+   tracks that file would be refused at unpack, and a candidate that does not
+   would have HarnessRouter's copy imported as a new project file.
+
+**Bootstrap instruction docs:** The bridge removes or replaces only recognized
+HarnessRouter-managed bootstrap documents before establishing the project
+snapshot. `unpack` validates every input file first. Then, before writing any
+project file, it inspects each of `AGENTS.md`, `CLAUDE.md`, `QWEN.md`, and
+`GEMINI.md` that exists at the remote root:
+
+- It must be a regular file; a symlink, directory, or special file fails the
+  unpack, and a symlink is never followed.
+- It carries the HarnessRouter marker and the snapshot has that path: it is
+  replaced by the candidate's copy, and its bytes and executable state then
+  equal the snapshot exactly.
+- It carries the marker and the snapshot does not have that path: it is
+  removed, so it is not in the remote baseline and cannot come back as an
+  added file.
+- It has no marker: it is accepted only if it already equals the candidate's
+  copy. Otherwise the unpack fails closed as unexpected remote state, and the
+  file is neither overwritten nor deleted.
+
+These filenames are **not** excluded project paths. After unpack they are
+ordinary project files: an agent's edit to a tracked `AGENTS.md` returns as a
+change, and an `AGENTS.md` the agent deliberately creates returns as an
+addition. The same applies to `CLAUDE.md`, `QWEN.md`, and `GEMINI.md`.
+Because HarnessRouter loaded its own document before the helper restored the
+project's, the transport instructions tell the harness, right after unpack,
+that the snapshot is now authoritative and to read the project's instruction
+file, if any, and follow it. The fake HarnessRouter in the tests reproduces
+the pinned order: input files, then the bootstrap doc, then the harness
+running unpack, the task, and pack-delta.
 
 **Transport:**
 

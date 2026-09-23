@@ -38,6 +38,12 @@ ROOT_RUNTIME_DIRS = frozenset({".claude", ".codex", ".harness"})
 ANY_DEPTH_EXCLUDED = frozenset({".git", "__pycache__"})
 EXECUTABLE_MODE = 0o755
 REGULAR_MODE = 0o644
+# HarnessRouter writes one of these at the workspace root before the harness
+# starts (runner `_write_agent_doc`), overwriting any existing copy, and marks
+# its managed block with this marker. They are NOT excluded project paths: only
+# the bootstrap copy is reconciled at unpack; afterwards they sync normally.
+MANAGED_ROOT_DOCS = ("AGENTS.md", "CLAUDE.md", "QWEN.md", "GEMINI.md")
+HARNESSROUTER_MANAGED_MARKER = b"<!-- harness-skills:begin -->"
 
 
 class BridgeHelperError(Exception):
@@ -145,12 +151,17 @@ def unpack(root: str, run_id: str) -> dict:
     declared = {entry["path"]: entry for entry in manifest["files"]}
     if set(declared) != set(files):
         raise BridgeHelperError("input archive members do not match its manifest")
-    for path in sorted(files):
-        entry, data = declared[path], files[path]
+    for path, data in files.items():
+        entry = declared[path]
         if hashlib.sha256(data).hexdigest() != entry["sha256"] or len(data) != entry["size"]:
             raise BridgeHelperError(f"input file {path!r} does not match its manifest")
+    # Before any project file is written: HarnessRouter's bootstrap docs must not
+    # become part of the project baseline.
+    bootstrap = reconcile_bootstrap_docs(root, files)
+    for path in sorted(files):
+        entry, data = declared[path], files[path]
         dest = _safe_destination(root, path)
-        if os.path.lexists(dest):
+        if os.path.lexists(dest) and bootstrap.get(path) != "replaced":
             # Check the link before opening, so an existing symlink is never followed.
             if os.path.islink(dest) or not os.path.isfile(dest):
                 raise BridgeHelperError(f"workspace already has a non-file at {path!r}")
@@ -160,7 +171,44 @@ def unpack(root: str, run_id: str) -> dict:
         with open(dest, "wb") as handle:
             handle.write(data)
         os.chmod(dest, EXECUTABLE_MODE if entry["executable"] else REGULAR_MODE)
-    return _identity(manifest, files=len(files))
+    return _identity(manifest, files=len(files), bootstrap_docs=bootstrap)
+
+
+def reconcile_bootstrap_docs(root: str, files: dict) -> dict:
+    """Remove or mark for replacement HarnessRouter's bootstrap instruction docs.
+
+    For each known root doc that exists: it must be a regular file (a symlink is
+    never followed). If it carries HarnessRouter's managed marker it is bootstrap
+    state: replaced by the candidate's copy when the snapshot has that path,
+    otherwise removed. An unmarked file is unknown remote state: allowed only if
+    it already equals the candidate's copy, otherwise the unpack fails closed and
+    the file is left alone.
+    """
+    actions = {}
+    for name in MANAGED_ROOT_DOCS:
+        path = os.path.join(root, name)
+        if not os.path.lexists(path):
+            continue
+        mode = os.lstat(path).st_mode
+        if not stat.S_ISREG(mode):
+            kind = "symlink" if stat.S_ISLNK(mode) else "non-regular file"
+            raise BridgeHelperError(f"remote {name} is a {kind}; refusing to use it")
+        with open(path, "rb") as handle:
+            existing = handle.read()
+        if HARNESSROUTER_MANAGED_MARKER in existing:
+            if name in files:
+                actions[name] = "replaced"
+            else:
+                os.unlink(path)
+                actions[name] = "removed"
+        elif name in files and existing == files[name]:
+            actions[name] = "identical"
+        else:
+            raise BridgeHelperError(
+                f"unexpected remote {name} without the HarnessRouter marker; "
+                "refusing to overwrite or delete it"
+            )
+    return actions
 
 
 def _safe_destination(root: str, path: str) -> str:
@@ -327,9 +375,9 @@ def _pack(root: str, run_id: str, manifest: dict, identity: dict, limits: dict) 
     return _identity(manifest, added=len(added), changed=len(changed), deleted=len(deleted))
 
 
-def _identity(manifest: dict, **counts: int) -> dict:
+def _identity(manifest: dict, **details: object) -> dict:
     keys = ("bridge_run_id", "workspace_id", "candidate_id", "base_commit")
-    return {"ok": True, **{key: manifest[key] for key in keys}, **counts}
+    return {"ok": True, **{key: manifest[key] for key in keys}, **details}
 
 
 def main(argv: list | None = None) -> int:
