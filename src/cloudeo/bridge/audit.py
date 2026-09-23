@@ -29,9 +29,11 @@ from cloudeo.bridge.bundle import (
     BridgeError,
     BridgeInputError,
     InputBundle,
+    _entries,
     build_input_bundle,
     check_candidate_unchanged,
     new_run_id,
+    select_files,
     validate_output_bundle,
 )
 from cloudeo.bridge.models import (
@@ -63,6 +65,15 @@ def snapshot_content_sha256(files: tuple[BridgeFileEntry, ...]) -> str:
     """
     entries = [entry.model_dump(mode="json") for entry in files]
     return hashlib.sha256(helper._json_bytes({"files": entries})).hexdigest()
+
+
+def current_content_sha256(candidate: CandidateWorkspace, limits: BridgeLimits) -> str:
+    """The candidate's file state now, by exactly the audit snapshot's rules.
+
+    Raises BridgeError (usually BridgeInputError) when the candidate cannot be
+    read as a snapshot.
+    """
+    return snapshot_content_sha256(_entries(select_files(candidate.local_path, limits)))
 
 
 class WorkspaceAuditSnapshot(BaseModel):
