@@ -1158,5 +1158,6 @@ bridge tests pass unmodified.
   boundary does not make model judgment correct.
 - There is no verification, checkpoint, or promotion gate yet.
 
-**Status:** Implemented on `feat/longhorizon-workspace-auditor`; not merged.
+**Status:** Implemented on `feat/longhorizon-workspace-auditor`; merged into
+`main` with a normal merge commit on top of `f3a71cb`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
