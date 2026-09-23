@@ -906,3 +906,257 @@ diagnostics-only when there is no assistant text.
 **Status:** Implemented on `feat/longhorizon-workspace-executor`; merged into
 `main` with a normal merge commit on top of `d78f1b5`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-019 — Independent LongHorizon Workspace Auditor
+
+**Decision:** Add `UHPWorkspaceAuditTransport` (`cloudeo.bridge.audit`) and
+`UHPWorkspaceAuditorAdapter` (`cloudeo.longhorizon.workspace_auditor`). They
+freeze the bound `CandidateWorkspace` into an exact snapshot, audit it in one
+fresh UHP session, and return the auditor's natural-language report to
+LongHorizon's own audit machinery. Nothing the auditor does remotely ever
+reaches the candidate.
+
+**Executor vs auditor:**
+
+| | `UHPWorkspaceExecutorAdapter` (ADR-018) | `UHPWorkspaceAuditorAdapter` |
+| --- | --- | --- |
+| Transport | `UHPWorkspaceBridge.run()` | `UHPWorkspaceAuditTransport.run()` |
+| Candidate | Mutated through a validated delta | Never mutated; the delta is evidence only |
+| Remote delta | Applied | Must be empty, otherwise `auditor_workspace_mutation_detected` |
+| After the run | Drift check before apply | Candidate, candidate `HEAD`, and accepted state all rechecked |
+| `supports_workspace_sync` | `True` | `True`: it can inspect a synchronized snapshot |
+| `workspace_access` | n/a | `read_only_snapshot`: it cannot change the candidate |
+| Role | `cli_executor` only | `cli_auditor` only |
+
+**State flow (this milestone stops at the last step):**
+
+```
+candidate A′ (dirty, UNVERIFIED)
+   ↓ freeze: deterministic snapshot, content hash H
+fresh UHP session (no previous_response_id)
+   ↓ unpack → read-only audit → pack-delta (evidence, never imported)
+LongHorizon auditor report text
+   ↓
+candidate still A′ (H unchanged)    accepted still A
+AUDITED, BUT NOT YET ACCEPTED
+```
+
+**Separate facts and stages.** Each is established by a different component,
+and none implies the next:
+
+1. The runtime completed (`cloudeo_runtime_status == "completed"`).
+2. The workspace snapshot is authentic: the candidate still equals snapshot H
+   and its `HEAD`, and accepted state did not move.
+3. The auditor was read-only: its remote delta was empty.
+4. The audit report says `complete` (LongHorizon's parser).
+5. A verification gate accepts the report (next milestone).
+6. A checkpoint is created.
+7. Promotion.
+
+This milestone provides 1–3 and passes the text through to 4. It implements
+nothing from 5 onward.
+
+**Source findings (LongHorizon `ff76d6a…`, verified before implementation):**
+
+- **`AgentAdapter` contract:** it is
+  `run_episode(prompt, env, budget, live_trajectory_path=None) -> EpisodeResult`.
+  The manager passes the CLI auditor as `cli_auditor_agent`, falling back to
+  `auditor_agent` or `agent` when it is unbound. `_run_role_episode()` converts
+  `CancelledError` into `cancelled`.
+- **Auditor prompt:** `build_role_auditor_prompt()` inserts
+  `workspace_path` under "Independent evidence boundary". The built-in CLI
+  auditor instructions are themselves read-only ("Do not create, modify, move,
+  or delete task files").
+- **Control header:** the first three non-empty lines must match `Status:
+  complete|incomplete|blocked`, `Integrity: clean|suspect|violation`, and
+  `Contract audit: aligned|unknown|needs_revision|invalid`. English and Chinese
+  keywords are accepted, and `**bold**` is tolerated. A missing header
+  produces `blocked / suspect / unknown`.
+- **Text extraction:** `audit_report_from_episode_result()` and
+  `auditor_report_text_from_episode_result()` read the metadata key
+  `assistant_visible_output` in preference to `actions_log`.
+- **Non-`done` episodes:** if `EpisodeResult.status != "done"`,
+  `audit_report_from_episode_result()` returns `blocked` with a synthesized
+  runtime-failure report, and the auditor text is not used.
+- **Native mutation guard:** LongHorizon has its own read-only guard metadata
+  (`verifier_workspace_*`, produced by `adapters/claude_permissions.py`). With
+  `verifier_workspace_restored` false, only deletions, and a declared
+  integrity violation, LongHorizon accepts remote deletions as confirmed
+  artifact deletions.
+- **Format repair:** `_should_repair_auditor_format()` runs only for a `done`
+  result whose header is invalid. `_should_accept_auditor_format_repair()`
+  rejects the repair if the result is not `done`, has hard runtime signals, or
+  shows a workspace mutation.
+- **Format-repair quirk:** the manager rebuilds the corrected result with the
+  repaired text in `actions_log` but the **primary** metadata. Its
+  `assistant_visible_output` therefore wins, and with any adapter that sets
+  that key (ADR-016) the repaired text is ignored and the report stays
+  `blocked`. This fails closed and is an upstream integration issue, not
+  patched here.
+- **Error aborts the run:** in `manager.run()`, an auditor `EpisodeResult` with
+  status `error` is classified by `classify_agent_runtime_failure()` as a
+  provider failure, and the whole run aborts (`provider_*`). Only `timeout` is
+  treated as recoverable. Every invalid audit from this adapter (a mutation,
+  drift, staleness, or missing evidence) is `error`, so under the pinned manager
+  it would end the run rather than fail a single round.
+
+**Transport:**
+
+1. Before anything is uploaded, only public broker calls are made:
+   `inspect_candidate()` for identity and worktree, then `accepted_state()`,
+   which must still equal the candidate's `base_commit`. A failure returns
+   `candidate_unavailable` or `candidate_stale`, and no request is sent.
+2. Freeze a `WorkspaceAuditSnapshot` with `build_input_bundle()`. It uses the
+   same Git selection, deterministic archive, manifest, and limits as the
+   bridge, never includes `.git` or ignored files, and has the same
+   symlink/submodule restrictions. It holds `workspace_id`, `candidate_id`,
+   `base_commit`, `head_commit`, the manifest, `manifest_sha256`, and the
+   archive bytes.
+3. Upload the helper and the snapshot, and run exactly one
+   `HarnessTaskExecution` through the `ExecutionDispatcher`. It uses the
+   auditor's own harness, model, step limit, and budget, with no
+   `previous_response_id`. Construction requires the same `UHPClient` identity
+   as the bridge (`require_single_deployment`).
+4. The audit instructions say:
+   - run `unpack` first;
+   - the snapshot is authoritative;
+   - read `AGENTS.md`, `CLAUDE.md`, `QWEN.md`, or `GEMINI.md` if present;
+   - a local workspace path in the prompt means the current extracted
+     directory;
+   - inspect only: no repair, and no created, modified, moved, or deleted
+     files;
+   - send tool caches and outputs outside the project;
+   - run `pack-delta` before the final answer.
+5. For `completed` or `incomplete` runs, download exactly this run's output
+   artifact through the shared `fetch_output_artifact()` (the same selection
+   rules as the bridge). Validate it with the existing hostile-bundle
+   validator (`validate_output_bundle()`), including identity and
+   `input_manifest_sha256`. Then **discard** it. It is never passed to
+   `apply_delta()`. For `unknown`, `in_progress`, `failed`, or `cancelled`
+   runs the remote workspace is not read.
+6. After the run, recheck:
+   - the candidate `HEAD` must equal the snapshot's `HEAD`;
+   - the candidate manifest must equal the snapshot, using the same selection
+     and hashing (content, additions, deletions, and executable bits);
+   - accepted state must still equal `base_commit`.
+
+**Result mapping:** The runtime mapping is exactly ADR-016's. A `completed` run
+becomes `error` when any of the following holds, in this order:
+
+1. `candidate_stale_during_audit`: accepted state moved.
+2. `candidate_changed_during_audit`: a local file changed, was added or
+   deleted, changed executable bit, or the candidate `HEAD` moved.
+3. `auditor_workspace_mutation_detected`: the remote delta is not empty. All
+   changed paths are recorded, and executable-bit-only changes are listed
+   separately as `mode_changed`.
+4. `audit_evidence_invalid: <code>`: the artifact is missing or ambiguous, the
+   session ID is missing, or the bundle is invalid.
+
+In every such case the auditor's text is moved from `assistant_visible_output`
+to `untrusted_auditor_output`, so LongHorizon never reads it as the role's
+report. A `completed` run with none of these conditions is `done`. `failed`,
+`cancelled`, `unknown`, and `in_progress` keep their ADR-016 status, and no
+audit is accepted: LongHorizon reports `blocked`. `incomplete` keeps its
+`timeout` or `error` mapping, and even a well-formed `complete` report from it
+parses as `blocked`.
+
+`done` means only that the runtime completed, the bound snapshot was
+inspected, the auditor's remote copy was unchanged, and the candidate and
+accepted state were unchanged. It is not `Status: complete`: LongHorizon's
+parser decides that from the text. The adapter never repairs, rewrites, or
+reinterprets the report. Format checking, format repair,
+`parse_audit_report()`, the acceptance-constraint guard, and the
+integrity/contract interpretation stay with LongHorizon. An empty remote delta
+proves only that the auditor did not change its copy. It does not prove that
+the audit conclusion is correct.
+
+**Metadata:** All ADR-016 keys are kept, plus:
+
+- `supports_workspace_sync: True` and `workspace_access: "read_only_snapshot"`;
+- `workspace_id`, `candidate_id`, and `candidate_base_commit`;
+- `audit_transport_run_id`, `audit_snapshot_head`, and `audit_snapshot_file_count`;
+- `audit_snapshot_manifest_sha256`: the exact bundle sent, which includes the run
+  ID;
+- `audit_snapshot_content_sha256`: the audited file state, meaning every path,
+  size, SHA-256, and executable bit;
+- `audit_snapshot_unchanged` and `accepted_state_unchanged`;
+- `auditor_remote_evidence` (`unchanged`, `mutated`, `failed`, or `skipped`)
+  and `auditor_remote_workspace_unchanged`;
+- `auditor_workspace_mutations` (`added`, `changed`, `deleted`,
+  `mode_changed`);
+- `audit_evidence_error` and `audit_invalid_reasons`;
+- `independently_verified: False`, always.
+
+When remote evidence was obtained, the adapter also emits LongHorizon's native
+guard keys in the pinned shape: `verifier_workspace_guard`,
+`verifier_workspace_mutation_detected`, `verifier_workspace_mutations`,
+`verifier_workspace_mutation_counts`, and
+`verifier_workspace_restore_on_mutation`. `verifier_workspace_restored` is set
+to `True`. That is accurate: the task workspace is the candidate, which never
+receives auditor writes. It also means LongHorizon never treats a remote
+deletion as a confirmed artifact deletion.
+
+**Evidence for the next gate:** The future verification gate **must not
+promote merely from an auditor text report.** Before it checkpoints, it must
+establish that the candidate is still exactly the audited state. It should
+recompute `snapshot_content_sha256()` from the candidate with the same
+selection rules, require it to equal `audit_snapshot_content_sha256`, and
+require the candidate `HEAD` to equal `audit_snapshot_head`. The candidate
+identity (`workspace_id`, `candidate_id`, `candidate_base_commit`) is retained
+for that check. No such gate is implemented here.
+
+**Independence:** "Independent" here means an independent execution, session,
+and workspace boundary. Every audit is a new HarnessRouter session with no
+`previous_response_id`. It shares no executor session, response, or remote
+workspace; the only shared state is Cloudeo's deterministic snapshot. It does
+**not** mean independent provider or model identity, which is not required
+here. A future policy may require model or provider diversity for high-risk
+audits.
+
+**Role eligibility (exact type, fail-closed):**
+
+| Role | `UHPHarnessAgentAdapter` | `UHPWorkspaceExecutorAdapter` | `UHPWorkspaceAuditorAdapter` |
+| --- | --- | --- | --- |
+| `manager` | ✅ | ❌ | ❌ |
+| `final_response` | ✅ | ❌ | ❌ |
+| `auditor_format_repair` | ✅ | ❌ | ❌ |
+| `cli_executor` | ❌ | ✅ | ❌ |
+| `cli_auditor` | ❌ | ❌ | ✅ |
+| `gui_executor` | ❌ | ❌ | ❌ |
+| `gui_auditor` | ❌ | ❌ | ❌ |
+
+**Environment and trajectory:** As for the executor, the `Environment` is
+accepted and never called, `live_trajectory_path` is never written, and
+`manager.run()` compatibility is not claimed.
+
+**Bridge refactor:** Artifact selection and download, and the one-deployment
+check, moved from `UHPWorkspaceBridge` into shared module functions
+(`fetch_output_artifact`, `require_single_deployment`) so the audit transport
+reuses them. Error codes, messages, and behavior are unchanged, and all 105
+bridge tests pass unmodified.
+
+**Limitations:**
+
+- There is no live HarnessRouter proof; all validation is offline.
+- The harness must cooperate by running the helper, with Python 3.8 or later
+  in its sandbox. An auditor that does not run `pack-delta` produces no
+  evidence, and the audit is `error`.
+- Any file an audit leaves behind counts as a mutation, including tool caches
+  such as `.pytest_cache`. `__pycache__` and the root runtime directories are
+  excluded by the helper.
+- Public broker terminal-lifecycle limitation (ADR-018): an open candidate
+  cannot be distinguished from a promoted or rejected one.
+- Provider or model diversity is not required.
+- `manager.run()` integration is unproven: the `workspace_path` mismatch
+  (ADR-018), the format-repair metadata quirk, and the fact that an auditor
+  `error` aborts the whole pinned manager run are all prerequisites for the
+  role-binding milestone.
+- An audit report can still be semantically wrong. An independent execution
+  boundary does not make model judgment correct.
+- There is no verification, checkpoint, or promotion gate yet.
+
+**Status:** Implemented on `feat/longhorizon-workspace-auditor`; not merged.
+See `03_PROGRESS_AND_EVIDENCE.md`.

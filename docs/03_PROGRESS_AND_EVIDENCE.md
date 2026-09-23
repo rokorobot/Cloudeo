@@ -1008,3 +1008,141 @@ Known limitations (ADR-018):
   role-binding milestone. `manager.run()` compatibility is not claimed.
 
 No live provider, harness, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — Independent LongHorizon workspace auditor
+
+Branch `feat/longhorizon-workspace-auditor`, from `main` at `f3a71cb`. It adds
+`cloudeo.bridge.audit` (`WorkspaceAuditSnapshot`,
+`UHPWorkspaceAuditTransport`, `WorkspaceAuditResult`, `snapshot_content_sha256`),
+`cloudeo.longhorizon.workspace_auditor` (`UHPWorkspaceAuditorAdapter`), the
+`cli_auditor` row of the role table, and ADR-019.
+
+`UHPWorkspaceBridge` gained two shared module functions
+(`fetch_output_artifact`, `require_single_deployment`). Its behavior, codes,
+and messages are unchanged. These are unchanged:
+
+- the Workspace Broker;
+- the base adapter (still `supports_workspace_sync = False`);
+- the workspace executor;
+- the dispatcher and contracts, and `Controller.run()`;
+- the API, database, config, and dependencies.
+
+No checkpoint, promotion, rejection, manager-loop, GUI, routing, or
+verification-gate code was added.
+
+The source findings for pinned LongHorizon `ff76d6a…` are recorded in ADR-019.
+Two of them matter for later milestones:
+
+- **Format repair:** `manager.run()` rebuilds a format-repaired result with the
+  primary metadata, so a UHP adapter's `assistant_visible_output` hides the
+  repaired text. This fails closed as `blocked`.
+- **Run abort:** an auditor `error` is classified as a provider failure and
+  aborts the whole pinned manager run.
+
+Validation (all offline):
+
+- With the `longhorizon` extra: **429 passed** (386 existing unchanged, 43 in
+  `tests/test_longhorizon_workspace_auditor.py`). Without the extra: 319 passed
+  and 4 skipped (the three LongHorizon modules and one bridge test).
+- Focused suites: workspace executor 31, LongHorizon adapter 35, bridge 105
+  (the fake HarnessRouter gained per-task response overrides; no bridge test
+  changed), UHP client and files 56, Workspace Broker 51.
+- The tests use the real `GitWorkspaceBroker`, `CandidateWorkspace`,
+  `UHPWorkspaceBridge`, `UHPWorkspaceAuditTransport`, `UHPClient`,
+  `ExecutionDispatcher`, `UHPHarnessTaskBackend`, and bridge helper (run as a
+  subprocess). They also use LongHorizon's real `AgentAdapter`, `Environment`,
+  `EpisodeBudget`, `EpisodeResult`, `build_role_auditor_prompt()` (with
+  `workspace_path="/workspace"`), `audit_report_from_episode_result()`,
+  `auditor_report_text_from_episode_result()`, `parse_audit_report()`, and
+  `manager._should_repair_auditor_format()`.
+
+Tests in `tests/test_longhorizon_workspace_auditor.py` (the numbers in
+brackets are parametrized cases):
+
+- `test_a_to_i_executor_then_independent_read_only_audit` [1]:
+  - The executor makes candidate A′.
+  - The auditor gets a fresh session and remote workspace. It sees exactly A′,
+    with HarnessRouter's bootstrap `CLAUDE.md` removed, and makes no changes.
+    The result is `done`.
+  - The candidate is byte-for-byte A′ (files, modes, `.git` file, HEADs,
+    canonical branch, `refs/cloudeo`), accepted is still A, and there is no
+    checkpoint or promoted/rejected marker.
+  - The executor and auditor session IDs, response IDs, and workspaces all
+    differ. There is no `previous_response_id`, and the auditor's own harness,
+    model, `max_step`, and budget are used.
+  - The recorded manifest hash equals the hash of the uploaded manifest bytes.
+  - The three-line report is preserved verbatim and parses as `complete /
+    clean / aligned` through both LongHorizon parsers. Nothing is promoted.
+- `test_auditor_uses_only_read_only_broker_calls` [1]: a spy records exactly
+  `inspect_candidate` and `accepted_state`.
+- `test_audit_snapshot_content_identity_for_the_next_gate` [1]:
+  - Recomputing the content hash with another run ID gives the same content
+    hash, but not the same manifest hash.
+  - A later edit changes the content hash.
+- `test_j_malformed_report_is_left_to_longhorizon` [1]: the result is `done`,
+  the text is unchanged, LongHorizon's repair predicate is true, and the report
+  parses as `blocked / suspect / unknown`.
+- `test_j_source_finding_repaired_text_loses_to_primary_visible_output` [1]:
+  documents the upstream repair quirk (fails closed).
+- `test_k_to_n_remote_auditor_mutation_is_detected` [4]: an added, modified,
+  or deleted file, or an executable-bit change.
+  - The result is `error` with `auditor_workspace_mutation_detected`, and the
+    exact paths are recorded (a mode-only change is listed under
+    `mode_changed`).
+  - The native `verifier_workspace_*` keys are set, and the report text is
+    moved to `untrusted_auditor_output`.
+  - LongHorizon reports `blocked`, noting the auditor write.
+  - The candidate is unchanged.
+- `test_o_missing_evidence_is_error` [2]: a missing artifact, or no session ID.
+- `test_p_invalid_evidence_bundle_is_error` [2]: a garbage bundle, or a bundle
+  built from another snapshot (`input_manifest_sha256`). Each gives
+  `invalid_bundle`, the candidate is unchanged, and staging is empty.
+- `test_q_to_t_local_drift_invalidates_audit` [4]: a local file modified,
+  added, deleted, or with its executable bit changed during the audit. Each
+  gives `candidate_changed_during_audit`, and the local change is kept (no
+  merge).
+- `test_candidate_head_moving_during_audit_invalidates_it` [1]: a HEAD move
+  with identical files.
+- `test_u_accepted_state_moving_during_audit_invalidates_it` [1]:
+  `candidate_stale_during_audit`.
+- `test_stale_candidate_before_audit_makes_no_request` [1].
+- `test_unavailable_candidate_makes_no_request` [3]: cleaned up (not
+  recreated), forged, or symlink.
+- `test_v_unknown_runtime` [1], `test_w_x_non_completed_runtime` [3]
+  (`failed`, `cancelled`, `in_progress`), and
+  `test_y_incomplete_keeps_runtime_mapping_and_is_no_audit` [2] (`max_steps` →
+  `timeout`, `interrupted` → `error`). In each, LongHorizon reports `blocked`.
+- `test_z_aa_environment_untouched_and_no_trajectory` [1].
+- `test_ab_ac_ad_role_matrix` [7]: every role against all three adapters.
+- `test_ae_auditor_subclass_and_unknowns_fail_closed` [1]:
+  - a subclass is refused;
+  - the unknown role names `auditor`, `agent`, and `auditor_agent` are
+    refused;
+  - the auditor cannot be bound as `cli_executor`, nor the executor as
+    `cli_auditor`;
+  - a mixed binding returns only explicit keywords;
+  - the pinned manager takes `cli_auditor_agent`.
+- `test_capabilities_and_agent_adapter_conformance` [1].
+- `test_transport_requires_one_uhp_deployment` [1].
+- `test_af_tracked_project_doc_replaces_bootstrap_copy` [1] and
+  `test_af_unknown_remote_doc_fails_closed` [1].
+- `test_ag_ah_snapshot_excludes_ignored_files_and_git` [1]: no `.env`,
+  `debug.log`, or `.git` component, while `.github/` is still sent.
+
+Mutation checks (each change was reverted afterwards):
+
+| Deliberate change | Tests that fail |
+| --- | --- |
+| Remote mutations ignored | K–N (4) |
+| The auditor delta applied to the candidate | K–N (4), on the candidate snapshot |
+| No post-audit drift check | Q–T and the HEAD-move test (5) |
+| No post-audit accepted-state check | U (1) |
+| Problems not blocking `done` | 15 |
+| `previous_response_id` set | A–I (1) |
+
+Ruff passes.
+
+No live provider, harness, or HarnessRouter calls were made.

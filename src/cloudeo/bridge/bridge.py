@@ -87,18 +87,7 @@ class UHPWorkspaceBridge:
         limits: BridgeLimits | None = None,
         staging_root: Path | None = None,
     ):
-        # Uploads, the task, the session listing, and the download must all reach the
-        # same UHP deployment, so the task must run on this very client.
-        backend = dispatcher.harness_task
-        if backend is None:
-            raise ValueError("The dispatcher has no harness-task backend.")
-        if not isinstance(backend, UHPHarnessTaskBackend):
-            raise TypeError("The dispatcher's harness-task backend is not a UHP backend.")
-        if backend.client is not client:
-            raise ValueError(
-                "The dispatcher's UHP backend uses a different UHPClient than the bridge's "
-                "file operations; all bridge traffic must reach one UHP deployment."
-            )
+        require_single_deployment(client, dispatcher)
         self.broker = broker
         self.client = client
         self.dispatcher = dispatcher
@@ -174,33 +163,9 @@ class UHPWorkspaceBridge:
         if session_id is None:
             return result("failed", "missing_session_id", "The response has no session_id.")
 
-        name = helper.output_archive_name(run_id)
         try:
-            listing = await self.client.list_session_files(session_id)
-        except UHPError as exc:
-            return result("failed", "artifact_listing_failed", str(exc))
-        matches = [item for item in listing.files if _is_output(item, name)]
-        if not matches:
-            return result("failed", "output_artifact_missing", f"No artifact named {name}.")
-        if len(matches) > 1:
-            return result(
-                "failed", "output_artifact_ambiguous", f"{len(matches)} artifacts named {name}."
-            )
-        artifact = matches[0]
-        if not artifact.container_id:
-            return result("failed", "output_artifact_invalid", "The artifact has no container_id.")
-        limit = self.limits.max_output_bundle_bytes
-        if artifact.size is not None and artifact.size > limit:
-            return result("failed", "invalid_bundle", "The output artifact exceeds the size limit.")
-        try:
-            content = await self.client.download_container_file(
-                artifact.container_id, artifact.id, max_bytes=limit
-            )
-        except UHPError as exc:
-            return result("failed", "artifact_download_failed", str(exc))
-
-        try:
-            delta = validate_output_bundle(content.content, bundle, self.limits, self.staging_root)
+            data = await fetch_output_artifact(self.client, session_id, run_id, self.limits)
+            delta = validate_output_bundle(data, bundle, self.limits, self.staging_root)
         except BridgeError as exc:
             return result("failed", exc.code, str(exc))
         try:
@@ -219,6 +184,66 @@ class UHPWorkspaceBridge:
             deleted_paths=applied.deleted,
             ignored_paths=applied.ignored,
         )
+
+
+class ArtifactRetrievalError(BridgeError):
+    """This run's output artifact could not be located or downloaded."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def require_single_deployment(client: UHPClient, dispatcher: ExecutionDispatcher) -> None:
+    """Uploads, the task, the session listing, and the download must all reach the
+    same UHP deployment, so the task must run on this very client."""
+    backend = dispatcher.harness_task
+    if backend is None:
+        raise ValueError("The dispatcher has no harness-task backend.")
+    if not isinstance(backend, UHPHarnessTaskBackend):
+        raise TypeError("The dispatcher's harness-task backend is not a UHP backend.")
+    if backend.client is not client:
+        raise ValueError(
+            "The dispatcher's UHP backend uses a different UHPClient than the bridge's "
+            "file operations; all bridge traffic must reach one UHP deployment."
+        )
+
+
+async def fetch_output_artifact(
+    client: UHPClient, session_id: str, run_id: str, limits: BridgeLimits
+) -> bytes:
+    """Download exactly this run's output archive through the configured client.
+
+    The bytes are untrusted; callers validate them with validate_output_bundle().
+    A download_url host is never followed.
+    """
+    name = helper.output_archive_name(run_id)
+    try:
+        listing = await client.list_session_files(session_id)
+    except UHPError as exc:
+        raise ArtifactRetrievalError("artifact_listing_failed", str(exc)) from exc
+    matches = [item for item in listing.files if _is_output(item, name)]
+    if not matches:
+        raise ArtifactRetrievalError("output_artifact_missing", f"No artifact named {name}.")
+    if len(matches) > 1:
+        raise ArtifactRetrievalError(
+            "output_artifact_ambiguous", f"{len(matches)} artifacts named {name}."
+        )
+    artifact = matches[0]
+    if not artifact.container_id:
+        raise ArtifactRetrievalError("output_artifact_invalid", "The artifact has no container_id.")
+    limit = limits.max_output_bundle_bytes
+    if artifact.size is not None and artifact.size > limit:
+        raise ArtifactRetrievalError(
+            "invalid_bundle", "The output artifact exceeds the size limit."
+        )
+    try:
+        content = await client.download_container_file(
+            artifact.container_id, artifact.id, max_bytes=limit
+        )
+    except UHPError as exc:
+        raise ArtifactRetrievalError("artifact_download_failed", str(exc)) from exc
+    return content.content
 
 
 def _is_output(item: UHPFile, name: str) -> bool:

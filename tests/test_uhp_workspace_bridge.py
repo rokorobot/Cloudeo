@@ -329,7 +329,12 @@ class FakeHarnessRouter:
             "usage": None,
             "metadata": metadata,
             "previous_response_id": None,
-            **self.response_overrides,
+            # A dict for every task, or a function of the task index.
+            **(
+                self.response_overrides(n)
+                if callable(self.response_overrides)
+                else self.response_overrides
+            ),
         }
         return httpx.Response(200, json=body, headers=HEADERS)
 
