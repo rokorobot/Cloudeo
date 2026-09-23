@@ -746,3 +746,151 @@ Validation:
 - Ruff passes for the new package and tests.
 
 No live harness, provider, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — UHP Workspace Bridge foundation
+
+Branch `feat/uhp-workspace-bridge-foundation`, from `main` at `a4030b7`. It adds
+`src/cloudeo/bridge/` and standard UHP file operations on `UHPClient`, and
+ADR-017. `Controller.run()`, the Workspace Broker, the execution contracts,
+the dispatcher, the LongHorizon adapter (still `supports_workspace_sync =
+False`), the API, and the database are unchanged. No LongHorizon role binding,
+routing, verification, automatic checkpoint, or automatic promotion was added.
+
+Protocol facts were verified in UHP `2026-09-12` and HarnessRouter
+`809392d602e34e36f0468943035c54d3350af885` before implementation (ADR-017).
+Key finding: HarnessRouter's session listing and archive hide dotfiles and
+several directories, so they are not authoritative project state.
+
+Implemented:
+
+- `UHPClient.upload_file()` (multipart `POST /v1/files`),
+  `list_session_files()`, and `download_container_file()` (streams raw bytes
+  with an optional size cap and never decodes a successful body). New
+  `UHPFile`, `UHPFileList`, and `UHPFileContent` types keep extra fields. The
+  existing request path now shares header, error, and transport helpers, with
+  unchanged behavior.
+- `cloudeo.bridge`:
+  - `remote_helper.py`: the uploaded stdlib helper (`unpack`, `pack-delta`).
+  - `bundle.py`: Git-based selection, the deterministic input bundle,
+    whole-bundle validation into staging, and planned delta application with
+    rollback.
+  - `bridge.py`: `UHPWorkspaceBridge.run(candidate, WorkspaceBridgeTask)`, one
+    task through `ExecutionDispatcher`.
+  - `models.py`: manifests, `BridgeLimits`, `WorkspaceBridgeResult`.
+
+Validation (all offline):
+
+- With the `longhorizon` extra: **355 passed** (228 existing unchanged, 105 in
+  `tests/test_uhp_workspace_bridge.py`, 22 in `tests/test_uhp_files.py`).
+  Without the extra: 319 passed, 2 skipped (the LongHorizon adapter module and
+  one bridge test that needs it).
+- The end-to-end tests use the real `GitWorkspaceBroker`,
+  `CandidateWorkspace`, `ExecutionDispatcher`, `UHPHarnessTaskBackend`,
+  `UHPClient`, and bridge helper (run as a subprocess). The fake HarnessRouter
+  behind `httpx.MockTransport` writes input files into the session working
+  directory and applies HarnessRouter's listing filter.
+- Architectural acceptance test: accepted A → candidate → bridge round trip
+  (modified text and binary, a new nested file, a deletion, a tracked dotfile,
+  executable bits) → candidate dirty, accepted still A. Then
+  `checkpoint_candidate()`, and accepted is still A. Only `promote()` advances
+  it. The bridge's only broker call is `inspect_candidate`.
+- The upload contains no `.git` entry and none of the ignored local files
+  (`.env`, `*.log`). The helper upload is byte-identical to the packaged
+  helper. Exactly one task request is sent: a fresh session with the explicit
+  harness and model.
+- Candidate unchanged, verified by a snapshot of every file and mode, the
+  worktree `.git` file, HEADs, the canonical branch, and `refs/cloudeo`, for:
+  `unknown`, `in_progress`, `failed`, `cancelled`, and `incomplete` without an
+  artifact; a missing session ID; a listing failure; a missing, duplicate, or
+  other-run artifact; a remote symlink; an oversized bundle; and 32 hostile
+  bundles. Each hostile bundle is refused as `invalid_bundle` for its specific
+  reason; the 32 include a mismatched `input_manifest_sha256` and a bare `.git`
+  path. Staging is cleaned up.
+- Direct validator tests cover file-count, per-file, total-size, and
+  decompression-bomb limits.
+- A disk failure mid-apply rolls back to the exact pre-application state. A
+  failed rollback raises the original error with the rollback failure
+  attached.
+
+Bridge invariants added before merge (same branch):
+
+- Candidate drift: seven local-change scenarios made while the remote episode
+  runs each fail with `candidate_changed_during_execution`, and the candidate
+  is exactly as the local change left it. The scenarios are: a modified,
+  added, or deleted file; an executable-bit change; a local edit of a file the
+  remote deleted; a newer local edit of a file the remote changed; and a local
+  file created where the remote added one. Editing an ignored `.env` is not
+  drift. Removing the drift check makes all seven fail.
+- One UHP deployment: a dispatcher whose UHP backend uses a different
+  `UHPClient`, a non-UHP harness backend, or no harness backend is refused at
+  construction, before any request.
+- Output cap: HarnessRouter's produced-file cap (`HARNESS_RESP_MAX_FILE_BYTES`,
+  25 MiB) was verified in the pinned source, and input and output limits are
+  20 MiB each. The helper enforces the output file-count, total-byte,
+  per-file, and bundle limits carried in the input manifest, checking sizes
+  with `lstat` before reading; a test shows an over-limit file is never
+  opened. Each of `output_too_large`, `output_file_too_large`,
+  `output_file_count_exceeded`, and `output_total_bytes_exceeded` makes the
+  helper write an error artifact and exit 3. The sync fails with that code and
+  nothing is applied, which each has an end-to-end test for. An oversized
+  artifact produced without the helper fails as `invalid_bundle`.
+- Remote unpack: a symlinked parent (at the root or nested) or a non-directory
+  parent is refused before writing, and no file appears outside the
+  workspace. Nested directories are still created normally.
+- `apply_delta` handles only `Exception`, so `KeyboardInterrupt`,
+  `SystemExit`, and cancellation are never turned into `apply_failed`.
+- Determinism counterpart: toggling a file's executable bit (0600 to 0700)
+  changes the manifest, the archive, and the manifest hash.
+- Apply path safety runs before any Git ignore query; a test fails if
+  `check-ignore` is reached for an unsafe path. The symlinked-`src` drift test
+  asserts the exact, deterministic error message.
+- HarnessRouter bootstrap docs: pinned `runner/server.py::_write_agent_doc()`
+  writes `AGENTS.md`, `CLAUDE.md`, `QWEN.md`, or `GEMINI.md` (marked
+  `<!-- harness-skills:begin -->`) after the input files and before the
+  harness starts. `unpack` now reconciles those four root docs before writing
+  the snapshot; they are not excluded project paths (ADR-017). The fake
+  HarnessRouter reproduces that order, with a Claude-style `CLAUDE.md` by
+  default, so every end-to-end test runs under real bootstrap conditions.
+  - A: a bootstrap `CLAUDE.md` is removed at unpack and never imported.
+  - B, C: a tracked `CLAUDE.md` or `AGENTS.md` (including an executable one)
+    replaces the bootstrap copy with exact bytes and mode, and an unchanged
+    doc produces no delta.
+  - D: an agent edit to a tracked `AGENTS.md` syncs as changed.
+  - E: a new `AGENTS.md` created by the agent after the bootstrap copy was
+    removed syncs as added, without the marker.
+  - F: an unmarked, unknown `AGENTS.md` fails the unpack closed and is left in
+    place.
+  - G: a symlinked `CLAUDE.md` fails the unpack, and its target is untouched.
+  - Helper-level tests cover remove, replace (with executable bit),
+    identical, unknown, different, and directory cases for all four names, and
+    confirm the names are neither excluded nor refused by output validation.
+  - With reconciliation disabled, 15 tests fail. They include the main
+    round-trip test, which shows the generated `CLAUDE.md` leaking into the
+    candidate, and B/C/D, which show a tracked doc refused at unpack.
+- Determinism: after changing file mtimes and permission bits (0600 and 0700),
+  a rebuilt input bundle is byte-identical with the same manifest hash. Member
+  order, uid/gid, user and group names, mtimes, 0644/0755 modes, and the gzip
+  header (no filename, mtime 0) are asserted.
+- Identity: the delta must echo `input_manifest_sha256`. Removing that check
+  makes its test fail.
+- Local path safety: a symlinked `src` directory swapped in during the run is
+  caught as drift, and the outside target is untouched. With the drift check
+  bypassed, apply still refuses a path through a local symlink as
+  `unsafe_local_path` before any mutation. `.git`, `.git/...`, and `.GIT/...`
+  are refused.
+- Runtime gating: `incomplete` with a valid delta syncs and stays
+  `incomplete`. `failed` and `cancelled` are skipped without reading the
+  remote workspace, even when an artifact exists.
+- UHP file operations: the multipart upload carries `UHP-Version`,
+  authorization, filename, content type, and `purpose`; typed parsing keeps
+  extra fields; downloads return exact bytes, including JSON-looking and
+  non-UTF-8 content; a missing or wrong `UHP-Version` is rejected; structured
+  413 and 404 errors are kept; size caps are enforced while streaming; there
+  are no retries.
+- The helper is checked to parse as Python 3.8 and to import only the
+  standard library.
+
+No live provider, harness, or HarnessRouter calls were made.

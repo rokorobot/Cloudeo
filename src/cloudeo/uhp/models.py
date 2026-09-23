@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -122,3 +123,28 @@ class UHPTaskResult(UHPObject):
     def session_id(self) -> str | None:
         value = self.metadata.get("session_id")
         return value if isinstance(value, str) else None
+
+
+class UHPFile(UHPObject):
+    """A UHP file object (upload result or session artifact). Extra fields are kept."""
+
+    id: str = Field(min_length=1)
+    filename: str
+    object: Literal["file"] | None = None
+    container_id: str | None = None
+    size: int | None = Field(default=None, ge=0, alias="bytes")
+    created_at: int | None = None
+
+
+class UHPFileList(UHPObject):
+    files: list[UHPFile]
+
+
+@dataclass(frozen=True)
+class UHPFileContent:
+    """Raw artifact bytes exactly as served; never decoded."""
+
+    content: bytes
+    media_type: str | None
+    content_disposition: str | None
+    protocol_version: str | None

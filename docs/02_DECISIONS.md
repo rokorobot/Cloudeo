@@ -472,3 +472,270 @@ before those roles can use it.
 **Status:** Implemented on `feat/longhorizon-adapter-foundation`. The
 LongHorizon manager loop is not run from Cloudeo, and `Controller.run()` is
 unchanged. See `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-017 — UHP Workspace Bridge Foundation
+
+**Decision:** Add `cloudeo.bridge`, which moves a `CandidateWorkspace` into one
+fresh UHP session and brings the executor's changes back as a validated delta.
+The bridge may change the candidate's working tree and nothing else.
+
+**Canonical ownership:**
+
+- The Workspace Broker's accepted commit is canonical state (ADR-015).
+- A `CandidateWorkspace` is mutable executor state.
+- A HarnessRouter session workspace is temporary remote execution state.
+
+After a successful sync the candidate is simply dirty and uncheckpointed. The
+bridge never calls `checkpoint_candidate()`, `promote()`, or `reject()`; it
+calls only the broker's read-only `inspect_candidate()`. It never moves
+accepted state, a branch, or `HEAD`.
+
+**Protocol facts verified** in the pinned sources (UHP `2026-09-12`;
+HarnessRouter `809392d602e34e36f0468943035c54d3350af885`):
+
+1. Input is `POST /v1/files` (multipart `file`, optional `purpose`, default
+   `user_data`), then `{"type": "input_file", "file_id": ...}`.
+2. HarnessRouter writes task input files into the session working directory
+   under their upload filenames (`_write_input_files`).
+3. Artifacts are listed with `GET /v1/sessions/{session_id}/files`.
+4. Artifacts are downloaded as raw bytes from
+   `GET /v1/containers/{container_id}/files/{file_id}/content`.
+5. A session keeps one working directory across turns (Sessions §1).
+6. HarnessRouter also has implementation-specific by-path
+   `GET/PUT /v1/sessions/{sid}/files/{path:path}`. The bridge does not use
+   them.
+7. HarnessRouter's session listing and `.../files/archive` both apply
+   `_ws_visible`, which hides every path starting with `.`, the names
+   `.gitignore`, `AGENTS.md`, and `CLAUDE.md`, and the directories `.git/`,
+   `.harness/`, `.claude/`, `.codex/`, `tmp/`, `node_modules/`,
+   `__pycache__/`, `.venv/`, `venv/`, `.cache/`, and `.next/` at any depth.
+   **Neither is authoritative project state**, so the bridge does not
+   reconstruct the project from them. It uses a helper-produced delta instead.
+   HarnessRouter's default upload cap is 25 MiB (`HARNESS_UPLOAD_MAX_BYTES`),
+   and so is its produced-file cap (`HARNESS_RESP_MAX_FILE_BYTES`).
+8. Before the harness starts, and after writing the task's input files, the
+   runner's `_write_agent_doc()` always creates or overwrites a
+   backend-specific instruction document at the workspace root:
+   - `AGENTS.md` for codex, hermes, pi, dsh, opencode, cline, omp, goose,
+     kimi, aider, and openhands;
+   - `QWEN.md` for qwen;
+   - `GEMINI.md` for gemini;
+   - `CLAUDE.md` otherwise, for Claude Code.
+
+   Its managed block begins with `<!-- harness-skills:begin -->`, appended
+   after any user-authored harness doc. Without handling, a candidate that
+   tracks that file would be refused at unpack, and a candidate that does not
+   would have HarnessRouter's copy imported as a new project file.
+
+**Bootstrap instruction docs:** The bridge removes or replaces only recognized
+HarnessRouter-managed bootstrap documents before establishing the project
+snapshot. `unpack` validates every input file first. Then, before writing any
+project file, it inspects each of `AGENTS.md`, `CLAUDE.md`, `QWEN.md`, and
+`GEMINI.md` that exists at the remote root:
+
+- It must be a regular file; a symlink, directory, or special file fails the
+  unpack, and a symlink is never followed.
+- It carries the HarnessRouter marker and the snapshot has that path: it is
+  replaced by the candidate's copy, and its bytes and executable state then
+  equal the snapshot exactly.
+- It carries the marker and the snapshot does not have that path: it is
+  removed, so it is not in the remote baseline and cannot come back as an
+  added file.
+- It has no marker: it is accepted only if it already equals the candidate's
+  copy. Otherwise the unpack fails closed as unexpected remote state, and the
+  file is neither overwritten nor deleted.
+
+These filenames are **not** excluded project paths. After unpack they are
+ordinary project files: an agent's edit to a tracked `AGENTS.md` returns as a
+change, and an `AGENTS.md` the agent deliberately creates returns as an
+addition. The same applies to `CLAUDE.md`, `QWEN.md`, and `GEMINI.md`.
+Because HarnessRouter loaded its own document before the helper restored the
+project's, the transport instructions tell the harness, right after unpack,
+that the snapshot is now authoritative and to read the project's instruction
+file, if any, and follow it. The fake HarnessRouter in the tests reproduces
+the pinned order: input files, then the bootstrap doc, then the harness
+running unpack, the task, and pack-delta.
+
+**Transport:**
+
+1. Select the candidate's files with Git semantics
+   (`git ls-files --cached --others --exclude-standard -z`): tracked files plus
+   untracked, non-ignored files, NUL-separated. `.git` is never selected, and
+   ignored files (for example `.env`) are never sent. Tracked files deleted in
+   the working tree are not sent. Symbolic links, paths under a symlinked
+   directory, submodules, nested repositories, non-UTF-8 paths, and paths
+   colliding with bridge names fail before anything is uploaded.
+2. Build a deterministic input bundle
+   `.cloudeo-bridge-input-<run>.tar.gz`. It contains `manifest.json` plus
+   `files/<path>`, in sorted order, with mtime 0, uid/gid 0, empty user and
+   group names, mode 0644 or 0755, and a gzip header with no filename and
+   mtime 0. Building the same snapshot twice produces identical bytes and the
+   same manifest hash, even after mtimes or non-semantic permission bits change
+   (0644 to 0600, or 0755 to 0700). Toggling the executable bit (0600 to 0700)
+   does change the manifest, archive, and hash, because executable state is
+   part of each entry. Tests check both. The input manifest records the
+   format, bridge run ID (`bridge_<32 hex>`), `workspace_id`, `candidate_id`,
+   `base_commit`, `head_commit`, the output limits (`max_output_files`,
+   `max_output_total_bytes`, `max_output_file_bytes`,
+   `max_output_bundle_bytes`), and each file's path, size, SHA-256, and
+   executable bit. The SHA-256 of these canonical manifest bytes is kept as
+   the run's `input_manifest_sha256`.
+3. Upload the stdlib-only helper `.cloudeo-bridge-helper.py`
+   (`src/cloudeo/bridge/remote_helper.py`, Python 3.8+) and the bundle through
+   `POST /v1/files`. On unpack, the helper walks every parent component of each
+   file under the remote workspace. It refuses a symlinked or non-directory
+   parent and requires the resolved parent to stay inside the workspace, so
+   `workspace/link -> /tmp/outside` plus `link/file.txt` writes nothing
+   outside. This protects the remote session; canonical state is protected
+   separately.
+4. Submit exactly one `HarnessTaskExecution` through `ExecutionDispatcher`,
+   with the explicit harness and model, no `previous_response_id`, and input
+   made of the transport instructions (fenced, and separated from the user's
+   task) plus the two `input_file` references. The harness runs
+   `unpack --run-id`, does the task, then runs `pack-delta --run-id`.
+5. `pack-delta` compares the final tree with the input manifest and writes
+   `cloudeo-bridge-output-<run>.tar.gz`, a delta containing added and changed
+   files (with size, SHA-256, and executable bit) and an explicit deleted-path
+   list. Unchanged files do not come back. The delta manifest echoes the
+   identity fields and the `input_manifest_sha256` of the snapshot it was made
+   from. It excludes `.git` and `__pycache__` at any depth, the root runtime
+   directories `.claude`, `.codex`, and `.harness`, and bridge-reserved root
+   names. It refuses symbolic links and special files, so no output is
+   produced. Each file is checked with `lstat` before it is read, so an
+   oversized executor workspace is never loaded into memory. If a limit is
+   exceeded, the helper writes a small error artifact (`kind: "error"`) instead
+   of a delta and exits with status 3. The error is one of `output_too_large`
+   (the packed delta exceeds `max_output_bundle_bytes`),
+   `output_file_too_large`, `output_file_count_exceeded`, or
+   `output_total_bytes_exceeded`, together with the limit, the observed value,
+   and the path where relevant. There is no splitting into several artifacts.
+6. Using `ExecutionOutcome.runtime.session_id`, list the session's files and
+   select exactly one artifact whose filename, and path where the server
+   reports one, is this run's exact output name. Download it through the
+   configured client by `container_id` and `file_id`; a `download_url` host is
+   never followed.
+7. Validate the whole bundle. Then check that the candidate has not drifted
+   (below). Only then apply the delta to the same candidate.
+
+**Optimistic concurrency (candidate drift):** The snapshot that was sent is the
+apply precondition. Immediately before applying any delta, the bridge rebuilds
+the candidate's manifest with the same selection and hashing rules and requires
+it to equal the manifest that was sent. A locally changed, added, or deleted
+file, or a changed executable bit, made while the remote episode ran fails the
+sync with `candidate_changed_during_execution`, and zero remote changes are
+applied. In particular:
+
+- a remote delete cannot delete a locally modified file;
+- a remote change cannot overwrite a newer local change;
+- a remote addition cannot overwrite a path created locally during the run.
+
+The two mutations are never merged. Ignored local files, such as `.env`, are
+outside the snapshot, so editing them is not drift. A per-file content and
+mode check at apply time remains as a second line of defense.
+
+**One UHP deployment:** Uploads, the task, the session listing, and the
+download must reach the same UHP server. `UHPWorkspaceBridge` refuses
+construction unless the dispatcher's harness-task backend is a
+`UHPHarnessTaskBackend` whose `client` is the very `UHPClient` the bridge uses
+for file operations.
+
+**Artifact size caps:** HarnessRouter CE's default caps are 25 MiB for uploads
+(`HARNESS_UPLOAD_MAX_BYTES`) and 25 MiB per produced file
+(`HARNESS_RESP_MAX_FILE_BYTES`, in `_collect_produced`, which also takes only
+the first `HARNESS_RESP_MAX_FILES`, 25, per turn). `BridgeLimits` sets
+`max_input_bundle_bytes` and `max_output_bundle_bytes` to 20 MiB each. A helper
+error artifact fails the sync with its own code (`output_too_large`,
+`output_file_too_large`, `output_file_count_exceeded`, or
+`output_total_bytes_exceeded`), and nothing is applied. An oversized artifact
+produced without the helper fails as `invalid_bundle`.
+
+**Runtime gating and sync are separate:** `WorkspaceBridgeResult` carries the
+`ExecutionOutcome` unchanged, plus `workspace_sync_status` (`synced`,
+`skipped`, or `failed`), the run and session IDs, the added, changed, deleted,
+and ignored paths, and a structured error.
+
+- `completed`: a valid delta may sync.
+- `incomplete`: a valid delta may sync. The outcome stays `incomplete`, and
+  nothing implies verification.
+- `unknown` or `in_progress`: `skipped`; the remote workspace is not read.
+- `failed` or `cancelled`: `skipped`. Remote state is not applied even if an
+  artifact exists. A later policy layer may deliberately add salvage.
+- `completed` or `incomplete` without a valid artifact, or without a
+  `session_id`: `failed`.
+- In every case other than `synced`, the candidate is unchanged.
+
+`completed` does not mean synced. Synced does not mean verified, and does not
+mean checkpointed. Checkpointed does not mean promoted.
+
+**Security:**
+
+- `.git` never crosses the bridge in either direction.
+- Ignored local files are not sent.
+- The downloaded archive is untrusted. It is decompressed through a bounded
+  reader (so a decompression bomb is refused) and validated as a whole, into a
+  staging directory outside the candidate, before the first mutation.
+- Rejected:
+  - absolute paths, `..`, backslashes, drive letters, NULs, and empty
+    components;
+  - `.git` in any case, excluded paths, and reserved names;
+  - symlinks, hardlinks, directories, devices, FIFOs, and sparse members;
+  - duplicate or undeclared members;
+  - a missing or duplicate-key manifest;
+  - a mismatched run ID, `workspace_id`, `candidate_id`, `base_commit`, or
+    `input_manifest_sha256`. The hash does not make the executor trusted; it
+    prevents applying a delta made for another run or snapshot;
+  - size or hash mismatch;
+  - a path listed twice in the delta;
+  - added paths that were sent, and changed or deleted paths that were not;
+  - file-versus-directory conflicts;
+  - output compressed-size, total-size, per-file-size, and file-count limits
+    (`BridgeLimits` defaults: 20 MiB, 256 MiB, 32 MiB, and 10,000 files).
+- Only paths that were sent can be changed or deleted, and only if their
+  current content and mode still match what was sent. Otherwise the result is
+  `workspace_conflict`. A remote-created path that local `.gitignore` rules
+  ignore (checked with `git check-ignore`) is not imported; it is reported in
+  `ignored_paths`. Tracked files remain eligible.
+- **Local path safety:** In a worktree `.git` is usually a file, so apply
+  refuses `.git` itself as well as `.git/...`, in any case. Every path in the
+  delta, including ignored additions, is refused with `unsafe_local_path`
+  before the first mutation if any existing parent inside the candidate is a
+  symlink, or if its real parent resolves outside the candidate or into
+  `.git`. So `candidate/some_link/file` cannot escape through an ignored or
+  local symlink that was never part of the uploaded snapshot. This check runs
+  before Git is queried about ignore rules, because Git refuses paths beyond a
+  symlink. The bridge's own Git use is limited to `ls-files` and
+  `check-ignore`.
+
+**Failure atomicity:** Validation failures cause zero candidate mutation.
+Application is planned in full first. Each changed or deleted file is backed
+up, and every write goes to a temporary file followed by `os.replace`. If a
+filesystem operation fails midway, changed files are restored, added files
+removed, deleted files and pruned directories restored, and created
+directories removed; the result is then `apply_failed`. If the rollback itself
+fails, the original exception is raised with the rollback failure attached as
+a note and as `__context__`. Only ordinary exceptions (`Exception`) are
+handled this way. `KeyboardInterrupt`, `SystemExit`, and cancellation-like
+control flow propagate unchanged and are never converted into `apply_failed`.
+`.git` is never touched.
+
+**Capability flags:** `UHPWorkspaceBridge.supports_workspace_sync = True`. The
+base `UHPHarnessAgentAdapter.supports_workspace_sync` stays `False`; only a
+future composed role-binding layer may advertise a LongHorizon adapter with
+workspace sync.
+
+**Limitations:**
+
+- The harness must cooperate by running the deterministic helper, and needs a
+  `python3` (3.8 or later) in its sandbox.
+- Symbolic links and submodules are not supported and fail explicitly.
+- Tracked files under the root runtime directories (`.claude`, `.codex`,
+  `.harness`) are sent but their changes are not returned.
+- Only regular-file content and the executable bit are transported.
+- No live provider or HarnessRouter proof yet; all validation is offline.
+- No LongHorizon role binding yet.
+
+**Status:** Implemented on `feat/uhp-workspace-bridge-foundation`; not merged.
+See `03_PROGRESS_AND_EVIDENCE.md`.
