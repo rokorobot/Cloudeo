@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from cloudeo.longhorizon.adapter import UHPHarnessAgentAdapter
+from cloudeo.longhorizon.workspace_auditor import UHPWorkspaceAuditorAdapter
 from cloudeo.longhorizon.workspace_executor import UHPWorkspaceExecutorAdapter
 
 LONGHORIZON_ROLES = (
@@ -35,6 +36,9 @@ ROLE_ELIGIBILITY: Mapping[type, frozenset[str]] = {
     # Mutates candidate files; not an independent auditor; no GUI/screenshot
     # contract; manager and final-response roles need no mutation.
     UHPWorkspaceExecutorAdapter: frozenset({"cli_executor"}),
+    # Read-only snapshot in a fresh session; no GUI/screenshot contract; it is
+    # not an executor, and format repair stays with the text-only adapter.
+    UHPWorkspaceAuditorAdapter: frozenset({"cli_auditor"}),
 }
 
 
