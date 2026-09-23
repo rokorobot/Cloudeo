@@ -737,7 +737,8 @@ workspace sync.
 - No live provider or HarnessRouter proof yet; all validation is offline.
 - No LongHorizon role binding yet.
 
-**Status:** Implemented on `feat/uhp-workspace-bridge-foundation`; not merged.
+**Status:** Implemented on `feat/uhp-workspace-bridge-foundation`; merged into
+`main` (through `d78f1b51c2c57b81c65eeec0829a70a9886c41c0`).
 See `03_PROGRESS_AND_EVIDENCE.md`.
 
 
@@ -902,5 +903,6 @@ diagnostics-only when there is no assistant text.
 - No manager-loop integration, auditor, checkpoint, promotion, or rejection.
 - All validation is offline; there is no live HarnessRouter proof.
 
-**Status:** Implemented on `feat/longhorizon-workspace-executor`; not merged.
+**Status:** Implemented on `feat/longhorizon-workspace-executor`; merged into
+`main` with a normal merge commit on top of `d78f1b5`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
