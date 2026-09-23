@@ -1511,3 +1511,63 @@ With these, the contract and ADR-022 to ADR-029 are **Accepted**.
 No code, test, dependency, or kernel change. Nothing described in the
 contract is implemented. Invariants V2C-01 to V2C-23 become test obligations
 for the milestones that implement them.
+
+
+---
+
+## 2026-09-23 — V2 control-store foundation
+
+Branch `feat/v2-control-store-foundation`, from `main` at `86e7361`. It is the
+first implementation slice of the accepted V2 control architecture (ADR-022 to
+ADR-029). It adds the pure `cloudeo.control` package and the traceability
+matrix `docs/14_V2C_TRACEABILITY.md`.
+
+No execution, auditing, checkpoint creation, promotion, Memory Curator,
+independence resolver, or Browser Use. The trust kernel, broker, bridge,
+adapters, and LongHorizon are unchanged, and `cloudeo.control` imports none
+of them. It has no LongHorizon dependency, so it is tested with and without
+the extra.
+
+Implemented:
+
+- **`model.py`: the frozen domain records.** WorkOrder, Block, plan versions
+  and approvals, Project Execution Profile snapshots and role bindings,
+  profile references with fingerprints, envelope amendments, attention
+  requests, reasons and decisions, deviations, and audit, test, change,
+  checkpoint-proof, and kernel-outcome evidence records.
+  - **Invariants are model validators**, so they hold on every construction
+    and every reload. For example:
+    - no candidate or blocks before an approved plan;
+    - `PROMOTED` only with a promoted kernel outcome;
+    - `CODE_APPROVED` only with a provable code approval;
+    - **`BLOCK_DONE` only with a checkpoint proving the authoritative block
+      state;**
+    - exactly one open attention request while in attention.
+  - **`check_evolution()`** enforces the rules between versions:
+    - the legal transition table;
+    - append-only histories;
+    - an immutable objective, candidate, and planned baseline;
+    - profile snapshot and budget changes only through approved amendments;
+    - immutable `BLOCK_DONE` blocks, closed attention requests, and terminal
+      WorkOrders.
+- **`machine.py`: pure transition functions** for the WorkOrder and block state
+  machines, each rejecting with an explicit code or escalating to
+  `USER_ATTENTION_REQUIRED`. `prove_block_checkpoint()` is the only path to
+  `BLOCK_DONE`. A mismatching proof is kept as evidence and raises
+  `BLOCK_CHECKPOINT_MISMATCH`.
+- **`store.py`: the `ControlStore` interface and `SqliteControlStore`.**
+  - Writes use `BEGIN IMMEDIATE` and compare-and-swap on `(id, version)`,
+    re-validate the record, and apply `check_evolution()`.
+  - Events are append-only, with a full replay; there is no delete.
+  - Project Execution Profile versions are immutable and sequential, and a
+    WorkOrder's snapshot must be a stored, approved version.
+
+Traceability: 8 PASS, 11 PARTIAL, 4 UNIMPLEMENTED (`14_V2C_TRACEABILITY.md`).
+Every PARTIAL and UNIMPLEMENTED obligation has a strict expected-failure test,
+and a meta-test keeps the contract, the matrix, and the document in sync.
+
+Architecture question raised (not resolved in code): the contract says that
+baseline drift needs "a new approval", but it defines no transition that
+adopts a new baseline (re-intake or rebase). This slice keeps the planned
+baseline immutable, the literal reading. A drifted WorkOrder can therefore
+only be aborted today.
