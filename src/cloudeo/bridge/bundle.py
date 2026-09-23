@@ -55,10 +55,17 @@ class BridgeValidationError(BridgeError):
     code = "invalid_bundle"
 
 
-class BridgeOutputTooLarge(BridgeValidationError):
-    """The executor's delta could not fit in one bridge artifact."""
+class BridgeOutputLimitError(BridgeValidationError):
+    """The remote helper reported an exceeded output limit; nothing was applied.
 
-    code = "output_too_large"
+    The code is the helper's explicit error: output_too_large,
+    output_file_too_large, output_file_count_exceeded, or
+    output_total_bytes_exceeded.
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class BridgeConflictError(BridgeError):
@@ -191,6 +198,9 @@ def build_input_bundle(
         candidate_id=candidate.candidate_id,
         base_commit=candidate.base_commit,
         head_commit=head_commit,
+        max_output_files=limits.max_files,
+        max_output_total_bytes=limits.max_total_bytes,
+        max_output_file_bytes=limits.max_file_bytes,
         max_output_bundle_bytes=limits.max_output_bundle_bytes,
         files=_entries(files),
     )
@@ -323,9 +333,11 @@ def _validate(data: bytes, sent: InputBundle, limits: BridgeLimits, staging: Pat
         _check_identity(report, sent)
         if staged:
             raise BridgeValidationError("an error report must not carry files")
-        raise BridgeOutputTooLarge(
-            f"the executor's delta ({report.delta_bytes} bytes) does not fit in one bridge "
-            f"artifact (limit {report.limit} bytes); nothing was applied"
+        where = f" at {report.path!r}" if report.path else ""
+        raise BridgeOutputLimitError(
+            report.error,
+            f"the remote helper reported {report.error}{where}: observed {report.observed}, "
+            f"limit {report.limit}; nothing was applied",
         )
     _check_identity(manifest, sent)
     _check_paths(manifest, sent.manifest, staged)
@@ -455,10 +467,12 @@ def apply_delta(root: Path, delta: ValidatedDelta, sent: InputManifest) -> Appli
             journal.write(entry.path, delta.staged[entry.path], entry.executable)
         for path in manifest.deleted:
             journal.delete(path)
-    except BaseException as exc:
+    # Ordinary failures only: KeyboardInterrupt, SystemExit, and cancellation
+    # propagate unchanged and are never converted into BridgeApplyError.
+    except Exception as exc:
         try:
             journal.rollback()
-        except BaseException as rollback_exc:
+        except Exception as rollback_exc:
             # Surface the original failure; the rollback failure is secondary evidence
             # (in the note, and as __context__).
             exc.add_note(f"Rollback also failed; the candidate may be inconsistent: {rollback_exc}")

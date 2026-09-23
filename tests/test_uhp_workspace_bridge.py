@@ -534,6 +534,74 @@ def test_input_bundle_is_deterministic(candidate, broker):
     assert hashlib.sha256(manifest_bytes).hexdigest() == first.manifest_sha256
 
 
+def test_executable_bit_change_is_part_of_the_snapshot(candidate, broker):
+    """Unlike irrelevant mode bits, the executable flag must change the bundle."""
+    head = broker.inspect_candidate(candidate).head_commit
+    run_id = "bridge_" + "a" * 32
+    readme = candidate.local_path / "README.md"
+    os.chmod(readme, 0o600)
+    before = build_input_bundle(candidate, head, run_id, BridgeLimits())
+    os.chmod(readme, 0o700)
+    after = build_input_bundle(candidate, head, run_id, BridgeLimits())
+    assert before.archive != after.archive
+    assert before.manifest_sha256 != after.manifest_sha256
+    flags = [{e.path: e.executable for e in b.manifest.files}["README.md"] for b in (before, after)]
+    assert flags == [False, True]
+
+
+# --- Remote helper: unpack safety ---
+
+
+def _input_archive(ws, run_id, files):
+    manifest = {
+        "format": helper.FORMAT,
+        "kind": "input",
+        "bridge_run_id": run_id,
+        "workspace_id": "demo",
+        "candidate_id": "c" * 32,
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "files": [helper.file_entry(p, d, False) for p, d in sorted(files.items())],
+    }
+    data = helper.build_archive(manifest, {p: (d, False) for p, d in files.items()})
+    (ws / helper.input_archive_name(run_id)).write_bytes(data)
+
+
+@pytest.mark.parametrize(
+    "setup,path",
+    [
+        ("symlink_parent", "link/file.txt"),
+        ("nested_symlink_parent", "dir/link/file.txt"),
+        ("file_parent", "afile/file.txt"),
+    ],
+)
+def test_remote_unpack_never_writes_through_a_parent(tmp_path, setup, path):
+    ws, outside = tmp_path / "ws", tmp_path / "outside"
+    ws.mkdir()
+    outside.mkdir()
+    if setup == "symlink_parent":
+        (ws / "link").symlink_to(outside, target_is_directory=True)
+    elif setup == "nested_symlink_parent":
+        (ws / "dir").mkdir()
+        (ws / "dir/link").symlink_to(outside, target_is_directory=True)
+    else:
+        (ws / "afile").write_text("a file, not a directory\n")
+    run_id = "bridge_" + "d" * 32
+    _input_archive(ws, run_id, {path: b"payload"})
+    assert helper.main(["unpack", "--run-id", run_id, "--root", str(ws)]) == 2
+    assert list(outside.iterdir()) == []
+    assert not (tmp_path / "file.txt").exists()
+
+
+def test_remote_unpack_creates_nested_directories(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    run_id = "bridge_" + "e" * 32
+    _input_archive(ws, run_id, {"a/b/c.txt": b"deep", "top.txt": b"top"})
+    assert helper.main(["unpack", "--run-id", run_id, "--root", str(ws)]) == 0
+    assert (ws / "a/b/c.txt").read_bytes() == b"deep"
+
+
 async def test_symlink_in_candidate_fails_before_upload(broker, candidate, staging, tmp_path):
     (candidate.local_path / "link").symlink_to("README.md")
     server = FakeHarnessRouter(tmp_path)
@@ -940,21 +1008,55 @@ async def test_non_cooperative_oversized_artifact_is_refused(
     assert snapshot(repo, candidate) == before
 
 
-async def test_delta_too_large_for_one_artifact_fails_clearly(
-    repo, broker, candidate, staging, tmp_path
+def _write_many(count, size):
+    def work(ws):
+        for i in range(count):
+            (ws / f"generated_{i}.bin").write_bytes(os.urandom(size))
+
+    return work
+
+
+OUTPUT_LIMITS = {
+    # error code: (remote work, limits); every candidate input file is < 1100 bytes.
+    "output_too_large": (_write_many(1, 300_000), BridgeLimits(max_output_bundle_bytes=100_000)),
+    "output_file_too_large": (_write_many(1, 5_000), BridgeLimits(max_file_bytes=4_000)),
+    "output_file_count_exceeded": (_write_many(5, 10), BridgeLimits(max_files=10)),
+    "output_total_bytes_exceeded": (_write_many(2, 1_500), BridgeLimits(max_total_bytes=3_000)),
+}
+
+
+@pytest.mark.parametrize("code", list(OUTPUT_LIMITS))
+async def test_remote_output_limits_fail_clearly_and_apply_nothing(
+    repo, broker, candidate, staging, tmp_path, code
 ):
+    work, limits = OUTPUT_LIMITS[code]
     before = snapshot(repo, candidate)
-    server = FakeHarnessRouter(
-        tmp_path, work=lambda ws: (ws / "big.bin").write_bytes(os.urandom(300_000))
-    )
-    limits = BridgeLimits(max_output_bundle_bytes=100_000)
+    server = FakeHarnessRouter(tmp_path, work=work)
     result = await run_bridge(broker, candidate, server, staging, limits)
     operation, returncode, stderr = server.helper_runs[-1]
     assert (operation, returncode) == ("pack-delta", 3)
-    assert "does not fit in one bridge artifact" in stderr
-    assert (result.workspace_sync_status, result.error.code) == ("failed", "output_too_large")
-    assert "limit 100000 bytes" in result.error.message
+    assert code in stderr and "error artifact was written" in stderr
+    assert (result.workspace_sync_status, result.error.code) == ("failed", code)
+    assert "nothing was applied" in result.error.message
     assert snapshot(repo, candidate) == before
+
+
+def test_helper_rejects_oversized_file_before_reading_it(tmp_path, monkeypatch):
+    (tmp_path / "small.txt").write_bytes(b"ok")
+    (tmp_path / "huge.bin").write_bytes(b"\0" * 10_000)
+    opened = []
+    real_open = open
+
+    def guarded_open(path, *args, **kwargs):
+        opened.append(os.path.basename(path))
+        assert os.path.basename(path) != "huge.bin", "an over-limit file was read"
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(helper, "open", guarded_open, raising=False)
+    with pytest.raises(helper.OutputLimitExceeded) as caught:
+        helper.scan(str(tmp_path), {"max_output_file_bytes": 1_000})
+    assert (caught.value.error, caught.value.path) == ("output_file_too_large", "huge.bin")
+    assert "huge.bin" not in opened
 
 
 def test_default_limits_fit_harnessrouter_caps():
@@ -1098,14 +1200,22 @@ async def test_symlinked_parent_created_during_run_applies_nothing(
         "failed",
         "candidate_changed_during_execution",
     )
-    # Git lists the new `src` link itself, so either symlink rule can fire first.
-    assert "symbolic link" in result.error.message or "symbolic-link" in result.error.message
+    # Deterministic: Git lists the new untracked `src` link, which sorts before
+    # the tracked `src/app.py`, so the symlink rule for `src` itself fires.
+    assert result.error.message.endswith("symbolic links are not supported yet: 'src'")
     assert (outside / "app.py").read_text() == "print('app')\n"
     assert snapshot(repo, candidate) == seen["after"]
 
 
-def test_apply_refuses_symlinked_parent_before_any_mutation(broker, candidate, staging, tmp_path):
+def test_apply_refuses_symlinked_parent_before_any_mutation(
+    broker, candidate, staging, tmp_path, monkeypatch
+):
     """Even with the drift check bypassed, no write passes through a local symlink."""
+
+    def git_must_not_be_queried(*args, **kwargs):
+        raise AssertionError("git check-ignore ran before path safety")
+
+    monkeypatch.setattr(bundle_module, "_ignored", git_must_not_be_queried)
     sent = sent_bundle(broker, candidate)
     outside = tmp_path / "outside"
     outside.mkdir()

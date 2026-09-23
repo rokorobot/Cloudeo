@@ -783,9 +783,9 @@ Implemented:
 
 Validation (all offline):
 
-- With the `longhorizon` extra: **328 passed** (228 existing unchanged, 78 in
+- With the `longhorizon` extra: **337 passed** (228 existing unchanged, 87 in
   `tests/test_uhp_workspace_bridge.py`, 22 in `tests/test_uhp_files.py`).
-  Without the extra: 292 passed, 2 skipped (the LongHorizon adapter module and
+  Without the extra: 301 passed, 2 skipped (the LongHorizon adapter module and
   one bridge test that needs it).
 - The end-to-end tests use the real `GitWorkspaceBroker`,
   `CandidateWorkspace`, `ExecutionDispatcher`, `UHPHarnessTaskBackend`,
@@ -829,9 +829,24 @@ Bridge invariants added before merge (same branch):
   construction, before any request.
 - Output cap: HarnessRouter's produced-file cap (`HARNESS_RESP_MAX_FILE_BYTES`,
   25 MiB) was verified in the pinned source, and input and output limits are
-  20 MiB each. A delta that cannot fit makes the helper write an error
-  artifact and exit 3, and the sync fails as `output_too_large`. An oversized
+  20 MiB each. The helper enforces the output file-count, total-byte,
+  per-file, and bundle limits carried in the input manifest, checking sizes
+  with `lstat` before reading; a test shows an over-limit file is never
+  opened. Each of `output_too_large`, `output_file_too_large`,
+  `output_file_count_exceeded`, and `output_total_bytes_exceeded` makes the
+  helper write an error artifact and exit 3. The sync fails with that code and
+  nothing is applied, which each has an end-to-end test for. An oversized
   artifact produced without the helper fails as `invalid_bundle`.
+- Remote unpack: a symlinked parent (at the root or nested) or a non-directory
+  parent is refused before writing, and no file appears outside the
+  workspace. Nested directories are still created normally.
+- `apply_delta` handles only `Exception`, so `KeyboardInterrupt`,
+  `SystemExit`, and cancellation are never turned into `apply_failed`.
+- Determinism counterpart: toggling a file's executable bit (0600 to 0700)
+  changes the manifest, the archive, and the manifest hash.
+- Apply path safety runs before any Git ignore query; a test fails if
+  `check-ignore` is reached for an unsafe path. The symlinked-`src` drift test
+  asserts the exact, deterministic error message.
 - Determinism: after changing file mtimes and permission bits (0600 and 0700),
   a rebuilt input bundle is byte-identical with the same manifest hash. Member
   order, uid/gid, user and group names, mtimes, 0644/0755 modes, and the gzip

@@ -149,7 +149,7 @@ def unpack(root: str, run_id: str) -> dict:
         entry, data = declared[path], files[path]
         if hashlib.sha256(data).hexdigest() != entry["sha256"] or len(data) != entry["size"]:
             raise BridgeHelperError(f"input file {path!r} does not match its manifest")
-        dest = os.path.join(root, *path.split("/"))
+        dest = _safe_destination(root, path)
         if os.path.lexists(dest):
             # Check the link before opening, so an existing symlink is never followed.
             if os.path.islink(dest) or not os.path.isfile(dest):
@@ -157,16 +157,55 @@ def unpack(root: str, run_id: str) -> dict:
             with open(dest, "rb") as existing:
                 if existing.read() != data:
                     raise BridgeHelperError(f"workspace already has a different {path!r}")
-        os.makedirs(os.path.dirname(dest) or root, exist_ok=True)
         with open(dest, "wb") as handle:
             handle.write(data)
         os.chmod(dest, EXECUTABLE_MODE if entry["executable"] else REGULAR_MODE)
     return _identity(manifest, files=len(files))
 
 
-def scan(root: str) -> dict:
-    """Current project files as path -> entry; refuses links and special files."""
+def _safe_destination(root: str, path: str) -> str:
+    """Create missing parents without ever writing through a symlink or a file.
+
+    Walks every parent component under the workspace root: an existing symlink or
+    non-directory is refused, and the final parent must resolve inside the root.
+    """
+    real_root = os.path.realpath(root)
+    parent = root
+    for part in path.split("/")[:-1]:
+        parent = os.path.join(parent, part)
+        if os.path.islink(parent):
+            raise BridgeHelperError(f"refusing to write {path!r} through the symlink {part!r}")
+        if os.path.lexists(parent):
+            if not os.path.isdir(parent):
+                raise BridgeHelperError(f"refusing to write {path!r}: {part!r} is not a directory")
+        else:
+            os.mkdir(parent)
+    real_parent = os.path.realpath(parent)
+    if real_parent != real_root and not real_parent.startswith(real_root + os.sep):
+        raise BridgeHelperError(f"refusing to write {path!r} outside the workspace")
+    return os.path.join(parent, path.split("/")[-1])
+
+
+class OutputLimitExceeded(BridgeHelperError):
+    """The remote workspace exceeds a bridge output limit; no delta is built."""
+
+    def __init__(self, error: str, message: str, limit: int, observed: int, path=None):
+        super().__init__(message)
+        self.error, self.limit, self.observed, self.path = error, limit, observed, path
+
+
+def scan(root: str, limits: dict | None = None) -> dict:
+    """Current project files as path -> entry; refuses links and special files.
+
+    Sizes are checked with lstat before a file is read, so an oversized executor
+    workspace is refused without being loaded into memory.
+    """
+    limits = limits or {}
+    max_files = limits.get("max_output_files")
+    max_total = limits.get("max_output_total_bytes")
+    max_file = limits.get("max_output_file_bytes")
     found = {}
+    total = 0
     for dirpath, dirnames, filenames in os.walk(root):
         base = os.path.relpath(dirpath, root)
         prefix = "" if base == "." else base.replace(os.sep, "/") + "/"
@@ -184,25 +223,85 @@ def scan(root: str) -> dict:
             if is_excluded(rel):
                 continue
             full = os.path.join(dirpath, name)
-            mode = os.lstat(full).st_mode
-            if stat.S_ISLNK(mode):
+            info = os.lstat(full)
+            if stat.S_ISLNK(info.st_mode):
                 raise BridgeHelperError(f"symbolic links are not supported: {rel!r}")
-            if not stat.S_ISREG(mode):
+            if not stat.S_ISREG(info.st_mode):
                 raise BridgeHelperError(f"special files are not supported: {rel!r}")
+            if max_file is not None and info.st_size > max_file:
+                raise OutputLimitExceeded(
+                    "output_file_too_large",
+                    f"{rel!r} is {info.st_size} bytes; the per-file limit is {max_file}",
+                    max_file,
+                    info.st_size,
+                    rel,
+                )
+            if max_files is not None and len(found) + 1 > max_files:
+                raise OutputLimitExceeded(
+                    "output_file_count_exceeded",
+                    f"more than {max_files} project files",
+                    max_files,
+                    len(found) + 1,
+                )
+            total += info.st_size
+            if max_total is not None and total > max_total:
+                raise OutputLimitExceeded(
+                    "output_total_bytes_exceeded",
+                    f"project files exceed {max_total} bytes in total",
+                    max_total,
+                    total,
+                )
             with open(full, "rb") as handle:
                 data = handle.read()
-            found[check_relpath(rel)] = (file_entry(rel, data, bool(mode & 0o111)), data)
+            found[check_relpath(rel)] = (file_entry(rel, data, bool(info.st_mode & 0o111)), data)
     return found
 
 
-class DeltaTooLarge(BridgeHelperError):
-    pass
+OUTPUT_LIMIT_KEYS = (
+    "max_output_files",
+    "max_output_total_bytes",
+    "max_output_file_bytes",
+    "max_output_bundle_bytes",
+)
 
 
 def pack_delta(root: str, run_id: str) -> dict:
     manifest, manifest_sha256, _ = _read_input(root, run_id)
+    identity = {
+        "format": FORMAT,
+        "bridge_run_id": run_id,
+        "workspace_id": manifest["workspace_id"],
+        "candidate_id": manifest["candidate_id"],
+        "base_commit": manifest["base_commit"],
+        "input_manifest_sha256": manifest_sha256,
+    }
+    limits = {key: manifest[key] for key in OUTPUT_LIMIT_KEYS}
+    try:
+        return _pack(root, run_id, manifest, identity, limits)
+    except OutputLimitExceeded as exc:
+        # One small error artifact instead of a partial or split delta.
+        report = {
+            **identity,
+            "kind": "error",
+            "error": exc.error,
+            "limit": exc.limit,
+            "observed": exc.observed,
+            "path": exc.path,
+        }
+        _write_output(root, run_id, build_archive(report, {}))
+        raise
+
+
+def _write_output(root: str, run_id: str, archive: bytes) -> None:
+    temp = os.path.join(root, f".cloudeo-bridge-tmp-{run_id}")
+    with open(temp, "wb") as handle:
+        handle.write(archive)
+    os.replace(temp, os.path.join(root, output_archive_name(run_id)))
+
+
+def _pack(root: str, run_id: str, manifest: dict, identity: dict, limits: dict) -> dict:
     before = {entry["path"]: entry for entry in manifest["files"]}
-    now = scan(root)
+    now = scan(root, limits)
     added, changed, returned = [], [], {}
     for path, (entry, data) in sorted(now.items()):
         old = before.get(path)
@@ -214,31 +313,17 @@ def pack_delta(root: str, run_id: str) -> dict:
             changed.append(entry)
         returned[path] = (data, entry["executable"])
     deleted = sorted(p for p in before if p not in now and not is_excluded(p))
-    identity = {
-        "format": FORMAT,
-        "bridge_run_id": run_id,
-        "workspace_id": manifest["workspace_id"],
-        "candidate_id": manifest["candidate_id"],
-        "base_commit": manifest["base_commit"],
-        "input_manifest_sha256": manifest_sha256,
-    }
     delta = {**identity, "kind": "delta", "added": added, "changed": changed, "deleted": deleted}
     archive = build_archive(delta, returned)
-    limit = manifest["max_output_bundle_bytes"]
-    too_large = len(archive) > limit
-    if too_large:
-        # One artifact only: report the overflow explicitly instead of splitting.
-        error = {**identity, "kind": "error", "error": "delta_too_large"}
-        archive = build_archive({**error, "delta_bytes": len(archive), "limit": limit}, {})
-    temp = os.path.join(root, f".cloudeo-bridge-tmp-{run_id}")
-    with open(temp, "wb") as handle:
-        handle.write(archive)
-    os.replace(temp, os.path.join(root, output_archive_name(run_id)))
-    if too_large:
-        raise DeltaTooLarge(
-            f"the delta does not fit in one bridge artifact ({limit} bytes); "
-            "an error artifact was written instead"
+    limit = limits["max_output_bundle_bytes"]
+    if len(archive) > limit:
+        raise OutputLimitExceeded(
+            "output_too_large",
+            f"the delta ({len(archive)} bytes) does not fit in one bridge artifact ({limit})",
+            limit,
+            len(archive),
         )
+    _write_output(root, run_id, archive)
     return _identity(manifest, added=len(added), changed=len(changed), deleted=len(deleted))
 
 
@@ -256,8 +341,12 @@ def main(argv: list | None = None) -> int:
     root = os.path.abspath(args.root)
     try:
         result = (unpack if args.operation == "unpack" else pack_delta)(root, args.run_id)
-    except DeltaTooLarge as exc:
-        print(f"cloudeo-bridge-helper: error: {exc}", file=sys.stderr)
+    except OutputLimitExceeded as exc:
+        print(
+            f"cloudeo-bridge-helper: error: {exc.error}: {exc}; "
+            "a bridge error artifact was written instead of a delta",
+            file=sys.stderr,
+        )
         return 3
     except (BridgeHelperError, OSError, ValueError, KeyError, tarfile.TarError) as exc:
         print(f"cloudeo-bridge-helper: error: {exc}", file=sys.stderr)

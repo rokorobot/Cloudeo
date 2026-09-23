@@ -531,14 +531,24 @@ HarnessRouter `809392d602e34e36f0468943035c54d3350af885`):
    `files/<path>`, in sorted order, with mtime 0, uid/gid 0, empty user and
    group names, mode 0644 or 0755, and a gzip header with no filename and
    mtime 0. Building the same snapshot twice produces identical bytes and the
-   same manifest hash, which a test checks. The input manifest records the
+   same manifest hash, even after mtimes or non-semantic permission bits change
+   (0644 to 0600, or 0755 to 0700). Toggling the executable bit (0600 to 0700)
+   does change the manifest, archive, and hash, because executable state is
+   part of each entry. Tests check both. The input manifest records the
    format, bridge run ID (`bridge_<32 hex>`), `workspace_id`, `candidate_id`,
-   `base_commit`, `head_commit`, `max_output_bundle_bytes`, and each file's
-   path, size, SHA-256, and executable bit. The SHA-256 of these canonical
-   manifest bytes is kept as the run's `input_manifest_sha256`.
+   `base_commit`, `head_commit`, the output limits (`max_output_files`,
+   `max_output_total_bytes`, `max_output_file_bytes`,
+   `max_output_bundle_bytes`), and each file's path, size, SHA-256, and
+   executable bit. The SHA-256 of these canonical manifest bytes is kept as
+   the run's `input_manifest_sha256`.
 3. Upload the stdlib-only helper `.cloudeo-bridge-helper.py`
    (`src/cloudeo/bridge/remote_helper.py`, Python 3.8+) and the bundle through
-   `POST /v1/files`.
+   `POST /v1/files`. On unpack, the helper walks every parent component of each
+   file under the remote workspace. It refuses a symlinked or non-directory
+   parent and requires the resolved parent to stay inside the workspace, so
+   `workspace/link -> /tmp/outside` plus `link/file.txt` writes nothing
+   outside. This protects the remote session; canonical state is protected
+   separately.
 4. Submit exactly one `HarnessTaskExecution` through `ExecutionDispatcher`,
    with the explicit harness and model, no `previous_response_id`, and input
    made of the transport instructions (fenced, and separated from the user's
@@ -552,10 +562,14 @@ HarnessRouter `809392d602e34e36f0468943035c54d3350af885`):
    from. It excludes `.git` and `__pycache__` at any depth, the root runtime
    directories `.claude`, `.codex`, and `.harness`, and bridge-reserved root
    names. It refuses symbolic links and special files, so no output is
-   produced. If the delta archive would exceed `max_output_bundle_bytes`, it
-   writes a tiny error artifact (`kind: "error"`, `error: "delta_too_large"`)
-   instead and exits with status 3. There is no splitting into several
-   artifacts.
+   produced. Each file is checked with `lstat` before it is read, so an
+   oversized executor workspace is never loaded into memory. If a limit is
+   exceeded, the helper writes a small error artifact (`kind: "error"`) instead
+   of a delta and exits with status 3. The error is one of `output_too_large`
+   (the packed delta exceeds `max_output_bundle_bytes`),
+   `output_file_too_large`, `output_file_count_exceeded`, or
+   `output_total_bytes_exceeded`, together with the limit, the observed value,
+   and the path where relevant. There is no splitting into several artifacts.
 6. Using `ExecutionOutcome.runtime.session_id`, list the session's files and
    select exactly one artifact whose filename, and path where the server
    reports one, is this run's exact output name. Download it through the
@@ -590,10 +604,11 @@ for file operations.
 (`HARNESS_UPLOAD_MAX_BYTES`) and 25 MiB per produced file
 (`HARNESS_RESP_MAX_FILE_BYTES`, in `_collect_produced`, which also takes only
 the first `HARNESS_RESP_MAX_FILES`, 25, per turn). `BridgeLimits` sets
-`max_input_bundle_bytes` and `max_output_bundle_bytes` to 20 MiB each. An
-oversized delta fails clearly as `output_too_large`, from the helper's error
-artifact. An oversized artifact produced without the helper fails as
-`invalid_bundle`.
+`max_input_bundle_bytes` and `max_output_bundle_bytes` to 20 MiB each. A helper
+error artifact fails the sync with its own code (`output_too_large`,
+`output_file_too_large`, `output_file_count_exceeded`, or
+`output_total_bytes_exceeded`), and nothing is applied. An oversized artifact
+produced without the helper fails as `invalid_bundle`.
 
 **Runtime gating and sync are separate:** `WorkspaceBridgeResult` carries the
 `ExecutionOutcome` unchanged, plus `workspace_sync_status` (`synced`,
@@ -659,7 +674,10 @@ filesystem operation fails midway, changed files are restored, added files
 removed, deleted files and pruned directories restored, and created
 directories removed; the result is then `apply_failed`. If the rollback itself
 fails, the original exception is raised with the rollback failure attached as
-a note and as `__context__`. `.git` is never touched.
+a note and as `__context__`. Only ordinary exceptions (`Exception`) are
+handled this way. `KeyboardInterrupt`, `SystemExit`, and cancellation-like
+control flow propagate unchanged and are never converted into `apply_failed`.
+`.git` is never touched.
 
 **Capability flags:** `UHPWorkspaceBridge.supports_workspace_sync = True`. The
 base `UHPHarnessAgentAdapter.supports_workspace_sync` stays `False`; only a

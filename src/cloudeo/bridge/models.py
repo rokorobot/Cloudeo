@@ -48,7 +48,11 @@ class InputManifest(_Strict):
     candidate_id: Identifier
     base_commit: CommitSha
     head_commit: CommitSha
-    # The helper refuses to emit a delta artifact larger than this.
+    # Output limits the remote helper enforces before reading or packing files;
+    # when one is exceeded it emits a small error artifact instead of a delta.
+    max_output_files: int = Field(gt=0)
+    max_output_total_bytes: int = Field(gt=0)
+    max_output_file_bytes: int = Field(gt=0)
     max_output_bundle_bytes: int = Field(gt=0)
     files: tuple[BridgeFileEntry, ...]
 
@@ -70,13 +74,22 @@ class DeltaManifest(_OutputIdentity):
     deleted: tuple[str, ...]
 
 
+OutputLimitError = Literal[
+    "output_too_large",
+    "output_file_too_large",
+    "output_file_count_exceeded",
+    "output_total_bytes_exceeded",
+]
+
+
 class ErrorManifest(_OutputIdentity):
-    """Written by the helper when the delta cannot fit in one artifact."""
+    """Written by the helper instead of a delta when an output limit is exceeded."""
 
     kind: Literal["error"]
-    error: Literal["delta_too_large"]
-    delta_bytes: int = Field(ge=0)
+    error: OutputLimitError
     limit: int = Field(ge=0)
+    observed: int = Field(ge=0)
+    path: str | None = None
 
 
 class WorkspaceBridgeTask(_Strict):
