@@ -1339,3 +1339,108 @@ Mutation checks (each change was reverted afterwards):
 Ruff passes.
 
 No live provider, harness, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — LongHorizon manager promotion integration
+
+Branch `feat/manager-promotion-integration`, from `main` at `84e7591`. It adds
+`src/cloudeo/longhorizon/manager_integration.py`
+(`run_managed_with_promotion_gate`, `ManagedPromotionResult`) and ADR-021. No
+other production file changed. The gate, normalizer, broker, executor,
+auditor, UHP code, and LongHorizon are unchanged.
+
+Validation (all offline):
+
+- With the `longhorizon` extra: **566 passed** (545 existing unchanged, 21 in
+  `tests/test_longhorizon_manager_integration.py`). Without the extra: 319
+  passed and 7 skipped (the six LongHorizon modules and one bridge test).
+- The tests run the **real, unmodified `lh_harness.manager.run()`** with a real
+  `LocalEnvironment` for upstream's trace files. They also use the real
+  `GitWorkspaceBroker`, `UHPWorkspaceBridge`, `UHPWorkspaceAuditTransport`,
+  `UHPClient`, `ExecutionDispatcher`, and every Cloudeo adapter.
+- The offline fake HarnessRouter is scripted per role:
+  - manager plans (`Next: cli` / `Next: done`), format repair, and the final
+    response are text tasks through the real base adapter;
+  - the executor and auditor run the bridge protocol and the real helper.
+- Upstream's own role order is asserted:
+  `manager → executor → auditor → manager → final_response`.
+
+Tests (the numbers in brackets are parametrized cases):
+
+- **Success:**
+  - `test_1_to_4_verified_objective_is_promoted_exactly_once` [1]:
+    - the upstream run is `complete` and the original audit is `VERIFIED`;
+    - the gate created the checkpoint (`promoted`, `checkpoint_created=True`);
+    - accepted state equals that checkpoint, whose parent is the base, and
+      exactly one promoted marker exists;
+    - the executor prompt names the candidate path.
+  - `test_2_existing_audited_checkpoint_is_reused` [1]:
+    `checkpoint_created=False`.
+- **Verification refusals.** Each of the following is not attempted, with
+  reason `objective_not_complete`, no checkpoint, and accepted state
+  unchanged:
+  - `test_5_incomplete_audit_does_not_promote` [1];
+  - `test_6_repaired_positive_audit_does_not_promote` [1]: the repair was
+    recorded and passed; the result is `NOT_VERIFIED` /
+    `report_repaired_not_verification_authority`;
+  - `test_7_auditor_mutation_does_not_promote` [1]: `BLOCKED`, with the
+    mutated paths kept and the file not in the candidate;
+  - `test_8_missing_audit_evidence_does_not_promote` [1].
+- **Auditor failures:**
+  `test_9_to_11_auditor_failure_is_normalized_and_never_promoted` [2]
+  (`failed`, `cancelled`):
+  - upstream ends the run as it always does;
+  - Cloudeo still normalizes to `AUDITOR_ERROR` with LongHorizon's
+    classification (`provider_error`, `cancelled`);
+  - promotion is never attempted.
+- **Races after upstream `complete`:**
+  - `test_12_workspace_changed_after_audit_is_refused`: `WORKSPACE_CHANGED`,
+    `refused_before_checkpoint`, no checkpoint.
+  - `test_13_accepted_state_moved_is_refused`: `VERIFICATION_STALE`.
+  - `test_14_candidate_head_changed_is_refused`: `HEAD_CHANGED`.
+  - `test_15_18_change_at_checkpoint_time_is_caught_and_checkpoint_kept`:
+    `refused_after_checkpoint` / `checkpoint_differs_from_audit`. The
+    checkpoint ref is kept and surfaced as `checkpoint_commit`; accepted state
+    is unchanged.
+  - `test_16_accepted_moving_before_promote_is_caught`:
+    `refused_after_checkpoint` / `VERIFICATION_STALE`.
+- **Not attempted, distinct from refused:**
+  - `test_manager_failed_before_audit`: a GUI step hits the explicit
+    placeholder, and upstream fails.
+  - `test_auditor_missing`: the manager blocks immediately.
+  - `test_only_the_final_audit_is_authority`: round 1's incomplete audit is
+    history; round 2's `VERIFIED` audit is promoted.
+- **Authority:**
+  - `test_20_21_only_the_gate_checkpoints_and_promotes`: a spy shows exactly
+    `checkpoint_candidate` then `promote`, both called from
+    `promotion_gate.py`. An AST check shows the wrapper has no call to
+    `promote`, `checkpoint_candidate`, `reject`, or `cleanup`, and no
+    `refs/cloudeo` or `update-ref` strings.
+  - `test_22_executor_completion_is_not_verification`.
+  - `test_23_repaired_prose_is_never_authority_even_if_upstream_completes`:
+    upstream is forced to accept the repaired prose as complete; the gate is
+    attempted and refuses it (`NOT_VERIFIED`).
+- **Validation:**
+  - `test_candidate_identity_and_paths_are_validated`: another candidate, a
+    substituted `workspace_path`, `harness_dir` or `log_dir` inside the
+    candidate, or swapped executor/auditor roles are each refused before any
+    request.
+  - `test_executor_and_auditor_must_share_the_gate_broker`.
+
+Mutation checks (each change was reverted afterwards):
+
+| Deliberate change | Tests that fail |
+| --- | --- |
+| Attempt the gate even when the objective is not complete | 6 (not-attempted assertions) |
+| Ignore the recorded repair | 2 |
+| Use the first audit instead of the last | 1 |
+| No candidate identity check | 1 |
+| No `harness_dir`/`log_dir` check | 1 |
+| GUI roles fall back to the manager adapter | 1 |
+| A direct checkpoint+promote bypass before the gate | 10 |
+
+Ruff passes.
+
+No live provider, harness, or HarnessRouter calls were made.

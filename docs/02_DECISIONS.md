@@ -1324,3 +1324,104 @@ modified.
 **Status:** Implemented on `feat/longhorizon-promotion-gate`; merged into
 `main` with a normal merge commit on top of `b91ab83`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-021 — LongHorizon manager run wrapped by the promotion gate
+
+**Decision:** Add `cloudeo.longhorizon.manager_integration.run_managed_with_promotion_gate()`.
+It is a thin wrapper around the pinned, unmodified `lh_harness.manager.run()`
+and connects the LongHorizon round loop to Cloudeo's normalizer (ADR-019
+amendment) and promotion gate (ADR-020). No Cloudeo-owned round loop is added,
+and LongHorizon is not modified.
+
+**Authority chain:**
+
+```
+LongHorizon manager:  "the objective appears complete"
+        ↓
+Cloudeo normalizer:   "the final audit is / is not authoritative"
+        ↓
+Promotion gate:       "this exact audited state may / may not become accepted"
+```
+
+Upstream `complete` is **only permission to attempt** the gate, never
+sufficient for promotion. The wrapper makes no promotion decision itself. It
+never calls `broker.promote()` or `checkpoint_candidate()`, never touches
+`refs/cloudeo`, and never reads auditor prose. Only
+`checkpoint_and_promote_verified()` decides.
+
+**Flow:**
+
+1. **Validate before anything runs** (fail closed):
+   - Roles are bound through `bind_longhorizon_roles()`: manager, cli_executor,
+     cli_auditor, auditor_format_repair, and final_response. Format repair and
+     the final response default to the manager adapter.
+   - The executor and auditor must be bound to the same `CandidateWorkspace` as
+     the gate's candidate, through the same Workspace Broker.
+   - `config.workspace_path` is set to the candidate path. A different
+     non-default path is refused rather than substituted.
+   - `config.harness_dir` and `config.log_dir` must lie outside the candidate,
+     because upstream writes its own trace files there and they would change
+     the audited state.
+   - The GUI roles have no eligible Cloudeo adapter. They are bound to an
+     explicit placeholder whose episode fails, so upstream never falls back to
+     another role's adapter.
+2. **Record episodes:** the auditor and format-repair adapters are wrapped,
+   after validation, in recorders that keep each `EpisodeResult` unchanged, in
+   order.
+3. **Run upstream:** `manager.run()` runs unmodified.
+4. **Normalize the final audit.** The last auditor episode, plus the repair
+   that immediately followed it, goes through
+   `normalize_auditor_result(primary, repair=repair)`, whatever the run's
+   outcome. Earlier audits remain history, not authority. Stale ones would be
+   refused by the gate's `HEAD` and content checks anyway.
+5. **Attempt promotion only when** upstream reports
+   `status == "complete"` with `completion_satisfied`. The gate's
+   `GatedPromotionResult` is then authoritative.
+
+**Not attempted vs refused.** These are different states, and a gate refusal
+is never fabricated for a gate that did not run:
+
+| Situation | `promotion_attempted` | Result |
+| --- | --- | --- |
+| No auditor episode, run failed | `False` | `promotion_not_attempted_reason="manager_failed_before_audit"` |
+| No auditor episode otherwise | `False` | `"auditor_missing"` |
+| An audit exists, but the objective is not complete | `False` | `"objective_not_complete"` |
+| Gate called | `True` | `promotion_result.stage`: `refused_before_checkpoint`, `refused_after_checkpoint`, or `promoted` |
+
+`ManagedPromotionResult` keeps both views: `upstream_report`, `verification`
+(`AuditorVerification`), `promotion_attempted`,
+`promotion_not_attempted_reason`, `promotion_result`
+(`GatedPromotionResult`), `workspace_id`, `candidate_id`, `base_commit`,
+`checkpoint_commit`, `auditor_episodes`, and `format_repair_used`.
+
+**Upstream behavior resolved at the boundary, not by changing upstream:**
+
+- **Auditor error:** upstream still ends the run as `failed`/`provider_*`, or
+  `cancelled`, exactly as before. The recorded auditor episode is normalized
+  afterwards (`AUDITOR_ERROR`, or `BLOCKED` for mutation or missing evidence).
+  Because the objective is not complete, promotion is not attempted. Upstream
+  status is not falsified.
+- **Format-repair quirk:** the repair episode is passed explicitly to the
+  normalizer, which caps a repaired report at `NOT_VERIFIED`. Even when upstream
+  is forced to treat repaired prose as complete, the gate refuses it.
+- **`workspace_path` mismatch:** the candidate is named explicitly as the
+  workspace, and upstream's files are kept out of it. The bridge and audit
+  transport already map "workspace path" to the extracted snapshot remotely.
+
+**Limitations:**
+
+- Upstream still ends the whole run on an auditor error. Recovering within the
+  run would need upstream changes or a Cloudeo-owned loop, which is deferred.
+- The objective-level completion signal comes from LongHorizon's prose parsing.
+  It only permits an attempt; the gate still requires original `VERIFIED` and
+  the exact audited state.
+- GUI roles are not supported (no eligible adapter).
+- There is no cleanup or rejection policy for refused checkpoints, and no
+  Performance Memory.
+- There is no live HarnessRouter proof; all validation is offline.
+
+**Status:** Implemented on `feat/manager-promotion-integration`; not merged.
+See `03_PROGRESS_AND_EVIDENCE.md`.
