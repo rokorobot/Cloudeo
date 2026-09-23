@@ -894,3 +894,117 @@ Bridge invariants added before merge (same branch):
   standard library.
 
 No live provider, harness, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — LongHorizon workspace executor
+
+Branch `feat/longhorizon-workspace-executor`, from `main` at `d78f1b5`. It adds
+`UHPWorkspaceExecutorAdapter`, the fail-closed role-eligibility layer, and
+ADR-018. These are unchanged: `Controller.run()`, the Workspace Broker, the
+bridge, the UHP client, the dispatcher, the execution contracts, the API, the
+database, and `UHPHarnessAgentAdapter` (still `supports_workspace_sync =
+False`). LongHorizon itself is not patched, and its manager loop is not run
+from Cloudeo. No auditor, checkpoint, promotion, or rejection step was added.
+
+Implemented:
+
+- `src/cloudeo/longhorizon/workspace_executor.py`:
+  `UHPWorkspaceExecutorAdapter(profile, bridge, candidate, *, clock)`.
+  - It checks the candidate before each episode.
+  - It runs one bridge task per episode in a fresh session.
+  - Result mapping and metadata follow ADR-018: `completed` without a synced
+    workspace is `error` with `workspace_sync_failed`.
+  - `supports_workspace_sync = True`. Construction with a non-syncing bridge is
+    refused.
+- `src/cloudeo/longhorizon/roles.py`: `LONGHORIZON_ROLES`,
+  `MANAGER_ROLE_KEYWORDS`, the exact-type `ROLE_ELIGIBILITY` table,
+  `eligible_roles()`, `require_role_eligible()`, and
+  `bind_longhorizon_roles()`.
+- The test fake HarnessRouter (`tests/test_uhp_workspace_bridge.py`) gained
+  `response_overrides`, a new session and workspace for each task after the
+  first, and an `input_manifest()` that reads the latest upload. These changes
+  are backward compatible: the 105 bridge tests are unchanged and pass.
+
+Validation (all offline):
+
+- With the `longhorizon` extra: **386 passed** (355 existing unchanged, 31 in
+  `tests/test_longhorizon_workspace_executor.py`). Without the extra: 319
+  passed and 3 skipped (the two LongHorizon modules and one bridge test).
+- Focused suites: LongHorizon adapter 35, bridge 105, UHP client and files 56,
+  Workspace Broker 51.
+- The tests use the real `GitWorkspaceBroker`, `CandidateWorkspace`,
+  `UHPWorkspaceBridge`, `UHPClient`, `ExecutionDispatcher`,
+  `UHPHarnessTaskBackend`, and LongHorizon's `AgentAdapter`, `Environment`,
+  `EpisodeBudget`, and `EpisodeResult`, with the offline fake HarnessRouter.
+- Test names are in `tests/test_longhorizon_workspace_executor.py`; the
+  numbers in brackets count parametrized cases.
+- `test_a_executor_changes_candidate_but_never_accepted_state` [1]: accepted A
+  → one executor episode → the candidate is modified, added, and deleted, and
+  is dirty. Afterwards:
+  - accepted state and the candidate `HEAD` are both still A;
+  - there are no checkpoint refs and no promoted or rejected markers;
+  - `independently_verified` is false.
+- `test_executor_uses_only_read_only_broker_calls` [1]: a spy broker records
+  that the only calls are `inspect_candidate` and `accepted_state`.
+- `test_b_completed_without_sync_is_error` [2]: `completed` with
+  `output_artifact_missing` or `missing_session_id` gives `error` with
+  `workspace_sync_failed: <code>`, and the candidate is unchanged.
+- `test_c_unknown_runtime` [1]: a transport timeout gives `unknown` → `error`
+  with `runtime_state_unobserved`. The sync is skipped and the candidate is
+  unchanged.
+- `test_d_e_f_non_completed_runtime` [3]: `failed` → `error`, `cancelled` →
+  `cancelled`, `in_progress` → `error` with `runtime_state_unobserved`. The
+  sync is skipped and the candidate is unchanged.
+- `test_g_incomplete_keeps_budget_mapping_and_records_partial_sync` [2]: a
+  valid partial delta syncs, with `max_steps` → `timeout` and `interrupted` →
+  `error`.
+- `test_h_candidate_drift_is_not_done_and_local_edit_survives` [1]: gives
+  `error` with `workspace_sync_failed: candidate_changed_during_execution`.
+- `test_i_profile_budget_and_fresh_session_per_episode` [1]: the profile's
+  harness, model, step limit, and per-episode budget timeouts are sent. Two
+  episodes use two distinct sessions with no `previous_response_id`, and the
+  second returns only its own delta.
+- `test_j_metadata_keeps_runtime_evidence_and_adds_workspace_evidence` [1].
+- `test_k_capability_flags` [1] and `test_executor_conforms_to_agent_adapter`
+  [1]: the executor is `True`, and the base adapter is still `False`.
+- `test_l_role_eligibility_matrix` [7]: every role against both adapters.
+- `test_role_eligibility_fails_closed_for_unknowns` [1]: a subclass, an unknown
+  object, the unknown roles `agent` and `auditor`, and a mixed binding set are
+  all refused.
+- `test_role_keywords_match_pinned_manager` [1]: the role keywords match the
+  signature of the pinned manager's `_run_impl`.
+- `test_m_n_environment_untouched_and_no_trajectory_fabricated` [1].
+- Candidate checks, public broker API only; each returns `error` with no
+  HarnessRouter request:
+  - `test_stale_candidate_is_an_executor_error_without_remote_calls` [1]:
+    another candidate was promoted, and the candidate is byte-for-byte
+    unchanged.
+  - `test_candidate_whose_base_moved_by_its_own_promotion_is_stale` [1]:
+    caught only as staleness, not recognized as promoted.
+  - `test_cleaned_up_candidate_is_an_executor_error` [1]: the candidate is not
+    recreated.
+  - `test_foreign_candidate_is_an_executor_error` [1].
+  - `test_unsendable_candidate_is_an_executor_error` [1]: a symlink.
+  - `test_executor_requires_a_workspace_capable_bridge` [1].
+- The adapter source contains no call to `create_candidate()`,
+  `checkpoint_candidate()`, `promote()`, `reject()`, `cleanup()`, private broker
+  methods, broker refs, or the Environment.
+- Mutation checks:
+  - Removing the completed+unsynced → `error` rule fails 3 tests (B ×2, H).
+  - Removing the staleness check fails the 2 staleness tests.
+- Ruff passes.
+
+Known limitations (ADR-018):
+
+- The public WorkspaceBroker protocol exposes no terminal lifecycle state, so
+  the adapter cannot distinguish an open candidate from a promoted or rejected
+  one. Lifecycle ownership must be enforced by future orchestration or by a
+  public broker lifecycle query.
+- The LongHorizon executor prompt may name `config.workspace_path` while
+  execution happens in a fresh remote session workspace. Safety inside the full
+  `manager.run()` flow is unproven, and is a prerequisite test for the
+  role-binding milestone. `manager.run()` compatibility is not claimed.
+
+No live provider, harness, or HarnessRouter calls were made.

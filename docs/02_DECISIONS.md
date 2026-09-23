@@ -737,5 +737,172 @@ workspace sync.
 - No live provider or HarnessRouter proof yet; all validation is offline.
 - No LongHorizon role binding yet.
 
-**Status:** Implemented on `feat/uhp-workspace-bridge-foundation`; not merged.
+**Status:** Implemented on `feat/uhp-workspace-bridge-foundation`; merged into
+`main` (through `d78f1b51c2c57b81c65eeec0829a70a9886c41c0`).
+See `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-018 — LongHorizon Workspace Executor Composition
+
+**Decision:** Add `UHPWorkspaceExecutorAdapter`
+(`cloudeo.longhorizon.workspace_executor`). It implements LongHorizon's
+`AgentAdapter` by composing the UHP Workspace Bridge (ADR-017) with one bound
+`CandidateWorkspace`. It is bound to a `HarnessExecutionProfile`, a
+`UHPWorkspaceBridge`, a candidate, and an optional clock. Each `run_episode()`
+builds one `WorkspaceBridgeTask` from the prompt, the profile's harness, model,
+and step limit, and the `EpisodeBudget` as `timeout_seconds`, then calls
+`bridge.run(candidate, task)`. Every episode is a fresh UHP session with no
+`previous_response_id`. Several episodes may run against the same candidate,
+and each starts from the candidate as the previous one left it.
+
+**Two adapters, two capabilities:**
+
+| Adapter | `supports_workspace_sync` | Sees files |
+| --- | --- | --- |
+| `UHPHarnessAgentAdapter` (ADR-016) | `False` (unchanged) | No; its HarnessRouter session is discarded |
+| `UHPWorkspaceExecutorAdapter` | `True` | Yes; the bound candidate, through the bridge |
+
+**Role eligibility (`cloudeo.longhorizon.roles`), fail-closed:** The pinned
+LongHorizon manager (`_run_impl`) takes one keyword per role and silently falls
+back to its default `agent`, or `auditor_agent` for auditors, when a role is
+left unbound. Cloudeo therefore binds roles only through
+`bind_longhorizon_roles()`. It validates every binding before returning
+anything, and returns only explicit role keywords (`manager_agent`,
+`cli_executor_agent`, ...), never `agent` or `auditor_agent`. Eligibility is an
+explicit table keyed by exact adapter type. It is not inferred from class names
+or capability flags. A subclass, an unknown adapter, or an unknown role name is
+eligible for nothing.
+
+| Role | `UHPHarnessAgentAdapter` | `UHPWorkspaceExecutorAdapter` |
+| --- | --- | --- |
+| `manager` | eligible | no: needs no mutation |
+| `final_response` | eligible | no: needs no mutation |
+| `auditor_format_repair` | eligible | no |
+| `cli_executor` | no: cannot see the workspace | **eligible** |
+| `gui_executor` | no | no: no GUI or screenshot contract |
+| `cli_auditor` | no | no: mutates the candidate; not independent |
+| `gui_auditor` | no | no |
+
+No adapter is eligible for an auditor role that inspects the workspace. The
+independent workspace auditor is the next missing component.
+
+**State flow (this milestone stops at the last step):**
+
+```
+accepted A ──create_candidate──▶ candidate @ A
+candidate ──cli_executor episode──▶ bridge ──▶ fresh UHP session ──▶ validated delta
+delta ──▶ candidate A′ (dirty, uncheckpointed, UNVERIFIED)      accepted is still A
+```
+
+The adapter calls only the broker's read-only `inspect_candidate()` and
+`accepted_state()`. It never calls `checkpoint_candidate()`, `promote()`,
+`reject()`, `create_candidate()`, or `cleanup()`. It never moves accepted state,
+a branch, or `HEAD`.
+
+**Result mapping:** The runtime mapping is exactly ADR-016's
+(`episode_result_from_outcome`), with one added rule:
+
+| Runtime | Workspace sync | `EpisodeResult.status` |
+| --- | --- | --- |
+| `completed` | `synced` | `done` |
+| `completed` | `failed` (or anything but `synced`) | **`error`**, with `workspace_sync_failed: <code>: <message>` |
+| `incomplete` | `synced` (partial delta) or `failed` | ADR-016 budget mapping (`timeout` or `error`); the sync state is in the metadata |
+| `failed` / `cancelled` | `skipped` | `error` / `cancelled` |
+| `unknown` / `in_progress` | `skipped` | `error` (or `timeout` for `in_progress` past the budget), with `runtime_state_unobserved` |
+
+A `completed` runtime whose work did not reach the candidate must not look like
+`done`. Otherwise LongHorizon would continue as though the candidate had
+changed. `done` still means only "the harness completed and the candidate
+received its delta". It is not verification.
+
+**Metadata:** All ADR-016 keys are kept (`cloudeo_runtime_status`, requested and
+actual harness and model, `model_fallback`, `response_id`, `session_id`,
+`usage`, ...). The executor sets `supports_workspace_sync: True` and adds
+`workspace_sync_status`, `workspace_sync_error` (`{code, message}` or `None`),
+`bridge_run_id`, `workspace_id`, `candidate_id`, `candidate_base_commit`,
+`added_paths`, `changed_paths`, `deleted_paths`, `ignored_paths`, and
+`independently_verified: False`, which is always false.
+
+**Candidate checks (public broker API only):** The adapter checks the candidate
+before any upload, using only the public `WorkspaceBroker` protocol. It never
+calls private `GitWorkspaceBroker` methods such as `_require_open()` and never
+reads broker-owned refs. `inspect_candidate()` must succeed, which proves the
+candidate's identity and worktree. `accepted_state()` must still equal the
+candidate's `base_commit`. On failure the adapter returns an `EpisodeResult`
+with `status="error"` and `cloudeo_runtime_status=None`, and makes no
+HarnessRouter request.
+
+- `candidate_unavailable`: a foreign or forged candidate, a missing or
+  cleaned-up worktree, or a candidate the bridge refuses to send, for example
+  one containing a symlink. The bridge's own `inspect_candidate()` and
+  input-building failures also map here; they happen before anything is
+  uploaded.
+- `candidate_stale`: the candidate's base no longer equals accepted state.
+- `workspace_upload_failed`: a UHP error while uploading, before any task is
+  submitted.
+
+The adapter never recreates the candidate, never creates a second one, and
+never switches accepted state. The Workspace Broker's semantics are unchanged
+by this milestone.
+
+**Lifecycle state is not visible (public protocol limitation):** The current
+WorkspaceBroker public protocol does not expose terminal candidate lifecycle
+state. UHPWorkspaceExecutorAdapter therefore cannot independently distinguish
+an open candidate from one already marked promoted/rejected using only the
+public broker interface. Future orchestration must enforce lifecycle
+ownership, or the Broker protocol must gain an explicit public lifecycle query.
+
+`inspect_candidate()` deliberately verifies only ownership and worktree state.
+A candidate whose own promotion advanced accepted state fails the staleness
+check, but only because accepted state moved. It is not recognized as
+promoted. A rejected candidate leaves accepted state unchanged, so it passes
+both checks. The adapter makes no claim to detect either state.
+
+**Environment:** The executor's filesystem is the bound candidate, not the
+LongHorizon `Environment` passed to `run_episode()`. That Environment is
+accepted for protocol compatibility and never called. The pinned manager still
+uses its Environment itself: it writes round prompts there, and takes
+screenshots for GUI steps.
+
+**Workspace path mismatch in manager prompts (unproven):** The pinned
+LongHorizon executor prompt may contain `config.workspace_path`, which comes
+from the LongHorizon Environment. Execution actually happens in a fresh remote
+HarnessRouter session workspace, where the bridge has extracted the candidate
+snapshot. The bridge transport instructions (ADR-017) tell the harness to work
+in the current extracted project directory. That has **not** been proven safe
+inside the full LongHorizon `manager.run()` prompt flow, where the manager's
+prompt may name a different path. This branch does not rewrite LongHorizon
+prompts and does not claim `manager.run()` compatibility. The later
+role-binding and manager-integration milestone must, as a prerequisite, test
+the manager's real executor prompt through the bridge. That test must show
+that the harness works only in the extracted snapshot and that the delta lands
+in the candidate. Otherwise that milestone must reconcile `workspace_path`
+explicitly.
+
+**Trajectory:** The bridge does not stream a native LongHorizon trajectory.
+`live_trajectory_path` is accepted and never written, and no trajectory is
+fabricated. UHP output items stay in `actions_log`, which is marked
+diagnostics-only when there is no assistant text.
+
+**Limitations:**
+
+- No terminal lifecycle detection: the public WorkspaceBroker protocol does
+  not expose whether a candidate is open, promoted, or rejected, so the adapter
+  cannot tell them apart. Future orchestration must enforce lifecycle
+  ownership, or the Broker protocol must gain an explicit public lifecycle
+  query.
+- `workspace_path` prompt mismatch: the LongHorizon executor prompt may name
+  `config.workspace_path`, while execution happens in a fresh remote session
+  workspace. Safety inside the full `manager.run()` prompt flow is unproven,
+  and that is a prerequisite test for the role-binding milestone.
+  `manager.run()` compatibility is not claimed.
+- `in_progress` and `unknown` runs leave a remote session that may still be
+  mutating. Nothing is applied from it.
+- No manager-loop integration, auditor, checkpoint, promotion, or rejection.
+- All validation is offline; there is no live HarnessRouter proof.
+
+**Status:** Implemented on `feat/longhorizon-workspace-executor`; merged into
+`main` with a normal merge commit on top of `d78f1b5`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
