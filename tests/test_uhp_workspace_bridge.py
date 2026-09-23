@@ -203,8 +203,10 @@ class FakeHarnessRouter:
         bootstrap_doc="CLAUDE.md",
         bootstrap_content=None,
         before_unpack=None,
+        response_overrides=None,
     ):
         self.remote = root / "remote"
+        self.response_overrides = response_overrides or {}
         # HarnessRouter's runner writes the backend's instruction doc after the
         # input files and before the harness starts (`_write_agent_doc`).
         self.bootstrap_doc = bootstrap_doc
@@ -262,7 +264,9 @@ class FakeHarnessRouter:
         return httpx.Response(200, json=body, headers=HEADERS)
 
     def input_manifest(self):
-        upload = next(u for u in self.uploads.values() if u["filename"].endswith(".tar.gz"))
+        """The input manifest of the most recent task (each episode uploads its own)."""
+        inputs = [u for u in self.uploads.values() if u["filename"].endswith(".tar.gz")]
+        upload = inputs[-1]
         with tarfile.open(fileobj=io.BytesIO(upload["content"]), mode="r:gz") as tar:
             return json.loads(tar.extractfile(helper.MANIFEST_MEMBER).read())
 
@@ -285,7 +289,10 @@ class FakeHarnessRouter:
             return self.task_reply(request) if callable(self.task_reply) else self.task_reply
         text = next(p["text"] for p in payload["input"][0]["content"] if p["type"] == "input_text")
         run_id = re.search(r"Bridge run id: (bridge_[0-9a-f]{32})", text)[1]
-        self.workspace = self.remote / (self.session_id or "no-session")
+        # Without previous_response_id every task is a fresh session and workspace.
+        n = len(self.task_payloads) - 1
+        sid = self.session_id if not self.session_id or n == 0 else f"{self.session_id}_{n}"
+        self.workspace = self.remote / (sid or f"no-session-{n}")
         self.workspace.mkdir(parents=True)
         for part in payload["input"][0]["content"]:
             if part["type"] == "input_file":
@@ -303,7 +310,7 @@ class FakeHarnessRouter:
         if self.output is not None:
             data = self.output(run_id, self.input_manifest())
             (self.workspace / helper.output_archive_name(run_id)).write_bytes(data)
-        metadata = {"session_id": self.session_id} if self.session_id else {}
+        metadata = {"session_id": sid} if sid else {}
         body = {
             "id": "resp_bridge",
             "object": "response",
@@ -322,6 +329,7 @@ class FakeHarnessRouter:
             "usage": None,
             "metadata": metadata,
             "previous_response_id": None,
+            **self.response_overrides,
         }
         return httpx.Response(200, json=body, headers=HEADERS)
 

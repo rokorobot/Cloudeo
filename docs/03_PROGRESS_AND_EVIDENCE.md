@@ -894,3 +894,91 @@ Bridge invariants added before merge (same branch):
   standard library.
 
 No live provider, harness, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — LongHorizon workspace executor
+
+Branch `feat/longhorizon-workspace-executor`, from `main` at `d78f1b5`. It adds
+`UHPWorkspaceExecutorAdapter`, the fail-closed role-eligibility layer, and
+ADR-018. These are unchanged: `Controller.run()`, the Workspace Broker, the
+bridge, the UHP client, the dispatcher, the execution contracts, the API, the
+database, and `UHPHarnessAgentAdapter` (still `supports_workspace_sync =
+False`). LongHorizon itself is not patched, and its manager loop is not run
+from Cloudeo. No auditor, checkpoint, promotion, or rejection step was added.
+
+Implemented:
+
+- `src/cloudeo/longhorizon/workspace_executor.py`:
+  `UHPWorkspaceExecutorAdapter(profile, bridge, candidate, *, clock)`.
+  - It checks the candidate before each episode.
+  - It runs one bridge task per episode in a fresh session.
+  - Result mapping and metadata follow ADR-018: `completed` without a synced
+    workspace is `error` with `workspace_sync_failed`.
+  - `supports_workspace_sync = True`. Construction with a non-syncing bridge is
+    refused.
+- `src/cloudeo/longhorizon/roles.py`: `LONGHORIZON_ROLES`,
+  `MANAGER_ROLE_KEYWORDS`, the exact-type `ROLE_ELIGIBILITY` table,
+  `eligible_roles()`, `require_role_eligible()`, and
+  `bind_longhorizon_roles()`.
+- The test fake HarnessRouter (`tests/test_uhp_workspace_bridge.py`) gained
+  `response_overrides`, a new session and workspace for each task after the
+  first, and an `input_manifest()` that reads the latest upload. These changes
+  are backward compatible: the 105 bridge tests are unchanged and pass.
+
+Validation (all offline):
+
+- With the `longhorizon` extra: **386 passed** (355 existing unchanged, 31 in
+  `tests/test_longhorizon_workspace_executor.py`). Without the extra: 319
+  passed and 3 skipped (the two LongHorizon modules and one bridge test).
+- Focused suites: LongHorizon adapter 35, bridge 105, UHP client and files 56,
+  Workspace Broker 51.
+- The tests use the real `GitWorkspaceBroker`, `CandidateWorkspace`,
+  `UHPWorkspaceBridge`, `UHPClient`, `ExecutionDispatcher`,
+  `UHPHarnessTaskBackend`, and LongHorizon's `AgentAdapter`, `Environment`,
+  `EpisodeBudget`, and `EpisodeResult`, with the offline fake HarnessRouter.
+- A: accepted A → executor episode → the candidate is modified, added, and
+  deleted, and is dirty. Then:
+  - accepted is still A, and the candidate `HEAD` is still A;
+  - there are no checkpoint refs and no promoted or rejected markers;
+  - `independently_verified` is false.
+
+  A spy broker shows that the only broker calls are `inspect_candidate` and
+  `accepted_state`.
+- B: `completed` with a missing output artifact, or with no session ID, gives
+  `error` with `workspace_sync_failed: <code>`, and the candidate is unchanged.
+- C–F: `unknown` (a transport timeout), `failed`, `cancelled`, and
+  `in_progress` keep the ADR-016 mapping. The sync is skipped and the candidate
+  is unchanged.
+- G: `incomplete` with a valid partial delta syncs and keeps the budget mapping
+  (`max_steps` → `timeout`, `interrupted` → `error`).
+- H: a local edit during the remote run gives `error` with
+  `candidate_changed_during_execution`, and the local edit survives.
+- I: the profile's harness, model, step limit, and budget timeout are sent.
+  Two episodes use two fresh sessions with no `previous_response_id`, and the
+  second returns only its own delta.
+- J: runtime evidence (usage, echoed model, fallback, response and session IDs)
+  and workspace evidence are both present.
+- K: the capability flags are `True` for the executor and `False` for the base
+  adapter, and the executor conforms to `AgentAdapter`.
+- L: the full 7-role × 2-adapter matrix. It fails closed for a subclass, an
+  unknown object, the unknown role names `agent` and `auditor`, and a mixed
+  binding set, and the role keywords match the pinned manager's signature.
+- M, N: an Environment that fails on any call is never touched, and no
+  trajectory file is created.
+- Candidate lifecycle: stale (another candidate promoted), itself promoted,
+  cleaned up, forged, and unsendable (a symlink) each return `error` before
+  any HarnessRouter request. The stale candidate is byte-for-byte unchanged,
+  and the cleaned-up candidate is not recreated. The adapter has no code path
+  to `create_candidate()`, `checkpoint_candidate()`, `promote()`, or
+  `reject()`.
+- Mutation checks:
+  - Removing the completed+unsynced → `error` rule fails 3 tests (B ×2, H).
+  - Removing the staleness check fails 2 tests (stale, promoted).
+- Ruff passes.
+
+Known limitation: a rejected candidate is not detectable through the public
+broker API (ADR-018).
+
+No live provider, harness, or HarnessRouter calls were made.
