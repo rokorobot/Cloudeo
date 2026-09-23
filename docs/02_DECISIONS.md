@@ -1423,5 +1423,6 @@ is never fabricated for a gate that did not run:
   Performance Memory.
 - There is no live HarnessRouter proof; all validation is offline.
 
-**Status:** Implemented on `feat/manager-promotion-integration`; not merged.
+**Status:** Implemented on `feat/manager-promotion-integration`; merged into
+`main` with a normal merge commit on top of `84e7591`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
