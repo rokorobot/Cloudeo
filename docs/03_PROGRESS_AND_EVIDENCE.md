@@ -1444,3 +1444,19 @@ Mutation checks (each change was reverted afterwards):
 Ruff passes.
 
 No live provider, harness, or HarnessRouter calls were made.
+
+
+---
+
+## 2026-09-23 — V2 control architecture proposed (documentation only)
+
+Branch `docs/v2-control-architecture`, from `main` at `d7e7c67`. It adds
+`docs/13_V2_CONTROL_ARCHITECTURE.md`, a contract for the Project, WorkOrder,
+AgentProfile, Memory, and Human Decision layer above the completed trust
+kernel, plus ADR-022 to ADR-029 (all **Proposed**). A pointer note is added to
+`07_TARGET_ARCHITECTURE_V2.md`.
+
+No code, test, dependency, or kernel change. Nothing described in the
+contract is implemented; the contract's invariants (V2C-01 to V2C-20) become
+test obligations for the milestones that implement them. Open questions Q1 to
+Q8 await the user's decisions before implementation starts.

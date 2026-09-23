@@ -1426,3 +1426,197 @@ is never fabricated for a gate that did not run:
 **Status:** Implemented on `feat/manager-promotion-integration`; merged into
 `main` with a normal merge commit on top of `84e7591`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
+
+
+---
+
+## ADR-022 — V2 control layer above the trust kernel
+
+**Status:** Proposed; awaiting approval (`13_V2_CONTROL_ARCHITECTURE.md`).
+
+**Decision:** Cloudeo v2 adds a control layer for Projects, WorkOrders,
+AgentProfiles, Memories, and Human Decisions **above** the trust kernel
+(Manager → Auditor → Normalizer → Promotion Gate → Workspace Broker,
+ADR-015 to ADR-021). The kernel stays unchanged and remains the sole
+acceptance authority.
+
+**Invariant (K1):** nothing in the control layer may write accepted state,
+write `refs/cloudeo`, call `promote()`, or bypass the gate. The layer decides
+what to attempt and when to ask the user. Only the kernel decides what is
+accepted. `PROMOTED` is reachable only from a kernel result with
+`promoted == true`.
+
+**Consequences:** `13_V2_CONTROL_ARCHITECTURE.md` refines
+`07_TARGET_ARCHITECTURE_V2.md` §4.1 (WorkOrder) and §4.3 (ExecutionProfile),
+and bounds its router and recovery policy by the approved envelope (ADR-025).
+Where they disagree, the contract and ADR-022 to ADR-029 govern.
+
+---
+
+## ADR-023 — Project identity and in-repository Project Memory
+
+**Status:** Proposed; awaiting approval.
+
+**Decision:**
+
+- A **ProjectTarget** maps to exactly one Workspace Broker workspace. The broker
+  remains the authority for the accepted baseline.
+- **Project Memory** is the accepted description of what exists: architecture,
+  components, interfaces, decisions, conventions, and limitations. It is stored
+  as tracked files in the repository (proposed `.cloudeo/project/`).
+- Memory entries are claims with evidence anchors (paths, symbols, tests,
+  ADRs).
+
+**Update rule:**
+
+- Canonical Project Memory advances only by promotion, together with the code
+  it describes.
+- Candidate memory changes only after the related block is `CODE_APPROVED`,
+  and passes a Memory Audit before the block is done.
+- Memory never records planned or unverified work as existing.
+
+**Reason:** memory kept in the candidate is Git-visible state. It is inside the
+audited snapshot and content hash (ADR-019, ADR-020), so the existing gate
+proves and promotes code and memory atomically, with no second promotion
+mechanism. WorkOrder Memory and Performance Memory are separate stores and
+never live in the repository.
+
+---
+
+## ADR-024 — Context Intake is read-only and memory is a claim
+
+**Status:** Proposed; awaiting approval.
+
+**Decision:** Context Intake reads Project Memory first, then verifies each
+relevant claim against its anchors in the code at the planned baseline. Each
+claim is reported as verified, contradicted, or unverifiable, with evidence.
+Intake runs on a read-only snapshot (reusing ADR-019 machinery) and never
+writes to any workspace. A contradicted claim becomes a proposed memory
+correction in the plan, for the user to approve.
+
+**Reason:** memory speeds orientation, but unchecked memory would let stale
+documentation steer execution. Verification against code keeps memory honest
+without trusting it.
+
+---
+
+## ADR-025 — Plan Approval Gate and the approved envelope
+
+**Status:** Proposed; awaiting approval.
+
+**Decision:** No workspace write happens before the user approves a specific,
+immutable plan version. The `architecture_planner` role proposes; the user
+decides. The approved plan fixes the **envelope**:
+
+- the blocks and their scopes, and the architecture changes;
+- the acceptance criteria;
+- the Project Execution Profile version with its approved fallbacks;
+- the budget and the risk class.
+
+Any later change is a new plan version that needs approval again. Automatic
+behavior is allowed only inside the envelope. This covers retries within
+budget, approved fallbacks, and the recovery and routing actions of 07 §5 and
+§11 that stay inside it. Material deviations always escalate (ADR-028).
+Deviations are detected from evidence (deterministic diff-scope checks,
+normalized audit findings, accounting), never from an agent's claim.
+
+---
+
+## ADR-026 — WorkOrder and ImplementationBlock state machines; CODE_APPROVED
+
+**Status:** Proposed; awaiting approval.
+
+**Decision:**
+
+- **WorkOrder states:**
+  - main path: `DRAFT → CONTEXT_INTAKE → PLAN_PROPOSED → PLAN_APPROVED →
+    EXECUTING → FINAL_VERIFICATION → PROMOTED`;
+  - overlays: `USER_ATTENTION_REQUIRED`, `DEFERRED`, `ABORTED`.
+- **Block loop:** `IMPLEMENTING → TESTING → AUDITING → FIXING (bounded) →
+  CODE_APPROVED → [MEMORY_UPDATE → MEMORY_AUDIT] → DONE`.
+
+`CODE_APPROVED` requires all of the following:
+
+- the deterministic acceptance checks pass;
+- the normalized audit of the exact current candidate state is original
+  `VERIFIED`, never repaired;
+- the diff since the previous block is within the declared scope, or covers a
+  user-approved deviation.
+
+`CODE_APPROVED` is candidate progress, never acceptance, and never calls
+`promote()`. Final verification of the whole candidate goes through the trust
+kernel. Executor completion, LongHorizon `complete`, and `CODE_APPROVED`
+never imply acceptance.
+
+---
+
+## ADR-027 — Roles, Project Execution Profile, and AgentProfile
+
+**Status:** Proposed; awaiting approval.
+
+**Decision:**
+
+- **Roles:** steps require roles (`context_analyst`, `architecture_planner`,
+  `primary_code_executor`, `code_auditor`, `memory_auditor`, `final_verifier`,
+  `format_repair`, `user_reporter`). Each role has a required workspace
+  access: none, read-only snapshot, or candidate write.
+- **Project Execution Profile:** a user-approved, versioned mapping from each
+  role to one primary **AgentProfile**, plus ordered approved fallbacks. Each
+  WorkOrder snapshots the version it was approved with.
+- **AgentProfile:** the canonical name for 07 §4.3 ExecutionProfile, refined.
+  It is the exact runtime/harness, the exact model, the reasoning level,
+  permissions, eligible roles, context policy, budget, limits, fallbacks, and
+  a version fingerprint.
+  - It is immutable once used, and any change is a new version.
+  - The existing `HarnessExecutionProfile` is its runtime subset.
+
+**Rules:**
+
+- A role binding must be eligible, and the exact-type adapter eligibility in
+  `roles.py` (ADR-018/019) stays the enforcement at execution time. A
+  mismatch fails closed.
+- Auditors need a fresh session always, plus the profile's minimum
+  independence (session, model, or provider) for the risk class.
+- Only approved fallbacks may be used without the user, and every switch is
+  recorded.
+
+---
+
+## ADR-028 — USER_ATTENTION_REQUIRED
+
+**Status:** Proposed; awaiting approval.
+
+**Decision:** Whenever a WorkOrder cannot continue within the approved
+envelope, it enters `USER_ATTENTION_REQUIRED`. Examples include exhausted
+attempts or budget, a material deviation, an unavailable agent with no
+approved fallback, an `AUDITOR_ERROR`, a non-`VERIFIED` audit beyond the
+retries, a memory conflict, baseline drift, a promotion "not attempted" or
+"refused", or a risk class that requires a human.
+
+- One attention request shows **all** active reasons together, each with a
+  severity, evidence references, and suggested solutions (advisory, with their
+  source). It supports free-form conversation.
+- The user resolves it with `resume`, `replan`, `change_agent`,
+  `change_budget`, `defer`, or `abort`.
+- Each decision is recorded. `resume` requires every blocking reason to be
+  resolved or explicitly waived by the user.
+- Kernel refusals, including `refused_after_checkpoint` (with the kept
+  checkpoint as evidence), `AUDITOR_ERROR`, and baseline drift are never
+  silently retried or absorbed.
+
+---
+
+## ADR-029 — Performance Memory is advisory and bounded by approved policy
+
+**Status:** Proposed; awaiting approval.
+
+**Decision:** Performance Memory keeps the 09 design (trusted-label rule,
+version fingerprints, cold start, learning stages). It stays separate from
+Project Memory and WorkOrder Memory and never lives in the repository. It
+learns only from verified labels, keyed by AgentProfile version fingerprint,
+role, and task class.
+
+It may recommend in plan proposals, in attention requests, and among approved
+fallbacks, always showing sample size and uncertainty. It may **never** change
+an approved Project Execution Profile, plan, budget, risk class, or independence
+policy, and never selects outside the approved envelope.
