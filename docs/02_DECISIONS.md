@@ -1321,5 +1321,6 @@ modified.
   refuses one.
 - There is no live HarnessRouter proof; all validation is offline.
 
-**Status:** Implemented on `feat/longhorizon-promotion-gate`; not merged.
+**Status:** Implemented on `feat/longhorizon-promotion-gate`; merged into
+`main` with a normal merge commit on top of `b91ab83`.
 See `03_PROGRESS_AND_EVIDENCE.md`.
