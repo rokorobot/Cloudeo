@@ -1,4 +1,4 @@
-import { Chip, Panel, PanelHeader, SectionLabel } from "@/components/common/status";
+import { Chip, Panel, PanelHeader, SectionLabel, TONE_TEXT } from "@/components/common/status";
 import type { FutureStageView, LifecycleStage, StageStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -39,6 +39,19 @@ export function FutureStage({ stage, view, status }: { stage: LifecycleStage; vi
           </ul>
         </div>
       </div>
+      {!!view.facts?.length && (
+        <div className="flex flex-col gap-2.5 border-t border-line-soft p-4.5">
+          <SectionLabel>Recorded</SectionLabel>
+          <dl className="grid max-w-[640px] grid-cols-[170px_1fr] gap-x-3 gap-y-1.5 text-[12.5px]">
+            {view.facts.map((f) => (
+              <div key={f.label} className="contents">
+                <dt className="text-muted-foreground">{f.label}</dt>
+                <dd className={cn("font-mono text-[12px] break-all", f.tone && TONE_TEXT[f.tone])}>{f.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
     </Panel>
   );
 }

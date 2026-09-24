@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { AttentionPanel } from "@/components/work-order/stages/attention-panel";
 import { WORK_ORDERS } from "@/fixtures/work-orders";
-import type { LiveWorkOrder } from "@/state/mission-control";
+import type { LiveWorkOrder } from "@/data/sources";
 
 const base = WORK_ORDERS["WO-1845"];
 const wo: LiveWorkOrder = { ...base, mode: "static", events: [], scriptIndex: 0 };

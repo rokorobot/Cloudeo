@@ -6,10 +6,12 @@ import { cn } from "@/lib/utils";
 
 const STATUS_LABEL: Record<StageStatus, string> = {
   done: "done",
-  active: "running",
+  active: "in progress",
   paused: "paused",
   attention: "attention",
   pending: "—",
+  skipped: "n/a",
+  aborted: "aborted",
 };
 
 function Mark({ status }: { status: StageStatus }) {
@@ -21,6 +23,8 @@ function Mark({ status }: { status: StageStatus }) {
         status === "done" && "border-ok bg-ok",
         status === "active" && "border-brand",
         (status === "paused" || status === "attention") && "border-warn bg-warn/15",
+        status === "skipped" && "border-dashed",
+        status === "aborted" && "border-err bg-err/15",
       )}
     >
       {status === "done" && (
@@ -29,6 +33,7 @@ function Mark({ status }: { status: StageStatus }) {
       {status === "active" && <span className="size-1.5 animate-node-pulse rounded-full bg-brand" />}
       {status === "paused" && <span className="flex gap-[1.5px]"><i className="h-1.5 w-[2px] bg-warn" /><i className="h-1.5 w-[2px] bg-warn" /></span>}
       {status === "attention" && <span className="text-[8px] leading-none font-bold text-warn">!</span>}
+      {status === "aborted" && <span className="h-[1.5px] w-1.5 bg-err" />}
     </span>
   );
 }
@@ -67,6 +72,7 @@ export function LifecycleBar({
                     status === "done" && "text-ok",
                     status === "active" && "text-brand",
                     (status === "paused" || status === "attention") && "text-warn",
+                    status === "aborted" && "text-err",
                   )}
                 >
                   <Mark status={status} />

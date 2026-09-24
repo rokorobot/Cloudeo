@@ -16,6 +16,7 @@ const WO_1842: WorkOrderDetail = {
   cost: { usd: 0.73 },
   blocks: { done: 3, total: 6 },
   hasDetail: true,
+  source: "fixture",
   risk: "medium",
   profile: { id: "catalogue-sync", version: "v12" },
   createdAt: "07:16",
@@ -91,6 +92,7 @@ const WO_1842: WorkOrderDetail = {
   },
 
   execution: {
+    runtime: "simulated",
     currentBlockId: "04",
     blocks: [
       { id: "01", title: "Schema inspection", status: "proven" },
@@ -141,8 +143,8 @@ const WO_1842: WorkOrderDetail = {
     checkpoint: "51bd30a",
     verification: "MATCH",
     tests: [
-      { suite: "control/importer", passed: 41, total: 41 },
-      { suite: "control/catalogue", passed: 28, total: 28 },
+      { suite: "control/importer", result: "passed", counts: { passed: 41, total: 41 } },
+      { suite: "control/catalogue", result: "passed", counts: { passed: 28, total: 28 } },
     ],
     artifactCount: 12,
     proven: [
@@ -233,6 +235,7 @@ const WO_1845: WorkOrderDetail = {
   cost: { usd: 2.41 },
   blocks: { done: 6, total: 6 },
   hasDetail: true,
+  source: "fixture",
   risk: "high",
   profile: { id: "catalogue-deploy", version: "v12" },
   createdAt: "06:02",
@@ -369,6 +372,7 @@ export const ACTIVE: WorkOrderSummary[] = [
     cost: { usd: 1.12 },
     blocks: { done: 2, total: 5 },
     hasDetail: false,
+    source: "fixture",
   },
   {
     id: "WO-1844",
@@ -379,15 +383,16 @@ export const ACTIVE: WorkOrderSummary[] = [
     cost: { usd: 0.09 },
     blocks: { done: 0, total: 4 },
     hasDetail: false,
+    source: "fixture",
   },
 ];
 
 export const ATTENTION: WorkOrderSummary[] = [WO_1845];
 
 export const RECENT: WorkOrderSummary[] = [
-  { id: "WO-1839", title: "Robot discovery run", project: "HumanoidOnline", state: "verified", elapsedSec: 5410, cost: { usd: 3.87 }, blocks: { done: 18, total: 18 }, when: "23:42", hasDetail: false },
-  { id: "WO-1837", title: "Weekly evidence report", project: "Cloudeo core", state: "verified", elapsedSec: 1260, cost: { usd: 0.62 }, blocks: { done: 7, total: 7 }, when: "21:05", hasDetail: false },
-  { id: "WO-1836", title: "Spec sheet normaliser", project: "HumanoidOnline", state: "verified", elapsedSec: 980, cost: { usd: 0.44 }, blocks: { done: 5, total: 5 }, when: "18:30", hasDetail: false },
+  { id: "WO-1839", title: "Robot discovery run", project: "HumanoidOnline", state: "verified", elapsedSec: 5410, cost: { usd: 3.87 }, blocks: { done: 18, total: 18 }, when: "23:42", hasDetail: false, source: "fixture" },
+  { id: "WO-1837", title: "Weekly evidence report", project: "Cloudeo core", state: "verified", elapsedSec: 1260, cost: { usd: 0.62 }, blocks: { done: 7, total: 7 }, when: "21:05", hasDetail: false, source: "fixture" },
+  { id: "WO-1836", title: "Spec sheet normaliser", project: "HumanoidOnline", state: "verified", elapsedSec: 980, cost: { usd: 0.44 }, blocks: { done: 5, total: 5 }, when: "18:30", hasDetail: false, source: "fixture" },
 ];
 
 export function getWorkOrder(id: string): WorkOrderDetail | undefined {

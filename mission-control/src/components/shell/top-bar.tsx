@@ -4,17 +4,19 @@ import Link from "next/link";
 import { PanelRight } from "lucide-react";
 
 import { CloudeoMark } from "@/components/shell/cloudeo-mark";
-import { Dot } from "@/components/common/status";
+import { Chip, Dot } from "@/components/common/status";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { HEALTH } from "@/fixtures/health";
-import { useAnyRunning, useInspector, usePalette } from "@/state/mission-control";
+import { useAnyRunning, useDataSource, useHealth } from "@/data/context";
 import { cn } from "@/lib/utils";
+import { useInspector, usePalette } from "@/state/ui";
 
 export function TopBar() {
   const running = useAnyRunning();
   const palette = usePalette();
   const inspector = useInspector();
-  const degraded = HEALTH.runtimes.filter((r) => r.status !== "healthy").length;
+  const source = useDataSource();
+  const health = useHealth();
+  const degraded = health?.runtimes.filter((r) => r.status !== "healthy").length ?? 0;
 
   return (
     <header className="flex h-12 items-center gap-4 border-b border-line px-4">
@@ -22,16 +24,23 @@ export function TopBar() {
         <CloudeoMark active={running} />
         CLOUDEO
       </Link>
-      <div className="flex items-center gap-2 text-subtle max-md:hidden">
-        <span>Project</span>
-        <span className="font-medium text-foreground">HumanoidOnline</span>
-      </div>
+      {source === "fixture" ? (
+        <div className="flex items-center gap-2 text-subtle max-md:hidden">
+          <span>Project</span>
+          <span className="font-medium text-foreground">HumanoidOnline</span>
+          <Chip className="ml-1">DEMO DATA</Chip>
+        </div>
+      ) : (
+        <Chip tone="brand">CONTROL STORE · READ-ONLY</Chip>
+      )}
       <div className="flex-1" />
       <Tooltip>
         <TooltipTrigger asChild>
           <Link href="/" className="flex items-center gap-2 text-[12px] text-subtle hover:text-foreground">
-            <Dot kind={degraded ? "warn" : "ok"} />
-            <span className="max-md:hidden">{degraded ? `${degraded} runtimes need a look` : "All runtimes healthy"}</span>
+            <Dot kind={!health ? "idle" : degraded ? "warn" : "ok"} />
+            <span className="max-md:hidden">
+              {!health ? "Runtime health not reported" : degraded ? `${degraded} runtimes need a look` : "All runtimes healthy"}
+            </span>
           </Link>
         </TooltipTrigger>
         <TooltipContent>Runtime health is in the Inspector when no WorkOrder is open</TooltipContent>

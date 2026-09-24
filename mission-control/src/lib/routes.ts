@@ -12,5 +12,5 @@ export function useOpenWorkOrder(): { id?: string; stage?: LifecycleStage } {
   const m = path.match(/^\/work-orders\/([^/]+)(?:\/([^/]+))?/);
   if (!m) return {};
   const stage = LIFECYCLE.find((s) => s === m[2]);
-  return { id: decodeURIComponent(m[1]).toUpperCase(), stage };
+  return { id: decodeURIComponent(m[1]), stage };
 }

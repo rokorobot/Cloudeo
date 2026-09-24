@@ -1,9 +1,69 @@
 import { Chip, Panel, PanelFooter, PanelHeader, SectionLabel } from "@/components/common/status";
 import { formatDuration, formatMoney, formatPercent } from "@/lib/format";
-import type { MemoryView } from "@/lib/types";
+import type { LiveWorkOrder } from "@/data/sources";
+import type { MemoryCurationView, MemoryView } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export function MemoryStage({ memory }: { memory: MemoryView }) {
+const CURATION_LABEL: Record<MemoryCurationView["status"], string> = {
+  not_started: "NOT STARTED",
+  curating: "CURATING",
+  auditing: "MEMORY AUDIT",
+  approved: "APPROVED",
+};
+
+/** V2 MEMORY stage: memory curation per block, approved by an independent Memory Audit. */
+function MemoryCuration({ items }: { items: MemoryCurationView[] }) {
+  return (
+    <Panel>
+      <PanelHeader>
+        <SectionLabel>Memory curation</SectionLabel>
+      </PanelHeader>
+      {items.length === 0 ? (
+        <p className="p-3.5 text-subtle">No block in the approved plan has memory impact, so this stage does not apply.</p>
+      ) : (
+        <ul className="flex flex-col">
+          {items.map((m) => (
+            <li key={m.blockId} className="flex flex-col gap-1.5 border-b border-line-soft px-3.5 py-3 last:border-b-0">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="font-mono text-[12px] text-muted-foreground">{m.blockId}</span>
+                <span className="flex-1">{m.blockTitle}</span>
+                <Chip tone={m.status === "approved" ? "ok" : m.status === "not_started" ? "neutral" : "brand"}>{CURATION_LABEL[m.status]}</Chip>
+              </div>
+              {m.changedPaths.length > 0 && (
+                <span className="font-mono text-[11.5px] text-subtle">changed {m.changedPaths.join(", ")}</span>
+              )}
+              {m.outsidePaths.length > 0 && (
+                <span className="font-mono text-[11.5px] text-warn">outside memory_paths: {m.outsidePaths.join(", ")}</span>
+              )}
+              {m.auditor && (
+                <span className="text-[12px] text-muted-foreground">
+                  Memory Audit {m.auditStatus} by <span className="font-mono">{m.auditor}</span>
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <PanelFooter>
+        <span className="text-[12px] text-muted-foreground">
+          Performance memory (verified outcomes per profile) is not recorded by the V2 control store yet.
+        </span>
+      </PanelFooter>
+    </Panel>
+  );
+}
+
+export function MemoryStage({ wo }: { wo: LiveWorkOrder }) {
+  if (wo.memoryCuration) return <MemoryCuration items={wo.memoryCuration} />;
+  if (wo.memory) return <PerformanceMemory memory={wo.memory} />;
+  return (
+    <Panel className="p-5">
+      <p className="text-subtle">Nothing is recorded for this stage.</p>
+    </Panel>
+  );
+}
+
+function PerformanceMemory({ memory }: { memory: MemoryView }) {
   return (
     <Panel>
       <PanelHeader>

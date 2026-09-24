@@ -2,8 +2,14 @@
  * UI-facing view models for Mission Control.
  *
  * These describe what the screens need to render, not the V2 control-store
- * schema. When the backend is wired in, an adapter maps control-store records
- * onto these shapes; components should never import backend types directly.
+ * schema. Two sources fill them:
+ *
+ * - "fixture": local demo data plus a client-side simulation (demo mode);
+ * - "control": the read-only V2 adapter (cloudeo.mission_control), which
+ *   leaves out anything the control store does not hold.
+ *
+ * Optional fields are optional because the control store may not have them.
+ * Components must render their absence explicitly, never substitute a value.
  */
 
 export const LIFECYCLE = [
@@ -18,19 +24,35 @@ export const LIFECYCLE = [
 
 export type LifecycleStage = (typeof LIFECYCLE)[number];
 
-/** How a lifecycle stage appears in the stage bar. */
-export type StageStatus = "done" | "active" | "paused" | "attention" | "pending";
+export const STAGE_STATUSES = ["done", "active", "paused", "attention", "pending", "skipped", "aborted"] as const;
 
-export type WorkOrderState =
-  | "planning"
-  | "executing"
-  | "auditing"
-  | "browsing"
-  | "paused"
-  | "operator"
-  | "attention"
-  | "stopped"
-  | "verified";
+/** How a lifecycle stage appears in the stage bar. "skipped" = not applicable to this block. */
+export type StageStatus = (typeof STAGE_STATUSES)[number];
+
+export const WORK_ORDER_STATES = [
+  // V2 control states
+  "draft",
+  "intake",
+  "plan_proposed",
+  "plan_approved",
+  "executing",
+  "final_verification",
+  "promoted",
+  "attention",
+  "deferred",
+  "aborted",
+  // Demo-only presentation states
+  "auditing",
+  "browsing",
+  "paused",
+  "operator",
+  "stopped",
+  "verified",
+] as const;
+
+export type WorkOrderState = (typeof WORK_ORDER_STATES)[number];
+
+export type DataSource = "fixture" | "control";
 
 export type RiskClass = "low" | "medium" | "high";
 
@@ -46,50 +68,83 @@ export interface WorkOrderSummary {
   title: string;
   project: string;
   state: WorkOrderState;
+  source: DataSource;
   /** Machine-readable reason shown next to the state, e.g. an attention code. */
   reason?: string;
-  elapsedSec: number;
-  cost: Money;
+  /** Not recorded by the control store. */
+  elapsedSec?: number;
+  /** Not recorded by the control store. */
+  cost?: Money;
   blocks?: { done: number; total: number };
   /** Relative or clock time for list rows. */
   when?: string;
-  /** False when fixtures contain only the summary row, not the full WorkOrder. */
+  /** False when only the summary row exists, not the full WorkOrder. */
   hasDetail: boolean;
+}
+
+/** A stored WorkOrder the adapter refused to present. Listed, never hidden. */
+export interface UnsupportedWorkOrder {
+  id: string;
+  unsupported: string;
+  source: "control";
 }
 
 export interface AgentRef {
   role: string;
-  model: string;
-  runtime: string;
-  provider: string;
+  /** Profile identity, e.g. "opus-coder v1". */
+  profile?: string;
+  fallbackCondition?: string;
+  model?: string;
+  runtime?: string;
+  provider?: string;
+}
+
+export interface Budget {
+  usd?: number;
+  maxAttemptsPerBlock?: number;
+  maxDurationSeconds?: number;
+}
+
+export interface Fact {
+  label: string;
+  value: string;
+  tone?: Tone;
 }
 
 export interface WorkOrderDetail extends WorkOrderSummary {
   objective: string;
-  risk: RiskClass;
+  /** Stored record version (control mode). */
+  version?: number;
+  risk?: RiskClass;
   profile: { id: string; version: string };
-  createdAt: string;
-  budget: Money;
+  createdAt?: string;
+  budget?: Budget;
   currentStage: LifecycleStage;
   stages: Record<LifecycleStage, StageStatus>;
-  agent: AgentRef;
+  agent?: AgentRef;
   evidenceCount: number;
-  steps: number;
+  steps?: number;
   plan: PlanView;
   execution?: ExecutionView;
   audit?: AuditView;
-  memory: MemoryView;
+  /** Performance memory (demo only; not in the V2 control store yet). */
+  memory?: MemoryView;
+  /** V2 MEMORY stage: per-block memory curation and Memory Audit. */
+  memoryCuration?: MemoryCurationView[];
   checkpoints: CheckpointView;
   verify: FutureStageView;
   promote: FutureStageView;
   attention?: AttentionView;
+  history?: HistoryEntry[];
+  timestamps?: { label: string; at: string; by?: string }[];
 }
 
 /* ---------- PLAN ---------- */
 
 export interface AcceptanceCriterion {
   text: string;
-  status: "met" | "in_progress" | "pending";
+  /** "unassessed": the control store records criteria, not per-criterion results. */
+  status: "met" | "in_progress" | "pending" | "unassessed";
 }
 
 /** Historical observations. Never a prediction or guarantee. */
@@ -112,13 +167,20 @@ export interface RoutingCandidate {
 
 export interface PlanView {
   acceptanceCriteria: AcceptanceCriterion[];
-  routing: {
+  /** Routing decision (demo only; the control store does not record one yet). */
+  routing?: {
     policy: string;
     decidedAt: string;
     rationale: string;
     candidates: RoutingCandidate[];
     hardConstraints: string[];
   };
+  planVersion?: number;
+  architectureSummary?: string;
+  approval?: { planVersion: number; profileVersion: number; approvedBy: string; approvedAt: string };
+  blocks?: { id: string; order: number; goal: string; scope: string[]; acceptanceChecks: string[]; memoryImpact: boolean }[];
+  /** Role → profile bindings of the WorkOrder's execution profile snapshot. */
+  bindings?: { role: string; primary: string; fallbacks: string[]; fallbackConditions: string[] }[];
 }
 
 /* ---------- EXECUTE ---------- */
@@ -127,6 +189,10 @@ export interface BlockRef {
   id: string;
   title: string;
   status: "proven" | "active" | "pending";
+  /** Raw V2 block status, e.g. "BLOCK_RESULT". */
+  phase?: string;
+  attempts?: number;
+  failedAttempts?: number;
 }
 
 export type ActivityKind = "step" | "operator" | "system";
@@ -157,9 +223,11 @@ export interface ScriptStep {
 }
 
 export interface ExecutionView {
-  currentBlockId: string;
+  currentBlockId?: string;
   blocks: BlockRef[];
-  browser: {
+  /** "unavailable": no executor/browser runtime is connected to this WorkOrder. */
+  runtime: "simulated" | "unavailable";
+  browser?: {
     url: string;
     siteName: string;
     heading: string;
@@ -167,8 +235,8 @@ export interface ExecutionView {
     filters: string[];
     rows: BrowserRow[];
   };
-  seedEvents: ActivityEvent[];
-  script: ScriptStep[];
+  seedEvents?: ActivityEvent[];
+  script?: ScriptStep[];
 }
 
 /* ---------- AUDIT ---------- */
@@ -176,14 +244,17 @@ export interface ExecutionView {
 export interface AuditView {
   blockId: string;
   blockTitle: string;
-  verdict: "BLOCK_DONE" | "BLOCK_REJECTED";
-  executor: string;
+  /** Only BLOCK_DONE is a proven state. */
+  verdict: "BLOCK_DONE" | "NOT_YET_PROVEN" | "CHECKPOINT_REJECTED";
+  executor?: string;
   auditor: string;
+  auditStatus?: string;
+  authoritative?: boolean;
   auditedHead: string;
   contentSha: string;
-  checkpoint: string;
-  verification: "MATCH" | "MISMATCH";
-  tests: { suite: string; passed: number; total: number }[];
+  checkpoint?: string;
+  verification: "MATCH" | "MISMATCH" | "PENDING";
+  tests: { suite: string; result: "passed" | "failed"; counts?: { passed: number; total: number } }[];
   artifactCount: number;
   proven: { value: number; label: string; tone?: Tone }[];
   pendingNote?: string;
@@ -203,15 +274,26 @@ export interface MemoryView {
   }[];
 }
 
+export interface MemoryCurationView {
+  blockId: string;
+  blockTitle: string;
+  status: "not_started" | "curating" | "auditing" | "approved";
+  changedPaths: string[];
+  outsidePaths: string[];
+  auditor?: string;
+  auditStatus?: string;
+}
+
 /* ---------- CHECKPOINT ---------- */
 
 export interface CheckpointView {
-  repo: string;
+  repo?: string;
   items: {
     id: string;
-    sha: string;
+    /** Absent for a candidate that has no checkpoint commit yet. */
+    sha?: string;
     label: string;
-    status: "accepted" | "candidate";
+    status: "baseline" | "accepted" | "candidate" | "rejected";
     auditedBy?: string;
   }[];
 }
@@ -222,29 +304,53 @@ export interface FutureStageView {
   summary: string;
   checks: { text: string; detail?: string }[];
   preconditions: { text: string; met: boolean }[];
+  /** Recorded results, e.g. the final audit or kernel outcome. */
+  facts?: Fact[];
 }
 
 /* ---------- ATTENTION ---------- */
 
 export type ProviderStatus = "healthy" | "degraded" | "unavailable" | "ineligible";
 
+export interface AttentionReason {
+  code: string;
+  severity: "blocking" | "warning";
+  summary: string;
+  evidenceCount: number;
+  suggestions: string[];
+  status: "open" | "resolved" | "waived";
+}
+
 export interface AttentionView {
   code: string;
   headline: string;
-  pausedAtCheckpoint: string;
-  since: string;
-  requirement: {
+  pausedAtCheckpoint?: string;
+  since?: string;
+  raisedFrom?: WorkOrderState;
+  reasons?: AttentionReason[];
+  decisions?: { action: string; actor: string; at: string; message?: string }[];
+  /** Decisions the V2 contract offers; not actionable in read-only mode. */
+  availableDecisions?: string[];
+  requirement?: {
     role: string;
     rule: string;
     executorProvider: string;
   };
-  providers: { provider: string; status: ProviderStatus; detail: string }[];
-  override: {
+  providers?: { provider: string; status: ProviderStatus; detail: string }[];
+  override?: {
     policyPath: string;
     from: string;
     to: string;
     requiredRole: string;
   };
+}
+
+/* ---------- HISTORY ---------- */
+
+export interface HistoryEntry {
+  version: number;
+  event: string;
+  state: WorkOrderState;
 }
 
 /* ---------- HEALTH ---------- */

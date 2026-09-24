@@ -24,10 +24,10 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
-import { WORK_ORDERS } from "@/fixtures/work-orders";
+import { useLiveWorkOrder, useRunCommands, useWorkOrderList } from "@/data/context";
 import { useOpenWorkOrder, woHref } from "@/lib/routes";
 import { LIFECYCLE } from "@/lib/types";
-import { useInspector, useLiveWorkOrder, usePalette, useRunControls } from "@/state/mission-control";
+import { useInspector, usePalette } from "@/state/ui";
 
 const PAGES = [
   { href: "/", label: "Home", icon: House },
@@ -47,7 +47,9 @@ export function CommandPalette() {
   const inspector = useInspector();
   const current = useOpenWorkOrder();
   const wo = useLiveWorkOrder(current.id);
-  const controls = useRunControls(current.id ?? "");
+  const controls = useRunCommands(current.id);
+  const list = useWorkOrderList();
+  const workOrders = list.status === "ready" ? [...list.data.attention, ...list.data.active, ...list.data.recent].filter((w) => w.hasDetail) : [];
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -83,7 +85,7 @@ export function CommandPalette() {
                   </CommandItem>
                 ))}
               </CommandGroup>
-              {wo.execution && (
+              {controls && (
                 <CommandGroup heading={`${wo.id} · actions`}>
                   {wo.mode === "running" && (
                     <CommandItem onSelect={() => run(controls.pause)}><Pause />Pause autonomous execution</CommandItem>
@@ -105,9 +107,9 @@ export function CommandPalette() {
           )}
   
           <CommandGroup heading="WorkOrders">
-            {Object.values(WORK_ORDERS).map((w) => (
-              <CommandItem key={w.id} value={`${w.id} ${w.title} ${w.reason ?? ""}`} onSelect={() => run(() => router.push(woHref(w.id, w.currentStage)))}>
-                {w.attention ? <TriangleAlert className="text-warn" /> : <CirclePlay className="text-brand" />}
+            {workOrders.map((w) => (
+              <CommandItem key={w.id} value={`${w.id} ${w.title} ${w.reason ?? ""}`} onSelect={() => run(() => router.push(woHref(w.id)))}>
+                {w.state === "attention" ? <TriangleAlert className="text-warn" /> : <CirclePlay className="text-brand" />}
                 <span className="font-mono text-[12px] text-muted-foreground">{w.id}</span>
                 <span className="truncate">{w.title}</span>
                 {w.reason && <CommandShortcut className="text-warn">{w.reason}</CommandShortcut>}
