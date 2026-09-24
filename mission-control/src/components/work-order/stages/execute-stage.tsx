@@ -7,9 +7,10 @@ import { Panel, PanelHeader, SectionLabel } from "@/components/common/status";
 import { PauseResumeButton } from "@/components/work-order/run-controls";
 import { SimulatedBrowser } from "@/components/work-order/simulated-browser";
 import { formatDuration } from "@/lib/format";
+import type { LiveWorkOrder } from "@/data/sources";
+import { STATE_LABEL } from "@/lib/format";
 import type { ActivityEvent, ExecutionView } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import type { LiveWorkOrder } from "@/state/mission-control";
 
 function ActivityFeed({ events, running }: { events: ActivityEvent[]; running: boolean }) {
   const ref = useRef<HTMLOListElement>(null);
@@ -47,7 +48,78 @@ function ActivityFeed({ events, running }: { events: ActivityEvent[]; running: b
   );
 }
 
+/** Control mode: nothing is streaming, so say so instead of simulating it. */
+function RuntimeUnavailable({ wo, execution }: { wo: LiveWorkOrder; execution: ExecutionView }) {
+  const current = execution.blocks.find((b) => b.id === execution.currentBlockId);
+  return (
+    <Panel className="flex flex-col gap-4 p-5">
+      <SectionLabel>Live runtime</SectionLabel>
+      <p className="text-[14px]">No executor runtime is connected to this WorkOrder.</p>
+      <dl className="grid max-w-[520px] grid-cols-[170px_1fr] gap-x-3 gap-y-1.5 text-[12.5px]">
+        <dt className="text-muted-foreground">Control state</dt>
+        <dd className="font-mono text-[12px]">{STATE_LABEL[wo.state]}</dd>
+        <dt className="text-muted-foreground">Current block</dt>
+        <dd className="font-mono text-[12px]">{current ? `${current.id} · ${current.phase ?? current.status}` : "none (all blocks proven)"}</dd>
+        {current?.attempts !== undefined && (
+          <>
+            <dt className="text-muted-foreground">Attempts recorded</dt>
+            <dd className="font-mono text-[12px]">
+              {current.attempts}
+              {current.failedAttempts ? ` · ${current.failedAttempts} failed` : ""}
+            </dd>
+          </>
+        )}
+        <dt className="text-muted-foreground">Runtime telemetry</dt>
+        <dd className="font-mono text-[12px] text-muted-foreground">unavailable</dd>
+        <dt className="text-muted-foreground">Browser session</dt>
+        <dd className="font-mono text-[12px] text-muted-foreground">unavailable</dd>
+      </dl>
+      <p className="max-w-[70ch] text-[12.5px] text-muted-foreground">
+        The V2 control store records block state and evidence, not live frames, tool events, cost or elapsed time. Those appear here once a
+        runtime-event adapter is connected.
+      </p>
+    </Panel>
+  );
+}
+
+function Blocks({ execution, live }: { execution: ExecutionView; live: boolean }) {
+  return (
+    <ol aria-label="Blocks" className="grid grid-cols-3 gap-2.5 xl:grid-cols-6">
+      {execution.blocks.map((b) => (
+        <li
+          key={b.id}
+          className={cn(
+            "flex flex-col gap-1 rounded-lg border border-line bg-panel px-3 py-2.5",
+            b.status === "active" && "border-brand/35",
+            b.status === "pending" && "bg-transparent",
+          )}
+        >
+          <span className="flex items-center justify-between font-mono text-[11.5px]">
+            <span className={cn(b.status === "proven" && "text-ok", b.status === "active" && "text-brand", b.status === "pending" && "text-muted-foreground")}>
+              BLOCK {b.id}
+            </span>
+            {b.status === "proven" && <Check className="size-3.5 text-ok" aria-label="proven" />}
+            {b.status === "active" && (
+              <span className={cn("size-1.5 rounded-full bg-brand", live && "animate-node-pulse")} aria-label={b.phase ?? "in progress"} />
+            )}
+          </span>
+          <span className={cn("text-[12px] text-subtle", b.status === "pending" && "text-muted-foreground")}>{b.title}</span>
+          {b.phase && <span className="font-mono text-[10.5px] tracking-[0.04em] text-muted-foreground">{b.phase}</span>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export function ExecuteStage({ wo, execution }: { wo: LiveWorkOrder; execution: ExecutionView }) {
+  if (execution.runtime === "unavailable" || !execution.browser || !execution.script) {
+    return (
+      <>
+        <RuntimeUnavailable wo={wo} execution={execution} />
+        <Blocks execution={execution} live={false} />
+      </>
+    );
+  }
   const script = execution.script;
   const lastStep = wo.scriptIndex > 0 ? script[(wo.scriptIndex - 1) % script.length] : undefined;
   const modeText = {
@@ -56,6 +128,7 @@ export function ExecuteStage({ wo, execution }: { wo: LiveWorkOrder; execution: 
     operator: "You have control · agent paused",
     stopped: "Stopped",
     static: "",
+    readonly: "",
   }[wo.mode];
 
   return (
@@ -73,33 +146,13 @@ export function ExecuteStage({ wo, execution }: { wo: LiveWorkOrder; execution: 
           <PanelHeader>
             <SectionLabel>Agent activity</SectionLabel>
             <span className="flex-1" />
-            <span className="font-mono text-[11.5px] text-muted-foreground">{wo.agent.model}</span>
+            <span className="font-mono text-[11.5px] text-muted-foreground">{wo.agent?.model}</span>
           </PanelHeader>
           <ActivityFeed events={wo.events} running={wo.mode === "running"} />
         </Panel>
       </div>
 
-      <ol aria-label="Blocks" className="grid grid-cols-3 gap-2.5 xl:grid-cols-6">
-        {execution.blocks.map((b) => (
-          <li
-            key={b.id}
-            className={cn(
-              "flex flex-col gap-1 rounded-lg border border-line bg-panel px-3 py-2.5",
-              b.status === "active" && "border-brand/35",
-              b.status === "pending" && "bg-transparent",
-            )}
-          >
-            <span className="flex items-center justify-between font-mono text-[11.5px]">
-              <span className={cn(b.status === "proven" && "text-ok", b.status === "active" && "text-brand", b.status === "pending" && "text-muted-foreground")}>
-                BLOCK {b.id}
-              </span>
-              {b.status === "proven" && <Check className="size-3.5 text-ok" aria-label="proven" />}
-              {b.status === "active" && <span className="size-1.5 animate-node-pulse rounded-full bg-brand" aria-label="executing" />}
-            </span>
-            <span className={cn("text-[12px] text-subtle", b.status === "pending" && "text-muted-foreground")}>{b.title}</span>
-          </li>
-        ))}
-      </ol>
+      <Blocks execution={execution} live={wo.mode === "running"} />
     </>
   );
 }

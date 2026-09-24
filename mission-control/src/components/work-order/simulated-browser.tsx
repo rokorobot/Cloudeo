@@ -5,7 +5,8 @@ import { Hand, Play } from "lucide-react";
 import { Panel } from "@/components/common/status";
 import type { ExecutionView, ScriptStep } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { useRunControls, type RunMode } from "@/state/mission-control";
+import { useRunCommands } from "@/data/context";
+import type { RunMode } from "@/data/sources";
 
 /**
  * A stand-in for a live browser stream. The "page" is plain markup from
@@ -17,12 +18,12 @@ export function SimulatedBrowser({
   mode,
   woId,
 }: {
-  browser: ExecutionView["browser"];
+  browser: NonNullable<ExecutionView["browser"]>;
   step?: ScriptStep;
   mode: RunMode;
   woId: string;
 }) {
-  const controls = useRunControls(woId);
+  const controls = useRunCommands(woId);
   const operator = mode === "operator";
   const live = mode === "running" || operator;
   const cursor = step?.cursor ?? { x: 12, y: 10 };
@@ -112,7 +113,7 @@ export function SimulatedBrowser({
         )}
       </div>
 
-      {mode !== "stopped" && (
+      {controls && mode !== "stopped" && (
         <button
           type="button"
           onClick={operator ? controls.handBack : controls.takeControl}

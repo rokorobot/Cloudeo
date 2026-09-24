@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { initialState, reducer } from "@/state/mission-control";
+import { initialState, reducer } from "@/data/fixture-provider";
 
 const ID = "WO-1842";
 const run = (s: ReturnType<typeof initialState>) => s.runs[ID];

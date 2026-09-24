@@ -16,11 +16,21 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { NOT_CONNECTED } from "@/components/work-order/run-controls";
+import type { LiveWorkOrder } from "@/data/sources";
+import { formatTimestamp, shortSha } from "@/lib/format";
 import type { AttentionView } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import type { LiveWorkOrder } from "@/state/mission-control";
 
 const MIN_REASON = 20;
+
+/** The demo attention fixture carries requirement, provider health and override details. */
+type DemoAttentionView = AttentionView &
+  Required<Pick<AttentionView, "requirement" | "providers" | "override" | "pausedAtCheckpoint" | "since">>;
+
+function isDemoAttention(a: AttentionView): a is DemoAttentionView {
+  return !!(a.requirement && a.providers && a.override && a.pausedAtCheckpoint && a.since);
+}
 
 function RecoveryAction({
   icon: Icon,
@@ -49,7 +59,7 @@ function RecoveryAction({
   );
 }
 
-function OwnerOverrideDialog({ wo, attention }: { wo: LiveWorkOrder; attention: AttentionView }) {
+function OwnerOverrideDialog({ wo, attention }: { wo: LiveWorkOrder; attention: DemoAttentionView }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [ack, setAck] = useState(false);
@@ -167,7 +177,7 @@ function OwnerOverrideDialog({ wo, attention }: { wo: LiveWorkOrder; attention: 
   );
 }
 
-export function AttentionPanel({ wo, attention }: { wo: LiveWorkOrder; attention: AttentionView }) {
+function DemoAttention({ wo, attention }: { wo: LiveWorkOrder; attention: DemoAttentionView }) {
   const req = attention.requirement;
   return (
     <div className="grid gap-3.5 xl:grid-cols-[minmax(0,640px)_1fr]">
@@ -241,4 +251,85 @@ export function AttentionPanel({ wo, attention }: { wo: LiveWorkOrder; attention
       </div>
     </div>
   );
+}
+
+const REASON_STATUS_CLASS = { open: "text-warn", resolved: "text-ok", waived: "text-subtle" } as const;
+
+/** Control mode: exactly what the open AttentionRequest records, and no actions. */
+function ControlAttention({ attention }: { attention: AttentionView }) {
+  const reasons = attention.reasons ?? [];
+  const waived = reasons.filter((r) => r.status === "waived");
+  return (
+    <div className="grid gap-3.5 xl:grid-cols-[minmax(0,640px)_1fr]">
+      <Panel role="alert" className="border-warn/40 bg-[linear-gradient(color-mix(in_oklab,var(--cl-warn)_7%,transparent),color-mix(in_oklab,var(--cl-warn)_7%,transparent)),var(--cl-panel)]">
+        <header className="flex items-center gap-2.5 border-b border-warn/35 px-4 py-3 text-[11px] font-medium tracking-[0.1em] text-warn">
+          <TriangleAlert className="size-4" /> ATTENTION REQUIRED
+        </header>
+        <div className="flex flex-col gap-3.5 p-4">
+          <div className="flex flex-col gap-1">
+            <span className="font-mono text-[15px] font-medium tracking-[0.02em]">{attention.code}</span>
+            <p className="text-subtle">{attention.headline}</p>
+          </div>
+          <ul className="flex flex-col gap-2.5 rounded-lg border border-line bg-ground p-3.5">
+            {reasons.map((r) => (
+              <li key={r.code} className="flex flex-col gap-1">
+                <div className="flex flex-wrap items-center gap-2.5 text-[12.5px]">
+                  <span className="font-mono text-[12px]">{r.code}</span>
+                  <span className="text-muted-foreground">{r.severity}</span>
+                  <span className={REASON_STATUS_CLASS[r.status]}>{r.status}</span>
+                  <span className="flex-1" />
+                  <span className="font-mono text-[11px] text-muted-foreground">{r.evidenceCount} evidence refs</span>
+                </div>
+                <span className="text-[12.5px] text-subtle">{r.summary}</span>
+                {r.suggestions.map((s) => (
+                  <span key={s} className="text-[12px] text-muted-foreground">Suggested: {s}</span>
+                ))}
+              </li>
+            ))}
+          </ul>
+          <div className="flex items-start gap-2.5 rounded-lg border border-line bg-ground px-3 py-2.5 text-[12.5px]">
+            <Dot kind="warn" className="mt-1.5" />
+            <span>
+              Raised from <span className="font-mono text-[12px]">{attention.raisedFrom}</span>
+              {attention.pausedAtCheckpoint && (
+                <>
+                  {" "}with accepted checkpoint <span className="font-mono text-[12px]">{shortSha(attention.pausedAtCheckpoint)}</span>
+                </>
+              )}
+              . Nothing proceeds until a decision is recorded.{" "}
+              <b className="font-medium">{waived.length ? `${waived.length} reason(s) waived by a recorded decision.` : "No reason has been waived."}</b>
+            </span>
+          </div>
+          {!!attention.decisions?.length && (
+            <div className="flex flex-col gap-1.5">
+              <SectionLabel>Decisions recorded</SectionLabel>
+              {attention.decisions.map((d) => (
+                <span key={`${d.action}-${d.at}`} className="text-[12.5px] text-subtle">
+                  <span className="font-mono text-[12px] text-foreground">{d.action}</span> by {d.actor} · {formatTimestamp(d.at)}
+                  {d.message ? ` · ${d.message}` : ""}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </Panel>
+
+      <div className="flex flex-col gap-2.5">
+        <SectionLabel>Decisions the V2 contract offers</SectionLabel>
+        <div className="flex flex-wrap gap-2">
+          {(attention.availableDecisions ?? []).map((a) => (
+            <Button key={a} variant="outline" size="sm" disabled title={NOT_CONNECTED} className="font-mono">
+              {a}
+            </Button>
+          ))}
+        </div>
+        <p className="text-[12.5px] text-muted-foreground">{NOT_CONNECTED}. Mission Control is reading the control store; it cannot record decisions.</p>
+      </div>
+    </div>
+  );
+}
+
+export function AttentionPanel({ wo, attention }: { wo: LiveWorkOrder; attention: AttentionView }) {
+  if (wo.source === "fixture" && isDemoAttention(attention)) return <DemoAttention wo={wo} attention={attention} />;
+  return <ControlAttention attention={attention} />;
 }

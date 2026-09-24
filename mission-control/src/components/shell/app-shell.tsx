@@ -8,7 +8,7 @@ import { SideNav } from "@/components/shell/side-nav";
 import { StatusBar } from "@/components/shell/status-bar";
 import { TopBar } from "@/components/shell/top-bar";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
-import { useInspector } from "@/state/mission-control";
+import { useInspector } from "@/state/ui";
 
 const WIDE = "(min-width: 1024px)";
 

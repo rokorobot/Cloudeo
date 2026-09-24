@@ -15,8 +15,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { ACTIVE, ATTENTION } from "@/fixtures/work-orders";
 import { Dot } from "@/components/common/status";
+import { useDataSource, useWorkOrderList } from "@/data/context";
+import { useOpenWorkOrder } from "@/lib/routes";
 import { cn } from "@/lib/utils";
 
 interface Item {
@@ -27,15 +28,6 @@ interface Item {
   tone?: "warn";
   match?: (path: string) => boolean;
 }
-
-const isAttentionWorkOrder = (p: string) =>
-  ATTENTION.some((wo) => p.toUpperCase().startsWith(`/WORK-ORDERS/${wo.id}`));
-
-const PRIMARY: Item[] = [
-  { href: "/", label: "Home", icon: House, match: (p) => p === "/" },
-  { href: "/runs", label: "Runs", icon: CirclePlay, count: ACTIVE.length, match: (p) => p.startsWith("/runs") || (p.startsWith("/work-orders") && !isAttentionWorkOrder(p)) },
-  { href: "/attention", label: "Attention", icon: TriangleAlert, count: ATTENTION.length, tone: "warn", match: (p) => p.startsWith("/attention") || isAttentionWorkOrder(p) },
-];
 
 const SECONDARY: Item[] = [
   { href: "/agents", label: "Agents", icon: Bot },
@@ -71,6 +63,16 @@ function NavLink({ item, path }: { item: Item; path: string }) {
 
 export function SideNav() {
   const path = usePathname();
+  const source = useDataSource();
+  const list = useWorkOrderList();
+  const open = useOpenWorkOrder();
+  const ready = list.status === "ready" ? list.data : undefined;
+  const openIsAttention = !!open.id && !!ready?.attention.some((w) => w.id === open.id);
+  const PRIMARY: Item[] = [
+    { href: "/", label: "Home", icon: House, match: (p) => p === "/" },
+    { href: "/runs", label: "Runs", icon: CirclePlay, count: ready?.active.length, match: (p) => p.startsWith("/runs") || (p.startsWith("/work-orders") && !openIsAttention) },
+    { href: "/attention", label: "Attention", icon: TriangleAlert, count: ready?.attention.length, tone: "warn", match: (p) => p.startsWith("/attention") || openIsAttention },
+  ];
   return (
     <nav aria-label="Workspace" className="flex h-full flex-col gap-0.5 overflow-y-auto border-r border-line px-2.5 py-3.5">
       <span className="label-caps px-2.5 pt-1 pb-1.5 max-lg:hidden">Workspace</span>
@@ -79,14 +81,14 @@ export function SideNav() {
       {SECONDARY.map((i) => <NavLink key={i.href} item={i} path={path} />)}
       <div className="mx-2 my-2.5 h-px bg-line-soft" />
       <NavLink item={{ href: "/projects", label: "Projects", icon: FolderKanban }} path={path} />
-      <div className="flex flex-col gap-0.5 pl-6 max-lg:hidden">
+      {source === "fixture" && <div className="flex flex-col gap-0.5 pl-6 max-lg:hidden">
         <Link href="/projects" className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[12.5px] text-subtle hover:bg-hover hover:text-foreground">
           <Dot kind="running" /> HumanoidOnline
         </Link>
         <Link href="/projects" className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[12.5px] text-subtle hover:bg-hover hover:text-foreground">
           <Dot kind="idle" /> Cloudeo core
         </Link>
-      </div>
+      </div>}
     </nav>
   );
 }

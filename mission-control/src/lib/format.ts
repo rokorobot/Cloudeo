@@ -18,26 +18,51 @@ export function formatPercent(n: number, d: number): string {
   return `${Math.round((n / d) * 100)}%`;
 }
 
+/** Stored ISO timestamp → "2026-09-23 12:00 UTC". Shows the stored value; never "now". */
+export function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+export function shortSha(sha: string | undefined): string | undefined {
+  return sha && /^[0-9a-f]{40,64}$/.test(sha) ? sha.slice(0, 7) : sha;
+}
+
 export const STATE_LABEL: Record<WorkOrderState, string> = {
-  planning: "PLANNING",
+  draft: "DRAFT",
+  intake: "CONTEXT INTAKE",
+  plan_proposed: "PLAN PROPOSED",
+  plan_approved: "PLAN APPROVED",
   executing: "EXECUTING",
+  final_verification: "FINAL VERIFICATION",
+  promoted: "PROMOTED",
+  attention: "ATTENTION",
+  deferred: "DEFERRED",
+  aborted: "ABORTED",
   auditing: "AUDITING",
   browsing: "BROWSING",
   paused: "PAUSED",
   operator: "OPERATOR CONTROL",
-  attention: "ATTENTION",
   stopped: "STOPPED",
   verified: "VERIFIED",
 };
 
 export const STATE_TONE: Record<WorkOrderState, Tone> = {
-  planning: "brand",
+  draft: "neutral",
+  intake: "brand",
+  plan_proposed: "neutral",
+  plan_approved: "brand",
   executing: "brand",
+  final_verification: "brand",
+  promoted: "ok",
+  attention: "warn",
+  deferred: "neutral",
+  aborted: "err",
   auditing: "brand",
   browsing: "brand",
   paused: "warn",
   operator: "warn",
-  attention: "warn",
   stopped: "err",
   verified: "ok",
 };

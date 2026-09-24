@@ -15,10 +15,20 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { useRunControls, type LiveWorkOrder } from "@/state/mission-control";
+import { useRunCommands } from "@/data/context";
+import type { LiveWorkOrder } from "@/data/sources";
+
+export const NOT_CONNECTED = "Control actions not connected yet";
 
 export function PauseResumeButton({ wo }: { wo: LiveWorkOrder }) {
-  const c = useRunControls(wo.id);
+  const c = useRunCommands(wo.id);
+  if (!c) {
+    return (
+      <Button variant="outline" size="sm" disabled title={NOT_CONNECTED}>
+        <Pause /> Pause
+      </Button>
+    );
+  }
   if (wo.mode === "paused") {
     return (
       <Button variant="outline" size="sm" onClick={c.resume}>
@@ -34,7 +44,14 @@ export function PauseResumeButton({ wo }: { wo: LiveWorkOrder }) {
 }
 
 export function StopButton({ wo }: { wo: LiveWorkOrder }) {
-  const c = useRunControls(wo.id);
+  const c = useRunCommands(wo.id);
+  if (!c) {
+    return (
+      <Button variant="outline" size="sm" disabled title={NOT_CONNECTED}>
+        <Square /> Stop
+      </Button>
+    );
+  }
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
