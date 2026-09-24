@@ -1719,3 +1719,126 @@ class, or independence policy. Jev used for policy follows the same bound.
 **Storage:** the Cloudeo control store (SQLite initially) sits behind a
 storage interface with record versions and compare-and-swap transitions, so
 PostgreSQL can replace it without changing WorkOrder semantics.
+
+---
+
+## ADR-030 — Orchestration boundary: runtime integration above the control layer
+
+**Status:** Proposed (2026-09-24); not yet implemented. Code for V2C-04 and
+V2C-22 waits for this ADR to be accepted.
+
+**Context:** `cloudeo.control` (ADR-022 to ADR-029) is pure. It holds the
+WorkOrder and block state machines, the Project Execution Profile, and the
+invariant checks, and V2C-01 (K1) forbids it to import the broker, bridge,
+LongHorizon, or `subprocess`. Its remaining DEFERRED obligations all need
+facts only runtime components can supply: a real `GatedPromotionResult`
+(V2C-04), the broker's accepted baseline (V2C-22), runner-created
+`SessionEvidence` (V2C-14/V2C-20), and later a `CheckpointProof` from Git
+objects (V2C-19). `14_V2C_TRACEABILITY.md` records these as trusted runtime
+inputs whose producers do not exist yet. They need one home, with one rule
+for how they enter the control layer, instead of an exception for each.
+
+**Decision:** add a package `cloudeo.orchestration`, the runtime integration
+layer.
+
+- **`cloudeo.control` stays the pure policy and state-machine layer.**
+  Nothing about it changes, including V2C-01.
+- **`cloudeo.orchestration` acquires trusted runtime evidence; `cloudeo.control`
+  evaluates it.** Orchestration calls runtime components, observes their
+  results, converts them into control-layer inputs (`KernelOutcome`, the
+  accepted baseline, `SessionEvidence`, later `CheckpointProof` and
+  normalized audit records), applies them only through the
+  `cloudeo.control.machine` functions, and persists through `ControlStore`.
+- **Scope rule (no dumping ground):** `cloudeo.orchestration` coordinates
+  runtime components and converts trusted runtime observations into control
+  inputs. Policy belongs in `cloudeo.control`; low-level broker, Git, bridge,
+  and kernel behavior stays in its existing owning package. A change that
+  decides *whether* something is allowed goes into `cloudeo.control`. A
+  change to *how* a runtime component works goes into that component's
+  package.
+- **Orchestration never weakens or bypasses a control decision.** It does not
+  construct or `evolve()` WorkOrders itself, does not pick profiles or
+  fallbacks on its own authority, and does not reinterpret a rejection or an
+  attention request as success.
+- **Promotion stays gate-owned (K1 still applies).** Orchestration may invoke
+  the authorized gate path (`checkpoint_and_promote_verified()`, or
+  `run_managed_with_promotion_gate()` which calls it). It never calls
+  `WorkspaceBroker.promote()`, `checkpoint_candidate()`, `reject()`, or
+  `cleanup()` directly, and never writes `refs/cloudeo`.
+
+**Dependency direction** (one way):
+
+| Package | May import | Must not import or call |
+| --- | --- | --- |
+| `cloudeo.control` | standard library, pydantic, `cloudeo.workspace.models` | `cloudeo.orchestration`; broker, bridge, LongHorizon, `subprocess` (V2C-01, unchanged) |
+| `cloudeo.orchestration` | `cloudeo.control`; the `WorkspaceBroker` protocol and `cloudeo.workspace.models`; the gate entry points and result types in `cloudeo.longhorizon` | `cloudeo.workspace.git` (the concrete implementation is injected); `subprocess`; direct `promote()`, `checkpoint_candidate()`, `reject()`, `cleanup()` calls; `refs/cloudeo` or `update-ref` strings |
+| authorized gate (`cloudeo.longhorizon.promotion_gate`) | unchanged | unchanged; it remains the only promotion path |
+
+V2C-01 stays scoped to `cloudeo.control`. It does not forbid orchestration to
+import the runtime interfaces orchestration exists to integrate.
+
+**Mechanical checks** (added with the first implementation slice, in the style
+of the V2C-01 AST checker, each with a negative test against violating code):
+
+1. `cloudeo.control` imports nothing from `cloudeo.orchestration`.
+2. `cloudeo.orchestration` makes no `promote`, `checkpoint_candidate`,
+   `reject`, or `cleanup` attribute call, imports neither
+   `cloudeo.workspace.git` nor `subprocess`, and has no `refs/cloudeo` or
+   `update-ref` string.
+3. `cloudeo.orchestration` makes no `.evolve(` call and constructs no
+   `WorkOrder`: WorkOrders change only through `cloudeo.control.machine`.
+
+**First slice (V2C-04 and V2C-22 only):**
+
+- **V2C-04:** one deterministic function `GatedPromotionResult → KernelOutcome`:
+  - `promotion_attempted = True` (the gate ran);
+  - `stage` = the result's `stage`;
+  - `checkpoint_commit` = `checkpoint.commit` when a checkpoint exists, else
+    `None`;
+  - `reason` = `decision.reason`;
+  - `evidence` = `EvidenceRef(kind="gated_promotion_result",
+    ref=<canonical SHA-256 of the result>)`, so the same result always maps to
+    the same outcome.
+  - It fails closed: if the result is internally inconsistent (for example
+    `stage == "promoted"` without a checkpoint or a `PromotionResult`), it
+    raises instead of producing an outcome. The mapped
+    `KernelOutcome.promoted` must equal `GatedPromotionResult.promoted` for
+    every input.
+- **V2C-22:** read `WorkspaceBroker.accepted_state()` and pass its
+  `accepted_commit` into the existing `accepted_baseline=` parameters
+  (`start_intake`, `attach_candidate`, `start_execution`,
+  `enter_final_verification`, `decide`, `resume_deferred`). Its `workspace_id`
+  must equal the candidate's once one is attached. Drift handling stays
+  entirely in `cloudeo.control`.
+- Validation stays offline: a real `GitWorkspaceBroker` on a temporary
+  repository, and gate results produced by the real gate.
+
+**Trust boundary:** the control layer still cannot tell who built a record;
+any caller can construct a `KernelOutcome` or pass a baseline. As with
+`SessionEvidence`, ENFORCED for V2C-04 and V2C-22 will mean: the
+orchestration path is the producer, it is tested against the real gate and
+broker, and the mechanical checks hold. It will not mean that the control
+layer authenticates its inputs.
+
+**Explicitly not in this ADR's first slice:**
+
+- V2C-02 (dispatch only through `begin_attempt`), V2C-09 (execution-time
+  `memory_paths` restriction), V2C-19 (block checkpoints), and V2C-20 (the
+  final verification runner). The new package does not make them in scope.
+- The `SessionEvidence` producer for code and Memory Audits (the open
+  obligation in `14_V2C_TRACEABILITY.md`). It belongs to orchestration, in a
+  later slice.
+- Mapping `ManagedPromotionResult` "not attempted" outcomes. No manager run is
+  invoked in this slice.
+- Any change to the kernel, broker, bridge, adapters, gate, or LongHorizon.
+
+**Open question:** before a candidate is attached (at intake), which
+workspace belongs to a WorkOrder's project? The contract's `ProjectTarget`
+(§4.1) is not implemented. The first slice takes the broker for the
+project's workspace as an explicit argument and records its `workspace_id`
+as evidence, rather than inventing a project-to-workspace registry.
+
+**Consequences:** each deferred obligation gets one place for its producer,
+and one rule for how that producer's output reaches policy. The package
+boundary is mechanically checked from the first line of code, so it cannot
+erode silently.
