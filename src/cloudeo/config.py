@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 18800
     database_url: str = "sqlite+aiosqlite:///./cloudeo.db"
+    # V2 control store, read by Mission Control (read-only).
+    control_db_path: str = "./control.db"
 
     jev_backend: str = "mock"
     jev_model: str = "typesafe/jev-1.13"

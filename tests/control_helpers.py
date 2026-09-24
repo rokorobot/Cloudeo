@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 
 from cloudeo.control import machine as m
 from cloudeo.control.model import (
+    AttentionCode,
+    AttentionReason,
     AuditRecord,
     BlockSpec,
     Budget,
@@ -203,3 +205,79 @@ def final_verification(wo=None):
     wo = block_done(wo or executing())
     wo = m.enter_final_verification(wo, accepted_baseline=BASE)
     return m.record_final_audit(wo, audit(state(), Role.FINAL_VERIFIER, FINAL))
+
+
+# --- Stored WorkOrders for the Mission Control read path ---
+
+
+def _persist(store, work_order, steps):
+    wo = store.create(work_order, event="created")
+    for event, step in steps:
+        wo = store.update(step(wo), expected_version=wo.version, event=event)
+    return wo
+
+
+def _to_execution(blocks):
+    return [
+        ("intake_started", lambda w: m.start_intake(w, accepted_baseline=BASE)),
+        ("plan_proposed", lambda w: m.propose_plan(w, plan(blocks=blocks))),
+        (
+            "plan_approved",
+            lambda w: m.approve_plan(w, plan_version=1, approved_by="robert", approved_at=NOW),
+        ),
+        (
+            "candidate_attached",
+            lambda w: m.attach_candidate(
+                w,
+                Candidate(workspace_id="demo", candidate_id="cand1", base_commit=BASE),
+                accepted_baseline=BASE,
+            ),
+        ),
+        ("execution_started", lambda w: m.start_execution(w, accepted_baseline=BASE)),
+    ]
+
+
+def persist_attention_work_order(store):
+    """wo-1: block b1 proven, then INDEPENDENCE_UNAVAILABLE while executing."""
+    return _persist(
+        store,
+        new_work_order(),
+        [
+            *_to_execution((spec("b1", 1), spec("b2", 2))),
+            ("block_b1_done", lambda w: block_done(w, "b1")),
+            (
+                "attention_raised",
+                lambda w: m.raise_attention(
+                    w,
+                    AttentionReason(
+                        code=AttentionCode.INDEPENDENCE_UNAVAILABLE,
+                        summary="no independent final_verifier",
+                        evidence=(ref("health", "h-1"),),
+                    ),
+                ),
+            ),
+        ],
+    )
+
+
+def persist_candidate_work_order(store):
+    """wo-2: block b1 code-approved and waiting for its checkpoint proof."""
+    work_order = m.create_work_order(
+        work_order_id="wo-2",
+        project_id="demo",
+        objective="Refresh the importer.",
+        memory_paths=MEMORY_PATHS,
+        execution_profile=project_profile(),
+    )
+    return _persist(
+        store,
+        work_order,
+        [
+            *_to_execution((spec("b1", 1),)),
+            ("block_b1_code_approved", lambda w: code_approved(w, "b1")),
+            (
+                "block_b1_checkpoint",
+                lambda w: m.enter_block_checkpoint(w, "b1", current_state=state()),
+            ),
+        ],
+    )

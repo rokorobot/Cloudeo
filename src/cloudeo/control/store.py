@@ -250,6 +250,12 @@ class SqliteControlStore:
             ),
         )
 
+    def work_order_ids(self) -> list[str]:
+        """Every stored WorkOrder id, sorted. Read-only; used by read-side views."""
+        with closing(self._connect()) as db:
+            rows = db.execute("SELECT work_order_id FROM work_orders ORDER BY work_order_id")
+            return [row[0] for row in rows.fetchall()]
+
     def events(self, work_order_id: str) -> list[ControlEvent]:
         with closing(self._connect()) as db:
             rows = db.execute(
