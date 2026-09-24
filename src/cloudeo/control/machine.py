@@ -16,7 +16,10 @@ from datetime import datetime
 
 from cloudeo.control.model import (
     ATTENTION_SOURCES,
+    AUDITED_PRODUCERS,
     TERMINAL,
+    WRITE_CAPABLE_ROLES,
+    AgentProfile,
     AttemptRecord,
     AttentionCode,
     AttentionReason,
@@ -28,6 +31,7 @@ from cloudeo.control.model import (
     ChangeRecord,
     CheckpointProof,
     Deviation,
+    DirectToolProfile,
     EnvelopeAmendment,
     EvidenceRef,
     KernelOutcome,
@@ -35,6 +39,7 @@ from cloudeo.control.model import (
     PlanVersion,
     ProfileRef,
     ProjectExecutionProfile,
+    RiskClass,
     Role,
     StateIdentity,
     TestRecord,
@@ -43,8 +48,11 @@ from cloudeo.control.model import (
     WorkOrder,
     WorkOrderStatus,
     code_approval_problem,
+    independence_gaps,
     memory_approval_problem,
 )
+
+Profile = AgentProfile | DirectToolProfile
 
 S = WorkOrderStatus
 B = BlockStatus
@@ -147,13 +155,28 @@ def approve_plan(
         approved_by=approved_by,
         approved_at=approved_at,
     )
-    return work_order.evolve(
+    approved = work_order.evolve(
         status=S.PLAN_APPROVED,
         approvals=(*work_order.approvals, approval),
         budget=work_order.budget or plan.budget,
         blocks=blocks,
         superseded_blocks=(*work_order.superseded_blocks, *superseded),
     )
+    # V2C-14: the bound auditors must be able to meet the policy for this risk
+    # class against the bound primaries; fallbacks are judged when used.
+    memory = any(spec.memory_impact for spec in plan.blocks)
+    gaps: list[str] = []
+    for role, producer_roles in AUDITED_PRODUCERS.items():
+        auditor = _bound_primary(approved, role)
+        producers = tuple(
+            p
+            for r in producer_roles
+            if r != Role.MEMORY_CURATOR or memory
+            if (p := _bound_primary(approved, r)) is not None
+        )
+        if auditor is not None and producers:
+            gaps += _gaps(approved, plan.risk_class, role, auditor, producers)
+    return _independence_attention(approved, gaps) if gaps else approved
 
 
 def reject_plan(work_order: WorkOrder) -> WorkOrder:
@@ -219,7 +242,18 @@ def record_final_audit(work_order: WorkOrder, audit: AuditRecord) -> WorkOrder:
     _require_status(work_order, S.FINAL_VERIFICATION)
     _require(audit.role == Role.FINAL_VERIFIER, "role", "the final audit is by final_verifier")
     _check_profile(work_order, audit.role, audit.auditor, None, None)
-    return work_order.evolve(final_audit=audit)
+    auditor = work_order.execution_profile.profile(audit.auditor)
+    # Independent from every write-capable profile whose changes remain (§8.6).
+    written = tuple(
+        work_order.used_profile(a.profile)
+        for b in (*work_order.blocks, *work_order.superseded_blocks)
+        for a in b.attempts
+        if a.role in WRITE_CAPABLE_ROLES
+    )
+    gaps = _gaps(work_order, work_order.approved_plan.risk_class, audit.role, auditor, written)
+    if gaps:
+        return _independence_attention(work_order, gaps)
+    return _use(work_order, auditor).evolve(final_audit=audit)
 
 
 def record_kernel_outcome(work_order: WorkOrder, outcome: KernelOutcome) -> WorkOrder:
@@ -483,6 +517,57 @@ def _check_profile(
     )
 
 
+def _use(work_order: WorkOrder, profile: Profile) -> WorkOrder:
+    """Record the exact definition of a profile version that runs a step (V2C-18)."""
+    if any(p.ref == profile.ref for p in work_order.used_profiles):
+        return work_order
+    return work_order.evolve(used_profiles=(*work_order.used_profiles, profile))
+
+
+# --- Auditor independence (V2C-14, §8.6) ---
+
+
+def _bound_primary(work_order: WorkOrder, role: Role) -> Profile | None:
+    binding = work_order.execution_profile.binding(role)
+    return None if binding is None else work_order.execution_profile.profile(binding.primary)
+
+
+def _gaps(
+    work_order: WorkOrder,
+    risk_class: RiskClass,
+    role: Role,
+    auditor: Profile,
+    producers: tuple[Profile, ...],
+) -> list[str]:
+    """Unmet requirements the user has not explicitly waived."""
+    required = work_order.execution_profile.independence_policy.required(risk_class)
+    waived = work_order.waived_independence
+    return [g for g in independence_gaps(required, role, auditor, producers) if g not in waived]
+
+
+def _independence_attention(work_order: WorkOrder, gaps: list[str]) -> WorkOrder:
+    """The policy is never weakened automatically; the user decides (§8.6)."""
+    return raise_attention(
+        work_order,
+        AttentionReason(
+            code=AttentionCode.INDEPENDENCE_UNAVAILABLE,
+            summary=f"auditor independence cannot be met: {', '.join(gaps)}",
+            evidence=tuple(EvidenceRef(kind="independence_gap", ref=g) for g in gaps),
+        ),
+    )
+
+
+def _producer_gaps(work_order: WorkOrder, producer_role: Role, producer: Profile) -> list[str]:
+    """Before a write-capable step runs: can every auditor of its output stay independent?"""
+    gaps: list[str] = []
+    for role, producer_roles in AUDITED_PRODUCERS.items():
+        auditor = _bound_primary(work_order, role)
+        if producer_role in producer_roles and auditor is not None:
+            risk_class = work_order.approved_plan.risk_class
+            gaps += _gaps(work_order, risk_class, role, auditor, (producer,))
+    return gaps
+
+
 # --- Blocks (§8.5) ---
 
 
@@ -538,6 +623,10 @@ def begin_attempt(
             ),
         )
     _check_profile(work_order, Role.PRIMARY_CODE_EXECUTOR, profile, fallback_condition, evidence)
+    executor = work_order.execution_profile.profile(profile)
+    gaps = _producer_gaps(work_order, Role.PRIMARY_CODE_EXECUTOR, executor)
+    if gaps:
+        return _independence_attention(work_order, gaps)
     attempt = AttemptRecord(
         role=Role.PRIMARY_CODE_EXECUTOR,
         profile=profile,
@@ -551,7 +640,7 @@ def begin_attempt(
         code_audit=None,
         code_changes=None,
     )
-    return _update_block(work_order, started)
+    return _update_block(_use(work_order, executor), started)
 
 
 def finish_run(work_order: WorkOrder, block_id: str) -> WorkOrder:
@@ -581,10 +670,20 @@ def approve_code(
         "the audited state is no longer the current candidate state",
     )
     _require_approved_deviation(work_order, block_id, changes)
-    candidate = block.evolve(code_audit=audit, code_changes=changes)
+    risk_class = work_order.approved_plan.risk_class
+    candidate = block.evolve(code_audit=audit, code_changes=changes, risk_class=risk_class)
     problem = code_approval_problem(candidate)
     _require(problem is None, "code_not_approved", problem or "")
-    return _update_block(work_order, candidate.evolve(status=B.CODE_APPROVED))
+    auditor = work_order.execution_profile.profile(audit.auditor)
+    executors = tuple(
+        work_order.used_profile(a.profile)
+        for a in block.attempts
+        if a.role == Role.PRIMARY_CODE_EXECUTOR
+    )
+    gaps = _gaps(work_order, risk_class, audit.role, auditor, executors)
+    if gaps:
+        return _independence_attention(work_order, gaps)
+    return _update_block(_use(work_order, auditor), candidate.evolve(status=B.CODE_APPROVED))
 
 
 def _require_approved_deviation(
@@ -648,6 +747,11 @@ def begin_memory_curation(
             ),
         )
     _check_profile(work_order, Role.MEMORY_CURATOR, profile, fallback_condition, evidence)
+    curator = work_order.execution_profile.profile(profile)
+    gaps = _producer_gaps(work_order, Role.MEMORY_CURATOR, curator)
+    if gaps:
+        return _independence_attention(work_order, gaps)
+    work_order = _use(work_order, curator)
     attempt = AttemptRecord(
         role=Role.MEMORY_CURATOR,
         profile=profile,
@@ -704,7 +808,14 @@ def approve_memory(
     candidate = block.evolve(memory_audit=audit)
     problem = memory_approval_problem(candidate)
     _require(problem is None, "memory_not_approved", problem or "")
-    return _update_block(work_order, candidate.evolve(status=B.BLOCK_CHECKPOINT))
+    auditor = work_order.execution_profile.profile(audit.auditor)
+    curators = tuple(
+        work_order.used_profile(a.profile) for a in block.attempts if a.role == Role.MEMORY_CURATOR
+    )
+    gaps = _gaps(work_order, block.risk_class, audit.role, auditor, curators)
+    if gaps:
+        return _independence_attention(work_order, gaps)
+    return _update_block(_use(work_order, auditor), candidate.evolve(status=B.BLOCK_CHECKPOINT))
 
 
 def enter_block_checkpoint(

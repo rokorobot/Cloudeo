@@ -113,7 +113,26 @@ TRACE = {
         ],
     ),
     "V2C-13": deferred("Performance Memory and Jev can only recommend, never select profiles"),
-    "V2C-14": deferred("the independence resolver enforces cumulative requirements per risk class"),
+    "V2C-14": enforced(
+        "IndependencePolicy (never weaker than the §8.6 table) in the approved envelope; "
+        "independence_gaps measured by role against the producers; checked at plan approval, "
+        "before every write-capable step, and before every approving audit is recorded, raising "
+        "INDEPENDENCE_UNAVAILABLE; only an explicit, recorded user waiver accepts a gap; stored "
+        "approvals are re-checked on every reload against the risk class they were judged by",
+        [
+            MACHINE + "test_v2c_14_requirements_accumulate_by_risk_class",
+            MACHINE + "test_happy_path_reaches_promoted_only_through_every_state",
+        ],
+        [
+            MACHINE + "test_v2c_14_policy_is_the_contract_table_and_can_only_be_stricter",
+            MACHINE
+            + "test_v2c_14_plan_approval_escalates_when_bound_auditors_cannot_be_independent",
+            MACHINE + "test_v2c_14_a_fallback_that_breaks_independence_escalates_before_it_runs",
+            MACHINE + "test_v2c_14_only_an_explicit_recorded_waiver_accepts_a_gap",
+            MACHINE + "test_v2c_14_final_verifier_is_judged_against_every_writer_used",
+            MACHINE + "test_v2c_14_a_stored_approval_without_independence_is_rejected",
+        ],
+    ),
     "V2C-15": deferred(
         "material deviations are detected from diffs, audit findings, and accounting",
         [
@@ -134,12 +153,21 @@ TRACE = {
         "AUDITOR_ERROR beyond the fallback conditions is routed to attention",
         [MACHINE + "test_v2c_17_kernel_refusal_and_drift_always_escalate"],
     ),
-    "V2C-18": deferred(
-        "an ExecutionProfile registry (AgentProfile, DirectToolProfile, ...) with immutable versions",
+    "V2C-18": enforced(
+        "the ExecutionProfile registry (AgentProfile, DirectToolProfile) keeps sequential, "
+        "immutable versions; a reference's fingerprint is its definition's canonical hash; a "
+        "project binds only registered versions; every attempt and audit names a version the "
+        "WorkOrder recorded (used_profiles, append-only, kept across change_agent)",
         [
             STORE + "test_v2c_18_profile_versions_are_immutable_and_sequential",
             STORE + "test_v2c_18_canonical_profile_hash_is_stable_across_processes",
-            MACHINE + "test_v2c_12_primary_is_used_and_fallbacks_need_a_defined_condition",
+            MACHINE + "test_v2c_18_used_versions_outlive_a_snapshot_change",
+        ],
+        [
+            STORE + "test_v2c_18_registered_profile_versions_are_immutable_and_sequential",
+            STORE + "test_v2c_18_only_registered_versions_can_be_bound_or_used",
+            MACHINE + "test_v2c_18_every_step_records_the_exact_profile_version",
+            MACHINE + "test_v2c_18_bindings_must_match_their_exact_definitions",
         ],
     ),
     "V2C-19": deferred(
@@ -152,7 +180,8 @@ TRACE = {
         ],
     ),
     "V2C-20": deferred(
-        "the final verification runner uses a fresh, read-only auditor",
+        "the final verification runner uses a fresh, read-only auditor, and every audit runner "
+        "confirms at runtime the fresh session its profile declares (V2C-14 checks the declaration)",
         [MACHINE + "test_v2c_20_final_verification_runs_no_write_capable_role"],
     ),
     "V2C-21": enforced(

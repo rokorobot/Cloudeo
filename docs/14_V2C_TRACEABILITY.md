@@ -1,7 +1,8 @@
 # V2C traceability matrix
 
 **Contract:** `13_V2_CONTROL_ARCHITECTURE.md` §15 (Accepted)\
-**Slice:** V2 control-store foundation (`src/cloudeo/control/`)\
+**Slices:** V2 control-store foundation; ExecutionProfile registry and auditor
+independence (V2C-18, V2C-14) (`src/cloudeo/control/`)\
 **Kept in sync by:** `tests/test_v2c_traceability.py`
 
 Every invariant V2C-01 to V2C-23 has exactly one status:
@@ -43,16 +44,16 @@ The meta-tests check that:
 | V2C-11 | ENFORCED | The profile snapshot changes only through an approved `change_agent` amendment; it must be a stored, approved version | — |
 | V2C-12 | DEFERRED | Supporting: bound primary, or an approved fallback with a defined condition and evidence; every attempt recorded | Fallbacks are triggered only by classified runtime or provider failures, or by discovery |
 | V2C-13 | DEFERRED | — | Performance Memory and Jev can only recommend, never select profiles |
-| V2C-14 | DEFERRED | — | The independence resolver enforces cumulative requirements per risk class |
+| V2C-14 | ENFORCED | An `IndependencePolicy` in the approved envelope, never weaker than the §8.6 table. Independence is measured by role against the producers, and checked at plan approval, before every write-capable step, and before any approving audit is recorded; a gap raises `INDEPENDENCE_UNAVAILABLE`. Only an explicit, recorded user waiver accepts a gap. Stored approvals are re-checked on every reload against the risk class they were judged by. Runtime confirmation of a fresh session belongs to the audit runners (V2C-20). | — |
 | V2C-15 | DEFERRED | Supporting: a recorded material deviation always raises attention | Deviations are detected from diffs, audit findings, and accounting |
 | V2C-16 | ENFORCED | One open request merges every reason; resume requires each blocking reason to be resolved or waived; decisions are recorded | — |
 | V2C-17 | DEFERRED | Supporting: a non-promoted kernel outcome and baseline drift always raise attention | `AUDITOR_ERROR` beyond the fallback conditions is routed to attention |
-| V2C-18 | DEFERRED | Supporting: immutable, sequential Project Execution Profile versions with a canonical hash that is stable across processes; exact profile fingerprint on every attempt | An ExecutionProfile registry (AgentProfile, DirectToolProfile, …) with immutable versions |
+| V2C-18 | ENFORCED | A registry of `AgentProfile` and `DirectToolProfile` versions, sequential and immutable. A reference's fingerprint is the canonical hash of its definition; a project profile binds only registered versions and carries their exact definitions. Every attempt and audit names a version the WorkOrder recorded in `used_profiles`, which is append-only and survives `change_agent`. | — |
 | V2C-19 | DEFERRED | Supporting: `BLOCK_DONE` cannot be constructed without a proof of the authoritative block state; `prove_block_checkpoint` is the only setter, with no generic `mark_block_done()`; a mismatch escalates | The checkpoint subsystem supplies the proof from immutable Git objects |
-| V2C-20 | DEFERRED | Supporting: no write-capable step outside `EXECUTING`; the final audit must come from `final_verifier` | The final verification runner uses a fresh, read-only auditor |
+| V2C-20 | DEFERRED | Supporting: no write-capable step outside `EXECUTING`; the final audit must come from `final_verifier` | The final verification runner uses a fresh, read-only auditor, and every audit runner confirms at runtime the fresh session its profile declares |
 | V2C-21 | ENFORCED | Abort and defer keep the candidate, blocks, and attention; the store is append-only with no delete; history cannot be erased | — |
 | V2C-22 | DEFERRED | Supporting: drift checks at candidate attach, execution start, final verification, and both resumes; the planned baseline is never rebased | The accepted baseline is observed from the Workspace Broker |
 | V2C-23 | ENFORCED | `BEGIN IMMEDIATE`, an expected-version check, revalidation, `check_evolution`, and a version-conditioned `UPDATE`; conflicts are refused, never resolved by the store | — |
 
-**Totals:** 8 ENFORCED, 15 DEFERRED, 0 NOT_APPLICABLE; 15 strict expected-failure
+**Totals:** 10 ENFORCED, 13 DEFERRED, 0 NOT_APPLICABLE; 13 strict expected-failure
 obligation tests.

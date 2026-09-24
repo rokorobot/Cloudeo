@@ -7,14 +7,19 @@ from pathlib import Path
 import pytest
 from control_helpers import (
     BASE,
+    CLAUDE_AUDITOR,
     CURATOR,
     FINAL,
+    GPT_CODER,
+    GPT_ON_ANTHROPIC,
     MEM_AUDITOR,
     MEMORY_PATHS,
     MOVED,
     NOW,
     OPUS,
     OPUS_FALLBACK,
+    PROFILES,
+    READ_ONLY_CODER,
     SOL,
     approved,
     audit,
@@ -39,6 +44,7 @@ from pydantic import ValidationError
 import cloudeo.control
 from cloudeo.control import machine as m
 from cloudeo.control.model import (
+    CONTRACT_INDEPENDENCE,
     AttentionCode,
     AttentionReason,
     Block,
@@ -46,16 +52,24 @@ from cloudeo.control.model import (
     Budget,
     Candidate,
     Deviation,
+    DirectToolProfile,
     EnvelopeAmendment,
+    EvolutionError,
     FallbackCondition,
+    IndependencePolicy,
+    IndependenceRequirement,
+    Permissions,
     Role,
     UserAction,
     UserDecision,
     WorkOrderStatus,
+    check_evolution,
+    independence_gaps,
 )
 
 S = WorkOrderStatus
 B = BlockStatus
+I = IndependenceRequirement
 Rejected = m.TransitionRejected
 
 
@@ -503,6 +517,225 @@ def test_v2c_12_auditors_must_be_the_bound_profile():
         m.approve_code(
             wo, "b1", audit=audit(state(), auditor=OPUS), changes=changes(), current_state=state()
         )
+
+
+# --- V2C-14: auditor independence ---
+
+
+def gap_refs(wo):
+    reason = next(
+        r for r in wo.open_attention.reasons if r.code == AttentionCode.INDEPENDENCE_UNAVAILABLE
+    )
+    return {e.ref for e in reason.evidence}
+
+
+FALLBACK_TO_GPT = {
+    "profile": GPT_CODER,
+    "fallback_condition": FallbackCondition.MODEL_UNAVAILABLE,
+    "evidence": ref("uhp_discovery", "opus-unavailable"),
+}
+
+
+def change_agent(wo, profile):
+    amendment = EnvelopeAmendment(
+        attention_id=wo.open_attention.attention_id,
+        action=UserAction.CHANGE_AGENT,
+        execution_profile=profile,
+        approved_by="robert",
+        approved_at=NOW,
+    )
+    return m.decide(wo, decision(UserAction.CHANGE_AGENT), amendment=amendment)
+
+
+def agent_down(wo):
+    reason = AttentionReason(
+        code=AttentionCode.AGENT_UNAVAILABLE, summary="agent down", evidence=(ref(),)
+    )
+    return m.raise_attention(wo, reason)
+
+
+@pytest.mark.negative
+def test_v2c_14_policy_is_the_contract_table_and_can_only_be_stricter():
+    policy = IndependencePolicy()
+    assert policy.required("low") == (I.FRESH_SESSION, I.READ_ONLY_WORKSPACE)
+    for risk in ("low", "medium", "high"):
+        assert policy.required(risk) == CONTRACT_INDEPENDENCE[risk]
+    stricter = IndependencePolicy(low=(*CONTRACT_INDEPENDENCE["low"], I.DIFFERENT_MODEL_FAMILY))
+    assert I.DIFFERENT_MODEL_FAMILY in stricter.required("low")
+    with pytest.raises(ValidationError, match="only add to the contract"):
+        IndependencePolicy(high=CONTRACT_INDEPENDENCE["medium"])
+    with pytest.raises(ValidationError, match="listed once"):
+        IndependencePolicy(low=(I.FRESH_SESSION, I.FRESH_SESSION, I.READ_ONLY_WORKSPACE))
+
+
+def test_v2c_14_requirements_accumulate_by_risk_class():
+    def gaps(auditor, risk):
+        required = CONTRACT_INDEPENDENCE[risk]
+        return independence_gaps(required, Role.CODE_AUDITOR, auditor, (PROFILES[OPUS],))
+
+    claude = PROFILES[CLAUDE_AUDITOR]
+    assert gaps(claude, "low") == ()
+    assert gaps(claude, "medium") == ("code_auditor:different_model_family",)
+    assert gaps(claude, "high") == (
+        "code_auditor:different_model_family",
+        "code_auditor:different_inference_provider",
+    )
+    assert gaps(PROFILES[GPT_ON_ANTHROPIC], "high") == (
+        "code_auditor:different_inference_provider",
+    )
+    assert gaps(PROFILES[SOL], "high") == ()
+    persistent = PROFILES[SOL].evolve(session="persistent")
+    assert gaps(persistent, "low") == ("code_auditor:fresh_session",)
+    writable = PROFILES[SOL].evolve(permissions=Permissions(workspace="read_write"))
+    assert gaps(writable, "low") == ("code_auditor:read_only_workspace",)
+    tool = DirectToolProfile(
+        profile_id="lint-tool",
+        version=1,
+        permissions=Permissions(workspace="read_only"),
+        eligible_roles=(Role.CODE_AUDITOR,),
+        capability="lint",
+        provider="treg",
+    )
+    # Only an agent can show a fresh session or a model family.
+    assert gaps(tool, "medium") == (
+        "code_auditor:fresh_session",
+        "code_auditor:different_model_family",
+    )
+
+
+@pytest.mark.negative
+def test_v2c_14_plan_approval_escalates_when_bound_auditors_cannot_be_independent():
+    profile = project_profile(code_auditor=CLAUDE_AUDITOR)
+    assert approved(profile=profile, risk="low").status == S.PLAN_APPROVED
+    wo = approved(profile=profile, risk="high")
+    assert wo.status == S.USER_ATTENTION_REQUIRED
+    assert wo.open_attention.raised_from == S.PLAN_APPROVED
+    assert gap_refs(wo) == {
+        "code_auditor:different_model_family",
+        "code_auditor:different_inference_provider",
+    }
+    # Never weakened automatically: resuming without a decision is refused.
+    with pytest.raises(Rejected, match="unresolved_reasons"):
+        m.decide(wo, decision(UserAction.RESUME), accepted_baseline=BASE)
+
+
+@pytest.mark.negative
+def test_v2c_14_a_fallback_that_breaks_independence_escalates_before_it_runs():
+    wo = executing(profile=project_profile(fallbacks=(GPT_CODER,)), risk="medium")
+    assert wo.status == S.EXECUTING  # the bound primaries are independent
+    wo = m.begin_attempt(wo, "b1", **FALLBACK_TO_GPT)
+    assert wo.status == S.USER_ATTENTION_REQUIRED
+    assert gap_refs(wo) == {
+        "code_auditor:different_model_family",
+        "final_verifier:different_model_family",
+    }
+    assert wo.block("b1").attempts == ()
+    assert GPT_CODER not in {p.ref for p in wo.used_profiles}
+
+
+@pytest.mark.negative
+def test_v2c_14_only_an_explicit_recorded_waiver_accepts_a_gap():
+    wo = executing(profile=project_profile(fallbacks=(GPT_CODER,)), risk="medium")
+    wo = m.begin_attempt(wo, "b1", **FALLBACK_TO_GPT)
+    with pytest.raises(Rejected, match="unresolved_reasons"):
+        m.decide(wo, decision(UserAction.RESUME), accepted_baseline=BASE)
+    wo = m.decide(
+        wo,
+        decision(UserAction.RESUME, waived=(AttentionCode.INDEPENDENCE_UNAVAILABLE,)),
+        accepted_baseline=BASE,
+    )
+    assert wo.waived_independence == {
+        "code_auditor:different_model_family",
+        "final_verifier:different_model_family",
+    }
+    assert wo.attention[-1].decisions[-1].actor == "robert"
+    wo = m.begin_attempt(wo, "b1", **FALLBACK_TO_GPT)
+    wo = m.record_tests(m.finish_run(wo, "b1"), "b1", passing_checks(state()))
+    wo = m.approve_code(wo, "b1", audit=audit(state()), changes=changes(), current_state=state())
+    assert wo.block("b1").status == B.CODE_APPROVED
+
+
+@pytest.mark.negative
+def test_v2c_14_final_verifier_is_judged_against_every_writer_used():
+    wo = agent_down(block_done(executing(risk="medium")))
+    # The user redirects final verification to a Claude auditor. Opus is no
+    # longer bound, but the changes it wrote remain in the candidate.
+    v2 = project_profile(
+        version=2, executor=OPUS_FALLBACK, fallbacks=(), final_verifier=CLAUDE_AUDITOR
+    )
+    wo = m.decide(change_agent(wo, v2), decision(UserAction.RESUME), accepted_baseline=BASE)
+    wo = m.enter_final_verification(wo, accepted_baseline=BASE)
+    wo = m.record_final_audit(wo, audit(state(), Role.FINAL_VERIFIER, CLAUDE_AUDITOR))
+    assert wo.status == S.USER_ATTENTION_REQUIRED and wo.final_audit is None
+    assert gap_refs(wo) == {"final_verifier:different_model_family"}
+
+
+@pytest.mark.negative
+def test_v2c_14_a_stored_approval_without_independence_is_rejected():
+    wo = executing(profile=project_profile(code_auditor=CLAUDE_AUDITOR))
+    wo = m.begin_attempt(wo, "b1", profile=OPUS)
+    wo = m.record_tests(m.finish_run(wo, "b1"), "b1", passing_checks(state()))
+    wo = m.approve_code(
+        wo,
+        "b1",
+        audit=audit(state(), auditor=CLAUDE_AUDITOR),
+        changes=changes(),
+        current_state=state(),
+    )
+    block = wo.block("b1")
+    assert block.status == B.CODE_APPROVED and block.risk_class == "low"
+    # Judged by the risk class in force; a forged stricter class exposes the gap.
+    with pytest.raises(ValidationError, match="lacks independence"):
+        wo.evolve(blocks=(block.evolve(risk_class="medium"),))
+    with pytest.raises(ValidationError, match="risk class"):
+        wo.evolve(blocks=(block.evolve(risk_class=None),))
+
+
+# --- V2C-18: exact, recorded profile versions ---
+
+
+@pytest.mark.negative
+def test_v2c_18_every_step_records_the_exact_profile_version():
+    wo = final_verification()
+    assert {p.ref for p in wo.used_profiles} == {OPUS, SOL, FINAL}
+    attempt = wo.block("b1").attempts[0]
+    assert attempt.profile.fingerprint == PROFILES[OPUS].canonical_sha256()
+    with pytest.raises(ValidationError, match="unrecorded profile versions"):
+        wo.evolve(used_profiles=tuple(p for p in wo.used_profiles if p.ref != OPUS))
+    # A different fingerprint is a different, unknown version.
+    forged = attempt.evolve(profile=attempt.profile.evolve(fingerprint="0" * 64))
+    with pytest.raises(ValidationError, match="unrecorded profile versions"):
+        wo.evolve(blocks=(wo.block("b1").evolve(attempts=(forged,)),))
+    # The record is append-only, even for an entry no step names.
+    extra = wo.evolve(used_profiles=(*wo.used_profiles, PROFILES[OPUS_FALLBACK]))
+    with pytest.raises(EvolutionError, match="used_profiles"):
+        check_evolution(extra, wo)
+
+
+def test_v2c_18_used_versions_outlive_a_snapshot_change():
+    wo = agent_down(code_approved(executing()))
+    wo = change_agent(wo, project_profile(version=2, executor=OPUS_FALLBACK, fallbacks=()))
+    assert OPUS not in {p.ref for p in wo.execution_profile.profiles}
+    assert wo.used_profile(OPUS) == PROFILES[OPUS]
+
+
+@pytest.mark.negative
+def test_v2c_18_bindings_must_match_their_exact_definitions():
+    profile = project_profile()
+    sol = PROFILES[SOL]
+    others = tuple(p for p in profile.profiles if p.ref != SOL)
+    with pytest.raises(ValidationError, match="exactly the definitions"):
+        profile.evolve(profiles=others)  # a missing definition
+    with pytest.raises(ValidationError, match="exactly the definitions"):
+        profile.evolve(profiles=(*others, sol.evolve(reasoning="high")))  # another fingerprint
+    with pytest.raises(ValidationError, match="exactly the definitions"):
+        profile.evolve(profiles=(*profile.profiles, PROFILES[CLAUDE_AUDITOR]))  # unbound
+    with pytest.raises(ValidationError, match="defined once"):
+        profile.evolve(profiles=(*profile.profiles, sol))
+    with pytest.raises(ValidationError, match="not eligible"):
+        project_profile(code_auditor=MEM_AUDITOR)
+    with pytest.raises(ValidationError, match="read_write"):
+        project_profile(executor=READ_ONLY_CODER, fallbacks=())
 
 
 # --- V2C-15 / V2C-16 / V2C-17: attention ---

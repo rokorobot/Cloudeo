@@ -1621,3 +1621,76 @@ outcomes to equal `scripts/v2c_control_manifest.tsv` exactly (85 entries: 70
 check the whole suite's pass count, so unrelated new tests do not fail it.
 Checked: a tampered manifest, a non-strict obligation, and an unrelated
 failing test each fail the gate; an unrelated passing test does not.
+
+## 2026-09-24 — ExecutionProfile registry and auditor independence (V2C-18, V2C-14)
+
+Branch `feat/v2-profile-registry-independence`, stacked on
+`feat/v2-control-store-foundation` at `86993de` (not merged). Second slice
+of the V2 control architecture. It stays inside `cloudeo.control`: pure model
+and state-machine code plus the SQLite store. There is no execution, and no
+kernel, broker, bridge, adapter, or LongHorizon change (V2C-01 still holds).
+
+**V2C-18: ExecutionProfile registry.**
+
+- `AgentProfile` (runtime, model with family and inference provider,
+  reasoning, context policy, session) and `DirectToolProfile` (capability,
+  provider). Both have an id, a version, permissions (workspace access,
+  network, tools), limits, and eligible roles (§8.3). `BrowserExecutionProfile`
+  and `HumanExecutionProfile` are not added; Browser Use is a non-goal.
+- A `ProfileRef` fingerprint is the canonical SHA-256 of the definition, so a
+  reference names exactly one version.
+- `SqliteControlStore.register_profile()`: versions are sequential and
+  immutable once registered (re-registering the same content is a no-op).
+- A `ProjectExecutionProfile` carries the exact definitions of every bound
+  version, so the snapshot is self-contained and its hash covers them. It
+  validates role eligibility, requires `read_write` for write-capable roles,
+  and the store accepts it only if every definition is the registered one.
+- `WorkOrder.used_profiles` records the definition of every version that ran
+  an attempt or an audit. It is append-only, survives a `change_agent`
+  amendment, and each new entry must be registered. Every attempt and audit
+  must name a recorded version with the same fingerprint.
+
+**V2C-14: auditor independence (§8.6).**
+
+- `IndependencePolicy` is part of the Project Execution Profile, and so of the
+  approved envelope, as the contract requires. It defaults to the §8.6 table
+  and can only add requirements, never remove them.
+- `independence_gaps()` measures an auditor against the producers of what it
+  audits, by role: `code_auditor` against the executors, `memory_auditor`
+  against the curators, and `final_verifier` against every write-capable
+  profile used, including fallbacks, in superseded blocks, and under an
+  earlier snapshot.
+- It is checked at plan approval (the bound primaries), before every executor
+  or curator attempt (so a fallback that would break independence never
+  runs), and before any code, memory, or final audit is recorded. A gap raises
+  `INDEPENDENCE_UNAVAILABLE` with one `independence_gap` evidence ref per
+  unmet `role:requirement`.
+- Only an explicit user waiver of that reason accepts those gaps. It is
+  derived from the recorded decision, never automatic.
+- The WorkOrder validator re-checks every approving audit on every reload.
+  Each block records the risk class its audits were judged by, so a later
+  replan to a stricter class does not re-judge finished blocks; the final
+  audit is judged by the current plan.
+
+Design choices:
+
+- A project policy can be stricter than the contract but never weaker. Only
+  a per-WorkOrder, recorded waiver can accept less.
+- "Fresh session" is checked as the auditor profile's declared `session`.
+  Confirming at runtime that an audit really ran in a fresh session belongs to
+  the audit runners; V2C-20's deferred obligation now says so.
+- Model families and inference providers are compared as exact strings.
+
+Validation (offline, with the `longhorizon` extra):
+
+- Full suite: **661 collected, 648 passed, 13 strict-xfailed**, with 0
+  failures, errors, or unexpected passes. Relative to `86993de` (651
+  collected, 636 passed, 15 xfailed): +12 passing tests (10 in
+  `tests/test_control_machine.py`, 2 in `tests/test_control_store.py`), and
+  `test_deferred_obligation[V2C-14]` and `[V2C-18]` removed.
+- Traceability: **10 ENFORCED, 13 DEFERRED, 0 NOT_APPLICABLE.**
+- `scripts/v2c_gate.py` first failed on exactly that manifest diff (12 added,
+  2 removed). The manifest was then regenerated deliberately (95 entries: 82
+  `pass`, 13 `xfail`), and the gate passes.
+- Each new guard was disabled in turn (11 guards); its negative test failed
+  every time.

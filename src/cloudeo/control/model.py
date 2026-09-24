@@ -138,6 +138,37 @@ class Role(StrEnum):
 
 
 WRITE_CAPABLE_ROLES = frozenset({Role.PRIMARY_CODE_EXECUTOR, Role.MEMORY_CURATOR})
+# Each auditing role and the producing roles it must be independent from (§8.6).
+AUDITED_PRODUCERS: dict[Role, tuple[Role, ...]] = {
+    Role.CODE_AUDITOR: (Role.PRIMARY_CODE_EXECUTOR,),
+    Role.MEMORY_AUDITOR: (Role.MEMORY_CURATOR,),
+    Role.FINAL_VERIFIER: (Role.PRIMARY_CODE_EXECUTOR, Role.MEMORY_CURATOR),
+}
+
+RiskClass = Literal["low", "medium", "high"]
+
+
+class IndependenceRequirement(StrEnum):
+    """One cumulative auditor-independence dimension (§8.6)."""
+
+    FRESH_SESSION = "fresh_session"
+    READ_ONLY_WORKSPACE = "read_only_workspace"
+    DIFFERENT_MODEL_FAMILY = "different_model_family"
+    DIFFERENT_INFERENCE_PROVIDER = "different_inference_provider"
+
+
+_I = IndependenceRequirement
+# The contract's table (§8.6): every listed requirement is mandatory.
+CONTRACT_INDEPENDENCE: dict[str, tuple[IndependenceRequirement, ...]] = {
+    "low": (_I.FRESH_SESSION, _I.READ_ONLY_WORKSPACE),
+    "medium": (_I.FRESH_SESSION, _I.READ_ONLY_WORKSPACE, _I.DIFFERENT_MODEL_FAMILY),
+    "high": (
+        _I.FRESH_SESSION,
+        _I.READ_ONLY_WORKSPACE,
+        _I.DIFFERENT_MODEL_FAMILY,
+        _I.DIFFERENT_INFERENCE_PROVIDER,
+    ),
+}
 
 
 class FallbackCondition(StrEnum):
@@ -178,11 +209,139 @@ class UserAction(StrEnum):
 
 
 class ProfileRef(_Frozen):
-    """An exact, immutable ExecutionProfile version (V2C-18)."""
+    """An exact, immutable ExecutionProfile version (V2C-18).
+
+    The fingerprint is the canonical hash of the profile definition, so a
+    reference names exactly one immutable version.
+    """
 
     profile_id: Identifier
     version: int = Field(ge=1)
-    fingerprint: Text
+    fingerprint: Sha256
+
+
+class Permissions(_Frozen):
+    workspace: Literal["none", "read_only", "read_write"]
+    network: bool = False
+    tools: tuple[Text, ...] = ()
+
+
+class Limits(_Frozen):
+    max_steps: int | None = Field(default=None, ge=1)
+    max_cost_usd: float | None = Field(default=None, ge=0)
+    max_duration_seconds: int | None = Field(default=None, ge=1)
+
+
+class _ExecutionProfileBase(_Frozen):
+    """Common to every ExecutionProfile (§8.3); immutable once registered."""
+
+    profile_id: Identifier
+    version: int = Field(ge=1)
+    permissions: Permissions
+    limits: Limits = Limits()
+    eligible_roles: tuple[Role, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _unique_roles(self):
+        if len(set(self.eligible_roles)) != len(self.eligible_roles):
+            raise ValueError("eligible roles are listed once")
+        return self
+
+    @property
+    def ref(self) -> ProfileRef:
+        return ProfileRef(
+            profile_id=self.profile_id, version=self.version, fingerprint=self.canonical_sha256()
+        )
+
+
+class AgentRuntime(_Frozen):
+    harness_id: Identifier
+    harness_version: str | None = None  # if observable
+
+
+class AgentModel(_Frozen):
+    provider: Text
+    model_id: Text
+    model_version: str | None = None  # date or version, if observable
+    family: Text
+    inference_provider: Text
+
+
+class ContextPolicy(_Frozen):
+    inputs: tuple[Text, ...] = ()
+    max_input_tokens: int | None = Field(default=None, ge=1)
+
+
+class AgentProfile(_ExecutionProfileBase):
+    """A model/harness agent (§8.3)."""
+
+    execution_class: Literal["agent"] = "agent"
+    runtime: AgentRuntime
+    model: AgentModel
+    reasoning: str | None = None
+    context_policy: ContextPolicy = ContextPolicy()
+    session: Literal["fresh", "persistent"]
+
+
+class DirectToolProfile(_ExecutionProfileBase):
+    """A Treg capability/provider call; not an agent (§8.3)."""
+
+    execution_class: Literal["direct_tool"] = "direct_tool"
+    capability: Text
+    provider: Text
+
+
+ExecutionProfile = Annotated[
+    AgentProfile | DirectToolProfile, Field(discriminator="execution_class")
+]
+
+
+def independence_gaps(
+    required: tuple[IndependenceRequirement, ...],
+    role: Role,
+    auditor: AgentProfile | DirectToolProfile,
+    producers: tuple[AgentProfile | DirectToolProfile, ...],
+) -> tuple[str, ...]:
+    """The unmet requirements of `auditor` in `role`, as "role:requirement" (§8.6).
+
+    Only an agent can prove a fresh session, a model family, or an inference
+    provider; producers that are not agents share neither with the auditor.
+    """
+    agents = [p for p in producers if isinstance(p, AgentProfile)]
+    is_agent = isinstance(auditor, AgentProfile)
+    met = {
+        _I.FRESH_SESSION: is_agent and auditor.session == "fresh",
+        _I.READ_ONLY_WORKSPACE: auditor.permissions.workspace == "read_only",
+        _I.DIFFERENT_MODEL_FAMILY: is_agent
+        and all(p.model.family != auditor.model.family for p in agents),
+        _I.DIFFERENT_INFERENCE_PROVIDER: is_agent
+        and all(p.model.inference_provider != auditor.model.inference_provider for p in agents),
+    }
+    return tuple(f"{role}:{r}" for r in required if not met[r])
+
+
+class IndependencePolicy(_Frozen):
+    """Required dimensions per risk class; never weaker than the contract (§8.6)."""
+
+    low: tuple[IndependenceRequirement, ...] = CONTRACT_INDEPENDENCE["low"]
+    medium: tuple[IndependenceRequirement, ...] = CONTRACT_INDEPENDENCE["medium"]
+    high: tuple[IndependenceRequirement, ...] = CONTRACT_INDEPENDENCE["high"]
+
+    @model_validator(mode="after")
+    def _at_least_the_contract(self):
+        for risk, minimum in CONTRACT_INDEPENDENCE.items():
+            listed = getattr(self, risk)
+            if len(set(listed)) != len(listed):
+                raise ValueError(f"{risk}: requirements are listed once")
+            missing = [str(r) for r in minimum if r not in listed]
+            if missing:
+                raise ValueError(
+                    f"{risk}: the policy can only add to the contract; missing {', '.join(missing)}"
+                )
+        return self
+
+    def required(self, risk_class: RiskClass) -> tuple[IndependenceRequirement, ...]:
+        return getattr(self, risk_class)
 
 
 class RoleBinding(_Frozen):
@@ -212,18 +371,43 @@ class ProjectExecutionProfile(_Frozen):
     project_id: Identifier
     version: int = Field(ge=1)
     bindings: tuple[RoleBinding, ...]
+    # The exact definitions of every bound profile version, so the snapshot is
+    # self-contained and its hash covers them (V2C-18).
+    profiles: tuple[ExecutionProfile, ...]
+    independence_policy: IndependencePolicy = IndependencePolicy()
     approved_by: Text
     approved_at: datetime
 
     @model_validator(mode="after")
-    def _one_binding_per_role(self):
+    def _consistent_bindings(self):
         roles = [binding.role for binding in self.bindings]
         if len(roles) != len(set(roles)):
             raise ValueError("each role has exactly one binding")
+        defined = {p.ref: p for p in self.profiles}
+        if len(defined) != len(self.profiles):
+            raise ValueError("each profile version is defined once")
+        bound = {r for b in self.bindings for r in (b.primary, *b.fallbacks)}
+        if set(defined) != bound:
+            raise ValueError(
+                "profiles must be exactly the definitions of the bound references, "
+                "with matching fingerprints"
+            )
+        for binding in self.bindings:
+            for ref in (binding.primary, *binding.fallbacks):
+                profile = defined[ref]
+                if binding.role not in profile.eligible_roles:
+                    raise ValueError(f"{ref.profile_id} is not eligible for {binding.role}")
+                if binding.role in WRITE_CAPABLE_ROLES and profile.permissions.workspace != (
+                    "read_write"
+                ):
+                    raise ValueError(f"{binding.role} needs a read_write profile")
         return self
 
     def binding(self, role: Role) -> RoleBinding | None:
         return next((b for b in self.bindings if b.role == role), None)
+
+    def profile(self, ref: ProfileRef) -> AgentProfile | DirectToolProfile:
+        return next(p for p in self.profiles if p.ref == ref)
 
 
 # --- Evidence ---
@@ -357,7 +541,7 @@ class PlanVersion(_Frozen):
     architecture_summary: Text
     blocks: tuple[BlockSpec, ...] = Field(min_length=1)
     acceptance_criteria: tuple[Text, ...] = Field(min_length=1)
-    risk_class: Literal["low", "medium", "high"]
+    risk_class: RiskClass
     budget: Budget
     context_report: EvidenceRef
 
@@ -480,9 +664,14 @@ class Block(_Frozen):
     checkpoint: CheckpointProof | None = None
     # Checkpoints that failed the proof: kept as evidence, never BLOCK_DONE.
     rejected_checkpoints: tuple[CheckpointProof, ...] = ()
+    # The risk class whose independence the block's audits were judged by
+    # (V2C-14); a later replan does not re-judge a finished block.
+    risk_class: RiskClass | None = None
 
     @model_validator(mode="after")
     def _status_requirements(self):
+        if (self.code_audit or self.memory_audit) and self.risk_class is None:
+            raise ValueError("an audited block records the risk class it was judged by")
         if self.status in CODE_APPROVED_OR_LATER:
             problem = code_approval_problem(self)
             if problem:
@@ -578,6 +767,9 @@ class WorkOrder(_Frozen):
     final_audit: AuditRecord | None = None
     outcome: KernelOutcome | None = None
     evidence: tuple[EvidenceRef, ...] = ()
+    # The exact definition of every profile version that ran a step, kept even
+    # after a change_agent amendment replaces the snapshot (V2C-18).
+    used_profiles: tuple[ExecutionProfile, ...] = ()
 
     @model_validator(mode="after")
     def _invariants(self):
@@ -621,7 +813,64 @@ class WorkOrder(_Frozen):
             raise ValueError("exactly one open attention request while attention is required")
         if (self.status == WorkOrderStatus.DEFERRED) != (self.deferred_from is not None):
             raise ValueError("deferred_from is set exactly while DEFERRED")
+        self._check_used_profiles()
         return self
+
+    def _check_used_profiles(self) -> None:
+        """V2C-18: every attempt and audit names a recorded, exact profile version.
+        V2C-14: every approving audit meets the independence it was judged by."""
+        used = {p.ref: p for p in self.used_profiles}
+        if len(used) != len(self.used_profiles):
+            raise ValueError("each used profile version is recorded once")
+        every_block = (*self.blocks, *self.superseded_blocks)
+        refs = [a.profile for b in every_block for a in b.attempts]
+        refs += [a.auditor for b in every_block for a in (b.code_audit, b.memory_audit) if a]
+        refs += [self.final_audit.auditor] if self.final_audit else []
+        unknown = {f"{r.profile_id} v{r.version}" for r in refs if r not in used}
+        if unknown:
+            raise ValueError(
+                f"steps name unrecorded profile versions: {', '.join(sorted(unknown))}"
+            )
+        policy = self.execution_profile.independence_policy
+        waived = self.waived_independence
+        checks = [
+            (block.risk_class, audit, [a.profile for a in block.attempts if a.role in producers])
+            for block in self.blocks
+            for audit in (block.code_audit, block.memory_audit)
+            if audit is not None
+            for producers in [AUDITED_PRODUCERS.get(audit.role, ())]
+        ]
+        if self.final_audit is not None:
+            written = [
+                a.profile for b in every_block for a in b.attempts if a.role in WRITE_CAPABLE_ROLES
+            ]
+            checks.append((self.approved_plan.risk_class, self.final_audit, written))
+        for risk_class, audit, producers in checks:
+            gaps = independence_gaps(
+                policy.required(risk_class),
+                audit.role,
+                used[audit.auditor],
+                tuple(used[r] for r in dict.fromkeys(producers)),
+            )
+            unwaived = [g for g in gaps if g not in waived]
+            if unwaived:
+                raise ValueError(f"an approving audit lacks independence: {', '.join(unwaived)}")
+
+    @property
+    def waived_independence(self) -> frozenset[str]:
+        """Independence gaps ("role:requirement") the user explicitly waived (§8.6)."""
+        return frozenset(
+            evidence.ref
+            for request in self.attention
+            if any(AttentionCode.INDEPENDENCE_UNAVAILABLE in d.waived for d in request.decisions)
+            for reason in request.reasons
+            if reason.code == AttentionCode.INDEPENDENCE_UNAVAILABLE
+            for evidence in reason.evidence
+            if evidence.kind == "independence_gap"
+        )
+
+    def used_profile(self, ref: ProfileRef) -> AgentProfile | DirectToolProfile:
+        return next(p for p in self.used_profiles if p.ref == ref)
 
     @property
     def approved_plan(self) -> PlanVersion:
@@ -668,6 +917,7 @@ def check_evolution(old: WorkOrder, new: WorkOrder) -> None:
         "deviations",
         "evidence",
         "superseded_blocks",
+        "used_profiles",
     ):
         _append_only(
             name, getattr(old, name), getattr(new, name), allow_update=name == "deviations"

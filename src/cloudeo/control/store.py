@@ -1,4 +1,5 @@
-"""Control store: persistence for WorkOrders and Project Execution Profiles (§14.1).
+"""Control store: persistence for WorkOrders, Project Execution Profiles, and the
+ExecutionProfile registry (§14.1).
 
 ControlStore is the storage interface; SqliteControlStore is the initial
 implementation (standard-library sqlite3). PostgreSQL can replace it without
@@ -8,7 +9,9 @@ changing WorkOrder semantics, because every rule lives above the SQL:
   legal successor of the stored version (check_evolution);
 - updates are compare-and-swap on (work_order_id, version) (V2C-23);
 - every write appends an event; nothing is ever deleted (V2C-21);
-- a Project Execution Profile version is immutable once saved (V2C-18).
+- ExecutionProfile and Project Execution Profile versions are immutable once
+  saved, and every profile a project binds or a WorkOrder used must be the
+  registered version with the same fingerprint (V2C-18).
 """
 
 from __future__ import annotations
@@ -20,7 +23,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from cloudeo.control.model import ProjectExecutionProfile, WorkOrder, check_evolution
+from pydantic import TypeAdapter
+
+from cloudeo.control.model import (
+    AgentProfile,
+    DirectToolProfile,
+    ExecutionProfile,
+    ProjectExecutionProfile,
+    WorkOrder,
+    check_evolution,
+)
+
+_EXECUTION_PROFILE = TypeAdapter(ExecutionProfile)
 
 
 class ControlStoreError(Exception):
@@ -48,6 +62,12 @@ class ControlEvent:
 
 
 class ControlStore(Protocol):
+    def register_profile(self, profile: AgentProfile | DirectToolProfile) -> None: ...
+
+    def registered_profile(
+        self, profile_id: str, version: int
+    ) -> AgentProfile | DirectToolProfile: ...
+
     def save_profile(self, profile: ProjectExecutionProfile) -> None: ...
 
     def get_profile(self, project_id: str, version: int) -> ProjectExecutionProfile: ...
@@ -64,6 +84,13 @@ class ControlStore(Protocol):
 
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS profile_registry (
+    profile_id  TEXT    NOT NULL,
+    version     INTEGER NOT NULL,
+    fingerprint TEXT    NOT NULL,
+    data        TEXT    NOT NULL,
+    PRIMARY KEY (profile_id, version)
+);
 CREATE TABLE IF NOT EXISTS execution_profiles (
     project_id   TEXT    NOT NULL,
     version      INTEGER NOT NULL,
@@ -106,6 +133,67 @@ class SqliteControlStore:
         # BEGIN IMMEDIATE: the write lock is taken before the version is read.
         db.execute("BEGIN IMMEDIATE")
 
+    # --- ExecutionProfile registry (§8.3) ---
+
+    def register_profile(self, profile: AgentProfile | DirectToolProfile) -> None:
+        """Versions are sequential per profile and immutable once registered."""
+        fingerprint = profile.ref.fingerprint
+        with closing(self._connect()) as db:
+            self._transaction(db)
+            try:
+                row = db.execute(
+                    "SELECT fingerprint FROM profile_registry WHERE profile_id=? AND version=?",
+                    (profile.profile_id, profile.version),
+                ).fetchone()
+                if row is not None:
+                    if row[0] != fingerprint:
+                        raise ImmutableRecordError(
+                            f"{profile.profile_id} v{profile.version} is registered with "
+                            "different content; register a new version instead"
+                        )
+                    db.execute("COMMIT")
+                    return
+                latest = db.execute(
+                    "SELECT MAX(version) FROM profile_registry WHERE profile_id=?",
+                    (profile.profile_id,),
+                ).fetchone()[0]
+                if profile.version != (latest or 0) + 1:
+                    raise ControlStoreError(
+                        f"the next version of {profile.profile_id} is {(latest or 0) + 1}"
+                    )
+                db.execute(
+                    "INSERT INTO profile_registry VALUES (?, ?, ?, ?)",
+                    (profile.profile_id, profile.version, fingerprint, _dump(profile)),
+                )
+                db.execute("COMMIT")
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+
+    def registered_profile(self, profile_id: str, version: int) -> AgentProfile | DirectToolProfile:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT data FROM profile_registry WHERE profile_id=? AND version=?",
+                (profile_id, version),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"profile {profile_id} v{version}")
+        return _EXECUTION_PROFILE.validate_json(row[0])
+
+    def _require_registered(
+        self, db: sqlite3.Connection, profiles: tuple[AgentProfile | DirectToolProfile, ...]
+    ) -> None:
+        for profile in profiles:
+            ref = profile.ref
+            row = db.execute(
+                "SELECT fingerprint FROM profile_registry WHERE profile_id=? AND version=?",
+                (ref.profile_id, ref.version),
+            ).fetchone()
+            if row is None or row[0] != ref.fingerprint:
+                raise ControlStoreError(
+                    f"{ref.profile_id} v{ref.version} is not the registered profile version"
+                )
+
     # --- Project Execution Profiles ---
 
     def save_profile(self, profile: ProjectExecutionProfile) -> None:
@@ -113,6 +201,7 @@ class SqliteControlStore:
         with closing(self._connect()) as db:
             self._transaction(db)
             try:
+                self._require_registered(db, profile.profiles)
                 row = db.execute(
                     "SELECT content_hash FROM execution_profiles WHERE project_id=? AND version=?",
                     (profile.project_id, profile.version),
@@ -182,6 +271,7 @@ class SqliteControlStore:
             self._transaction(db)
             try:
                 self._require_stored_profile(db, stored)
+                self._require_registered(db, stored.used_profiles)
                 try:
                     db.execute(
                         "INSERT INTO work_orders VALUES (?, ?, ?)",
@@ -225,6 +315,8 @@ class SqliteControlStore:
                 check_evolution(current, stored)
                 if stored.execution_profile != current.execution_profile:
                     self._require_stored_profile(db, stored)
+                # Append-only (check_evolution): only the new entries need checking.
+                self._require_registered(db, stored.used_profiles[len(current.used_profiles) :])
                 changed = db.execute(
                     "UPDATE work_orders SET version=?, data=? WHERE work_order_id=? AND version=?",
                     (stored.version, _dump(stored), stored.work_order_id, expected_version),

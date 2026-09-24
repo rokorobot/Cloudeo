@@ -5,6 +5,9 @@ from datetime import UTC, datetime
 
 from cloudeo.control import machine as m
 from cloudeo.control.model import (
+    AgentModel,
+    AgentProfile,
+    AgentRuntime,
     AuditRecord,
     BlockSpec,
     Budget,
@@ -13,9 +16,10 @@ from cloudeo.control.model import (
     CheckpointProof,
     EvidenceRef,
     FallbackCondition,
+    IndependencePolicy,
     KernelOutcome,
+    Permissions,
     PlanVersion,
-    ProfileRef,
     ProjectExecutionProfile,
     Role,
     RoleBinding,
@@ -33,8 +37,77 @@ def ref(kind="evidence", value="ev-1"):
     return EvidenceRef(kind=kind, ref=value)
 
 
+def agent(
+    name,
+    *roles,
+    family,
+    provider,
+    workspace="read_only",
+    session="fresh",
+    version=1,
+):
+    return AgentProfile(
+        profile_id=name,
+        version=version,
+        permissions=Permissions(workspace=workspace),
+        eligible_roles=roles,
+        runtime=AgentRuntime(harness_id="uhp"),
+        model=AgentModel(
+            provider=provider,
+            model_id=name,
+            family=family,
+            inference_provider=provider,
+        ),
+        session=session,
+    )
+
+
+def writer(name, *roles, **kwargs):
+    kwargs = {"family": "claude", "provider": "anthropic", **kwargs}
+    return agent(name, *roles, workspace="read_write", session="persistent", **kwargs)
+
+
+def reader(name, *roles, **kwargs):
+    return agent(name, *roles, **{"family": "gpt", "provider": "openai", **kwargs})
+
+
+E = Role.PRIMARY_CODE_EXECUTOR
+# Every profile the helpers bind, keyed by reference. Writers are Claude models
+# on Anthropic; auditors are GPT models on OpenAI, so they meet even the
+# high-risk independence policy.
+PROFILES = {
+    p.ref: p
+    for p in (
+        writer("opus-coder", E),
+        writer("sonnet-coder", E),
+        reader("sol-auditor", Role.CODE_AUDITOR),
+        writer("memory-curator", Role.MEMORY_CURATOR),
+        reader("memory-auditor", Role.MEMORY_AUDITOR),
+        reader("final-verifier", Role.FINAL_VERIFIER),
+        # Same model family and provider as the executors: not independent.
+        reader(
+            "claude-auditor",
+            Role.CODE_AUDITOR,
+            Role.FINAL_VERIFIER,
+            family="claude",
+            provider="anthropic",
+        ),
+        # A different family served by the executors' inference provider.
+        reader("gpt-on-anthropic", Role.CODE_AUDITOR, provider="anthropic"),
+        # A GPT executor fallback: shares a family with the auditors.
+        writer("gpt-coder", E, family="gpt", provider="openai"),
+        # Eligible to execute but without write access: cannot be bound.
+        reader("read-only-coder", E),
+    )
+}
+
+
 def profile_ref(name, version=1):
-    return ProfileRef(profile_id=name, version=version, fingerprint=f"{name}@v{version}")
+    """The reference of a helper profile, or of an unbound ad hoc executor."""
+    for key in PROFILES:
+        if key.profile_id == name and key.version == version:
+            return key
+    return writer(name, E, version=version).ref
 
 
 OPUS = profile_ref("opus-coder")
@@ -43,31 +116,51 @@ SOL = profile_ref("sol-auditor")
 CURATOR = profile_ref("memory-curator")
 MEM_AUDITOR = profile_ref("memory-auditor")
 FINAL = profile_ref("final-verifier")
+CLAUDE_AUDITOR = profile_ref("claude-auditor")
+GPT_ON_ANTHROPIC = profile_ref("gpt-on-anthropic")
+GPT_CODER = profile_ref("gpt-coder")
+READ_ONLY_CODER = profile_ref("read-only-coder")
 
 
-def project_profile(version=1, executor=OPUS, fallbacks=(OPUS_FALLBACK,)):
+def project_profile(
+    version=1,
+    executor=OPUS,
+    fallbacks=(OPUS_FALLBACK,),
+    code_auditor=SOL,
+    final_verifier=FINAL,
+    policy=None,
+):
+    bindings = (
+        RoleBinding(
+            role=Role.PRIMARY_CODE_EXECUTOR,
+            primary=executor,
+            fallbacks=fallbacks,
+            fallback_conditions=frozenset(
+                {FallbackCondition.MODEL_UNAVAILABLE, FallbackCondition.RUNTIME_UNAVAILABLE}
+            )
+            if fallbacks
+            else frozenset(),
+        ),
+        RoleBinding(role=Role.CODE_AUDITOR, primary=code_auditor),
+        RoleBinding(role=Role.MEMORY_CURATOR, primary=CURATOR),
+        RoleBinding(role=Role.MEMORY_AUDITOR, primary=MEM_AUDITOR),
+        RoleBinding(role=Role.FINAL_VERIFIER, primary=final_verifier),
+    )
+    bound = dict.fromkeys(r for b in bindings for r in (b.primary, *b.fallbacks))
     return ProjectExecutionProfile(
         project_id="demo",
         version=version,
-        bindings=(
-            RoleBinding(
-                role=Role.PRIMARY_CODE_EXECUTOR,
-                primary=executor,
-                fallbacks=fallbacks,
-                fallback_conditions=frozenset(
-                    {FallbackCondition.MODEL_UNAVAILABLE, FallbackCondition.RUNTIME_UNAVAILABLE}
-                )
-                if fallbacks
-                else frozenset(),
-            ),
-            RoleBinding(role=Role.CODE_AUDITOR, primary=SOL),
-            RoleBinding(role=Role.MEMORY_CURATOR, primary=CURATOR),
-            RoleBinding(role=Role.MEMORY_AUDITOR, primary=MEM_AUDITOR),
-            RoleBinding(role=Role.FINAL_VERIFIER, primary=FINAL),
-        ),
+        bindings=bindings,
+        profiles=tuple(PROFILES[r] for r in bound),
+        independence_policy=policy or IndependencePolicy(),
         approved_by="robert",
         approved_at=NOW,
     )
+
+
+def register_all(store):
+    for profile in PROFILES.values():
+        store.register_profile(profile)
 
 
 def spec(block_id="b1", order=1, memory_impact=False, scope=("src/app",)):
@@ -81,13 +174,13 @@ def spec(block_id="b1", order=1, memory_impact=False, scope=("src/app",)):
     )
 
 
-def plan(version=1, blocks=None, attempts=2):
+def plan(version=1, blocks=None, attempts=2, risk="low"):
     return PlanVersion(
         version=version,
         architecture_summary="add the feature",
         blocks=blocks or (spec(),),
         acceptance_criteria=("feature works",),
-        risk_class="low",
+        risk_class=risk,
         budget=Budget(max_attempts_per_block=attempts),
         context_report=ref("context_report", "ctx-1"),
     )
@@ -151,14 +244,14 @@ def new_work_order(profile=None):
     )
 
 
-def approved(blocks=None, attempts=2):
-    wo = m.start_intake(new_work_order(), accepted_baseline=BASE)
-    wo = m.propose_plan(wo, plan(blocks=blocks, attempts=attempts))
+def approved(blocks=None, attempts=2, profile=None, risk="low"):
+    wo = m.start_intake(new_work_order(profile), accepted_baseline=BASE)
+    wo = m.propose_plan(wo, plan(blocks=blocks, attempts=attempts, risk=risk))
     return m.approve_plan(wo, plan_version=1, approved_by="robert", approved_at=NOW)
 
 
-def executing(blocks=None, attempts=2):
-    wo = approved(blocks, attempts)
+def executing(blocks=None, attempts=2, profile=None, risk="low"):
+    wo = approved(blocks, attempts, profile, risk)
     wo = m.attach_candidate(
         wo,
         Candidate(workspace_id="demo", candidate_id="cand1", base_commit=BASE),

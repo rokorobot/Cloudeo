@@ -11,7 +11,9 @@ import pytest
 from control_helpers import (
     BASE,
     NOW,
+    OPUS,
     OPUS_FALLBACK,
+    PROFILES,
     block_done,
     final_verification,
     new_work_order,
@@ -19,6 +21,7 @@ from control_helpers import (
     plan,
     project_profile,
     ref,
+    register_all,
 )
 from pydantic import ValidationError
 
@@ -28,8 +31,11 @@ from cloudeo.control.model import (
     AttentionReason,
     BlockStatus,
     Candidate,
+    DirectToolProfile,
     EnvelopeAmendment,
     EvolutionError,
+    Permissions,
+    Role,
     UserAction,
     UserDecision,
     WorkOrderStatus,
@@ -49,6 +55,7 @@ S = WorkOrderStatus
 @pytest.fixture
 def store(tmp_path):
     s = SqliteControlStore(tmp_path / "control.db")
+    register_all(s)
     s.save_profile(project_profile())
     return s
 
@@ -298,6 +305,55 @@ def test_v2c_18_profile_versions_are_immutable_and_sequential(store):
     store.save_profile(project_profile(version=2, executor=OPUS_FALLBACK, fallbacks=()))
     assert store.current_profile("demo").version == 2
     assert store.get_profile("demo", 1) == project_profile()
+
+
+@pytest.mark.negative
+def test_v2c_18_registered_profile_versions_are_immutable_and_sequential(store):
+    opus = PROFILES[OPUS]
+    store.register_profile(opus)  # identical re-registration is a no-op
+    with pytest.raises(ImmutableRecordError):
+        store.register_profile(opus.evolve(reasoning="high"))
+    with pytest.raises(ControlStoreError, match="next version"):
+        store.register_profile(opus.evolve(version=3))
+    store.register_profile(opus.evolve(version=2, reasoning="high"))
+    assert store.registered_profile("opus-coder", 1) == opus
+    assert store.registered_profile("opus-coder", 2).reasoning == "high"
+    tool = DirectToolProfile(
+        profile_id="lint-tool",
+        version=1,
+        permissions=Permissions(workspace="read_only"),
+        eligible_roles=(Role.CODE_AUDITOR,),
+        capability="lint",
+        provider="treg",
+    )
+    store.register_profile(tool)
+    assert store.registered_profile("lint-tool", 1) == tool
+    with pytest.raises(NotFoundError):
+        store.registered_profile("lint-tool", 2)
+
+
+@pytest.mark.negative
+def test_v2c_18_only_registered_versions_can_be_bound_or_used(store, tmp_path):
+    empty = SqliteControlStore(tmp_path / "empty.db")
+    with pytest.raises(ControlStoreError, match="not the registered profile version"):
+        empty.save_profile(project_profile())
+    # Same id and version, different content: a different fingerprint.
+    empty.register_profile(PROFILES[OPUS].evolve(reasoning="high"))
+    for profile in PROFILES.values():
+        if profile.ref != OPUS:
+            empty.register_profile(profile)
+    with pytest.raises(ControlStoreError, match="opus-coder v1 is not the registered"):
+        empty.save_profile(project_profile())
+    # A WorkOrder cannot record a used profile that was never registered.
+    wo = persist_steps(store, HAPPY[:5])
+    rogue = PROFILES[OPUS].evolve(profile_id="rogue-coder")
+    with pytest.raises(ControlStoreError, match="rogue-coder v1"):
+        store.update(
+            wo.evolve(used_profiles=(*wo.used_profiles, rogue)),
+            expected_version=wo.version,
+            event="forged",
+        )
+    assert store.get("wo-1") == wo
 
 
 # --- V2C-21: nothing is deleted ---
