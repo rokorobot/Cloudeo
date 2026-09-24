@@ -1724,8 +1724,9 @@ PostgreSQL can replace it without changing WorkOrder semantics.
 
 ## ADR-030 — Orchestration boundary: runtime integration above the control layer
 
-**Status:** Proposed (2026-09-24); not yet implemented. Code for V2C-04 and
-V2C-22 waits for this ADR to be accepted.
+**Status:** Accepted (2026-09-24), with three review amendments (the
+WorkOrder-transition rule, lifecycle primitives, and what the evidence digest
+proves); not yet implemented.
 
 **Context:** `cloudeo.control` (ADR-022 to ADR-029) is pure. It holds the
 WorkOrder and block state machines, the Project Execution Profile, and the
@@ -1756,22 +1757,29 @@ layer.
   decides *whether* something is allowed goes into `cloudeo.control`. A
   change to *how* a runtime component works goes into that component's
   package.
-- **Orchestration never weakens or bypasses a control decision.** It does not
-  construct or `evolve()` WorkOrders itself, does not pick profiles or
-  fallbacks on its own authority, and does not reinterpret a rejection or an
-  attention request as success.
-- **Promotion stays gate-owned (K1 still applies).** Orchestration may invoke
-  the authorized gate path (`checkpoint_and_promote_verified()`, or
-  `run_managed_with_promotion_gate()` which calls it). It never calls
-  `WorkspaceBroker.promote()`, `checkpoint_candidate()`, `reject()`, or
-  `cleanup()` directly, and never writes `refs/cloudeo`.
+- **Orchestration never weakens or bypasses a control decision.** It may read
+  a WorkOrder and invoke the public transition operations in
+  `cloudeo.control.machine`, but must never construct, copy-with-changes, or
+  mutate WorkOrder state directly: every WorkOrder transition goes through
+  the control state machine. It also does not pick profiles or fallbacks on
+  its own authority, and does not reinterpret a rejection or an attention
+  request as success.
+- **Promotion stays gate-owned (K1 still applies).** Direct `promote()` is
+  permanently forbidden outside the authorized promotion gate; orchestration
+  may invoke that gate (`checkpoint_and_promote_verified()`, or
+  `run_managed_with_promotion_gate()` which calls it), and never writes
+  `refs/cloudeo`. In the V2C-04/V2C-22 slice, orchestration also makes no
+  direct `checkpoint_candidate()`, `reject()`, or `cleanup()` calls. Any
+  future use of those lifecycle primitives, including V2C-19 block
+  checkpointing, requires an explicitly owned adapter and decision and must
+  not create an alternate promotion path.
 
 **Dependency direction** (one way):
 
 | Package | May import | Must not import or call |
 | --- | --- | --- |
 | `cloudeo.control` | standard library, pydantic, `cloudeo.workspace.models` | `cloudeo.orchestration`; broker, bridge, LongHorizon, `subprocess` (V2C-01, unchanged) |
-| `cloudeo.orchestration` | `cloudeo.control`; the `WorkspaceBroker` protocol and `cloudeo.workspace.models`; the gate entry points and result types in `cloudeo.longhorizon` | `cloudeo.workspace.git` (the concrete implementation is injected); `subprocess`; direct `promote()`, `checkpoint_candidate()`, `reject()`, `cleanup()` calls; `refs/cloudeo` or `update-ref` strings |
+| `cloudeo.orchestration` | `cloudeo.control`; the `WorkspaceBroker` protocol and `cloudeo.workspace.models`; the gate entry points and result types in `cloudeo.longhorizon` | `cloudeo.workspace.git` (the concrete implementation is injected); `subprocess`; direct `promote()` calls (permanently); direct `checkpoint_candidate()`, `reject()`, `cleanup()` calls (in the first slice; see above); `refs/cloudeo` or `update-ref` strings |
 | authorized gate (`cloudeo.longhorizon.promotion_gate`) | unchanged | unchanged; it remains the only promotion path |
 
 V2C-01 stays scoped to `cloudeo.control`. It does not forbid orchestration to
@@ -1781,12 +1789,21 @@ import the runtime interfaces orchestration exists to integrate.
 of the V2C-01 AST checker, each with a negative test against violating code):
 
 1. `cloudeo.control` imports nothing from `cloudeo.orchestration`.
-2. `cloudeo.orchestration` makes no `promote`, `checkpoint_candidate`,
-   `reject`, or `cleanup` attribute call, imports neither
-   `cloudeo.workspace.git` nor `subprocess`, and has no `refs/cloudeo` or
-   `update-ref` string.
-3. `cloudeo.orchestration` makes no `.evolve(` call and constructs no
-   `WorkOrder`: WorkOrders change only through `cloudeo.control.machine`.
+2. `cloudeo.orchestration` makes no `promote` attribute call (a permanent
+   check). In the first slice it also makes no `checkpoint_candidate`,
+   `reject`, or `cleanup` attribute call; that part of the check changes only
+   with the explicit decision a lifecycle adapter requires. It imports
+   neither `cloudeo.workspace.git` nor `subprocess`, and has no
+   `refs/cloudeo` or `update-ref` string.
+3. All WorkOrder transitions go through the control state machine. An
+   AST-based check that `cloudeo.orchestration` never constructs a
+   `WorkOrder` (or a record nested in one), never derives a changed copy of
+   one (`evolve`, `model_copy`, `model_validate`, `model_construct`, or an
+   equivalent), and never assigns to its attributes. It changes a WorkOrder
+   only by calling functions from `cloudeo.control.machine` and persists it
+   only through `ControlStore`. The check is scoped to WorkOrder state, so an
+   unrelated object with an `evolve()` method is not rejected; a textual scan
+   for `.evolve(` may be kept as an extra, coarser check.
 
 **First slice (V2C-04 and V2C-22 only):**
 
@@ -1797,8 +1814,14 @@ of the V2C-01 AST checker, each with a negative test against violating code):
     `None`;
   - `reason` = `decision.reason`;
   - `evidence` = `EvidenceRef(kind="gated_promotion_result",
-    ref=<canonical SHA-256 of the result>)`, so the same result always maps to
-    the same outcome.
+    ref=<digest>)`, so the same result always maps to the same outcome. The
+    digest is domain-separated and versioned: SHA-256 over the tag
+    `gated-promotion-result:v1` followed by the canonical serialization of
+    the result. Another evidence type, or a later serialization, therefore
+    never produces a digest with the same meaning. The digest identifies the
+    canonical contents of the observed `GatedPromotionResult`; it is an
+    integrity/content reference, not proof that the result came from an
+    authorized gate.
   - It fails closed: if the result is internally inconsistent (for example
     `stage == "promoted"` without a checkpoint or a `PromotionResult`), it
     raises instead of producing an outcome. The mapped
@@ -1832,11 +1855,15 @@ layer authenticates its inputs.
   invoked in this slice.
 - Any change to the kernel, broker, bridge, adapters, gate, or LongHorizon.
 
-**Open question:** before a candidate is attached (at intake), which
-workspace belongs to a WorkOrder's project? The contract's `ProjectTarget`
-(§4.1) is not implemented. The first slice takes the broker for the
-project's workspace as an explicit argument and records its `workspace_id`
-as evidence, rather than inventing a project-to-workspace registry.
+**Project-to-workspace binding (limitation):** before a candidate is
+attached (at intake), nothing yet says which workspace belongs to a
+WorkOrder's project; the contract's `ProjectTarget` (§4.1) is not
+implemented. The first slice takes the broker for the project's workspace as
+an explicit argument, rather than inventing a project-to-workspace registry.
+It proves that orchestration reads the broker's actual `accepted_state()` and
+records its `workspace_id` and `accepted_commit`. It does not prove that the
+caller supplied the broker belonging to that project. That binding remains a
+future obligation once the project-target model exists.
 
 **Consequences:** each deferred obligation gets one place for its producer,
 and one rule for how that producer's output reaches policy. The package
