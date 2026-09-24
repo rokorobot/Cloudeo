@@ -1,0 +1,117 @@
+import { Chip, Panel, PanelHeader, SectionLabel } from "@/components/common/status";
+import { formatDuration, formatMoney, formatPercent } from "@/lib/format";
+import type { PlanView, RoutingCandidate } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import type { LiveWorkOrder } from "@/state/mission-control";
+
+const CRITERION_MARK = {
+  met: <span className="text-ok">✓</span>,
+  in_progress: <span className="text-brand">●</span>,
+  pending: <span className="text-muted-foreground">○</span>,
+};
+
+function CandidateRow({ c }: { c: RoutingCandidate }) {
+  const filtered = c.status === "filtered";
+  const o = c.observed;
+  return (
+    <tr className={cn("border-b border-line-soft last:border-b-0", c.status === "selected" && "bg-brand/[0.08]")}>
+      <td className="px-3.5 py-2.5 align-top">
+        <div className={cn("flex flex-col gap-0.5", filtered && "text-muted-foreground")}>
+          <span className="font-mono text-[12px]">{c.profileId}</span>
+          <span className="text-[12px] text-muted-foreground">{c.label}</span>
+        </div>
+      </td>
+      <td className="px-3.5 py-2.5 align-top">
+        {c.status === "selected" && <Chip tone="brand">SELECTED</Chip>}
+        {c.status === "eligible" && <Chip>ELIGIBLE</Chip>}
+        {filtered && <Chip className="text-muted-foreground">FILTERED</Chip>}
+      </td>
+      {filtered ? (
+        <td colSpan={4} className="px-3.5 py-2.5 align-top text-[12.5px] text-subtle">
+          {c.filterReason}
+        </td>
+      ) : (
+        <>
+          <td className="px-3.5 py-2.5 text-right align-top font-mono text-[12px] tnum">
+            {o ? (
+              <span className="flex flex-col items-end gap-0.5">
+                <span>{formatPercent(o.verifiedSuccesses, o.attempts)}</span>
+                <span className="text-[11px] text-muted-foreground">{o.verifiedSuccesses} of {o.attempts}</span>
+              </span>
+            ) : "—"}
+          </td>
+          <td className="px-3.5 py-2.5 text-right align-top font-mono text-[12px] tnum">{o ? formatDuration(o.medianSec) : "—"}</td>
+          <td className="px-3.5 py-2.5 text-right align-top font-mono text-[12px] tnum">{o ? formatMoney(o.medianCost) : "—"}</td>
+          <td className="px-3.5 py-2.5 text-right align-top font-mono text-[12px] tnum">{c.policyScore?.toFixed(2) ?? "—"}</td>
+        </>
+      )}
+    </tr>
+  );
+}
+
+export function PlanStage({ wo, plan }: { wo: LiveWorkOrder; plan: PlanView }) {
+  const r = plan.routing;
+  return (
+    <>
+      <div className="grid gap-3.5 xl:grid-cols-[1fr_1fr]">
+        <Panel>
+          <PanelHeader><SectionLabel>Objective</SectionLabel></PanelHeader>
+          <p className="max-w-[65ch] p-3.5 text-subtle">{wo.objective}</p>
+        </Panel>
+        <Panel>
+          <PanelHeader>
+            <SectionLabel>Acceptance criteria</SectionLabel>
+            <span className="flex-1" />
+            <span className="font-mono text-[11.5px] text-muted-foreground">
+              {plan.acceptanceCriteria.filter((c) => c.status === "met").length} of {plan.acceptanceCriteria.length} met
+            </span>
+          </PanelHeader>
+          <ul className="flex flex-col gap-2 p-3.5">
+            {plan.acceptanceCriteria.map((c) => (
+              <li key={c.text} className="grid grid-cols-[18px_1fr] gap-2">
+                {CRITERION_MARK[c.status]}
+                <span>{c.text}</span>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      </div>
+
+      <Panel>
+        <PanelHeader>
+          <SectionLabel>Routing decision</SectionLabel>
+          <span className="flex-1" />
+          <span className="font-mono text-[11.5px] text-muted-foreground">
+            {r.policy} · {r.decidedAt}
+          </span>
+        </PanelHeader>
+        <p className="max-w-[80ch] px-3.5 pt-3 text-subtle">{r.rationale}</p>
+        <div className="flex flex-wrap items-center gap-2 px-3.5 pt-3 pb-1">
+          <SectionLabel className="mr-1">Hard constraints</SectionLabel>
+          {r.hardConstraints.map((h) => <Chip key={h}>{h}</Chip>)}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="mt-2 w-full min-w-[640px] border-t border-line-soft">
+            <caption className="caption-bottom border-t border-line-soft px-3.5 py-2.5 text-left text-[12px] text-muted-foreground">
+              Observed = independently verified outcomes on this task class over the {plan.routing.candidates.find((c) => c.observed)?.observed?.window ?? "recent window"}.
+              These are past results, not a forecast for this run. The policy score is the router&apos;s ranking, not a probability of success.
+            </caption>
+            <thead>
+              <tr className="border-b border-line-soft">
+                <th className="label-caps px-3.5 py-2 text-left">Profile</th>
+                <th className="label-caps px-3.5 py-2 text-left">Decision</th>
+                <th className="label-caps px-3.5 py-2 text-right">Observed verified</th>
+                <th className="label-caps px-3.5 py-2 text-right">Median time</th>
+                <th className="label-caps px-3.5 py-2 text-right">Median cost</th>
+                <th className="label-caps px-3.5 py-2 text-right">Policy score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {r.candidates.map((c) => <CandidateRow key={c.profileId} c={c} />)}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+    </>
+  );
+}

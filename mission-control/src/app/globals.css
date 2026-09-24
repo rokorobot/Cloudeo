@@ -1,0 +1,156 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/*
+ * Cloudeo Mission Control is dark-first and single-theme for this milestone.
+ * Semantic colours carry meaning and are never decorative:
+ *   brand  (cyan)  → Cloudeo accent, selection, "running"
+ *   ok     (green) → verified / proven only
+ *   warn   (amber) → attention required
+ *   err    (red)   → blocked / failure
+ */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+
+  /* Cloudeo surfaces and semantics */
+  --color-ground: var(--cl-ground);
+  --color-panel: var(--cl-panel);
+  --color-raised: var(--cl-raised);
+  --color-hover: var(--cl-hover);
+  --color-line: var(--cl-line);
+  --color-line-soft: var(--cl-line-soft);
+  --color-subtle: var(--cl-text-2);
+  --color-brand: var(--cl-brand);
+  --color-ok: var(--cl-ok);
+  --color-warn: var(--cl-warn);
+  --color-err: var(--cl-err);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.2);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  --animate-node-pulse: node-pulse 1.6s ease-in-out infinite;
+  --animate-rise: rise 0.35s ease-out;
+}
+
+@keyframes node-pulse {
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(4px); }
+}
+
+:root {
+  color-scheme: dark;
+
+  --cl-ground: #0b0d10;
+  --cl-panel: #111419;
+  --cl-raised: #161a21;
+  --cl-hover: #1b2029;
+  --cl-line: #222833;
+  --cl-line-soft: #1a1f27;
+  --cl-text: #ece7de;
+  --cl-text-2: #a9a59d;
+  --cl-muted: #7c818b;
+  --cl-brand: #5cc8ff;
+  --cl-ok: #43d18e;
+  --cl-warn: #f2b544;
+  --cl-err: #f0706a;
+
+  /* shadcn tokens mapped onto the Cloudeo palette */
+  --background: var(--cl-ground);
+  --foreground: var(--cl-text);
+  --card: var(--cl-panel);
+  --card-foreground: var(--cl-text);
+  --popover: var(--cl-panel);
+  --popover-foreground: var(--cl-text);
+  --primary: var(--cl-brand);
+  --primary-foreground: #06131c;
+  --secondary: var(--cl-raised);
+  --secondary-foreground: var(--cl-text);
+  --muted: var(--cl-raised);
+  --muted-foreground: var(--cl-muted);
+  --accent: var(--cl-hover);
+  --accent-foreground: var(--cl-text);
+  --destructive: var(--cl-err);
+  --border: var(--cl-line);
+  --input: #2a303b;
+  --ring: var(--cl-brand);
+  --radius: 0.625rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body {
+    @apply h-full;
+  }
+  body {
+    @apply bg-background text-foreground overflow-hidden text-[13px] leading-[1.45];
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  html {
+    @apply font-sans;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--cl-line) transparent;
+  }
+  :focus-visible {
+    outline: 2px solid var(--cl-brand);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  /* Small uppercase section label */
+  .label-caps {
+    @apply text-[10.5px] font-medium tracking-[0.09em] uppercase text-muted-foreground;
+  }
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
