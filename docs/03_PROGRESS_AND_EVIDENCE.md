@@ -1593,3 +1593,31 @@ baseline drift needs "a new approval", but it defines no transition that
 adopts a new baseline (re-intake or rebase). This slice keeps the planned
 baseline immutable, the literal reading. A drifted WorkOrder can therefore
 only be aborted today.
+
+Validation (node-ID audit, offline, with the `longhorizon` extra):
+
+- At feature tip `36805c7`, pytest collects **651** tests: **636 pass** and
+  **15 strict-xfail**, with 0 failures, 0 errors, and 0 unexpected passes.
+- Relative to the accepted V2 architecture base `86e7361` (566 passed), 85
+  control-suite node IDs were added and none removed: 70 passing cases and
+  the 15 DEFERRED strict-xfail obligations. They are all in
+  `tests/test_control_machine.py` (50), `tests/test_control_store.py` (14),
+  and `tests/test_v2c_traceability.py` (21). None is a helper or fixture;
+  `tests/control_helpers.py` contributes no tests.
+- From `647eb9a` (624 passed, 1 failed, 15 xfailed; 640 collected) to
+  `36805c7`, passes rise by 12: 11 net additional tests (14 added, 3
+  meta-tests replaced; the 15 xfails renamed from `test_remaining_obligation`
+  to `test_deferred_obligation`), plus
+  `test_reload_is_deterministic_and_replays_every_version`, which failed at
+  `647eb9a` from the hash-seed bug and passes after the fix.
+- The earlier 634-pass and 69 + 15 expectations have no recoverable
+  machine-generated provenance and are superseded by this node-ID audit.
+
+Durable gate: `scripts/v2c_gate.py` runs the full suite once and fails on a
+non-zero pytest exit, any failure, error, or unexpected pass, or any
+non-strict control-suite xfail. It requires the control suite's node IDs and
+outcomes to equal `scripts/v2c_control_manifest.tsv` exactly (85 entries: 70
+`pass`, 15 `xfail`) and prints added, removed, and changed IDs. It does not
+check the whole suite's pass count, so unrelated new tests do not fail it.
+Checked: a tampered manifest, a non-strict obligation, and an unrelated
+failing test each fail the gate; an unrelated passing test does not.
