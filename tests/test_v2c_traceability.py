@@ -117,8 +117,10 @@ TRACE = {
         "IndependencePolicy (never weaker than the §8.6 table) in the approved envelope; "
         "independence_gaps measured by role against the producers; checked at plan approval, "
         "before every write-capable step, and before every approving audit is recorded, raising "
-        "INDEPENDENCE_UNAVAILABLE; only an explicit, recorded user waiver accepts a gap; stored "
-        "approvals are re-checked on every reload against the risk class they were judged by",
+        "INDEPENDENCE_UNAVAILABLE; a fresh session needs the profile's declaration and the "
+        "runner's per-audit SessionEvidence, failing closed without it; only an explicit, "
+        "recorded user waiver accepts a gap; stored approvals are re-checked on every reload "
+        "against the risk class they were judged by",
         [
             MACHINE + "test_v2c_14_requirements_accumulate_by_risk_class",
             MACHINE + "test_happy_path_reaches_promoted_only_through_every_state",
@@ -131,6 +133,7 @@ TRACE = {
             MACHINE + "test_v2c_14_only_an_explicit_recorded_waiver_accepts_a_gap",
             MACHINE + "test_v2c_14_final_verifier_is_judged_against_every_writer_used",
             MACHINE + "test_v2c_14_a_stored_approval_without_independence_is_rejected",
+            MACHINE + "test_v2c_14_an_audit_without_fresh_session_evidence_cannot_approve",
         ],
     ),
     "V2C-15": deferred(
@@ -180,8 +183,8 @@ TRACE = {
         ],
     ),
     "V2C-20": deferred(
-        "the final verification runner uses a fresh, read-only auditor, and every audit runner "
-        "confirms at runtime the fresh session its profile declares (V2C-14 checks the declaration)",
+        "the final verification runner creates a fresh, read-only auditing session and supplies "
+        "its SessionEvidence, which the V2C-14 check requires",
         [MACHINE + "test_v2c_20_final_verification_runs_no_write_capable_role"],
     ),
     "V2C-21": enforced(

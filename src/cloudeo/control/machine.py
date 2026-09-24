@@ -47,6 +47,7 @@ from cloudeo.control.model import (
     UserDecision,
     WorkOrder,
     WorkOrderStatus,
+    audit_independence_gaps,
     code_approval_problem,
     independence_gaps,
     memory_approval_problem,
@@ -250,7 +251,9 @@ def record_final_audit(work_order: WorkOrder, audit: AuditRecord) -> WorkOrder:
         for a in b.attempts
         if a.role in WRITE_CAPABLE_ROLES
     )
-    gaps = _gaps(work_order, work_order.approved_plan.risk_class, audit.role, auditor, written)
+    gaps = _gaps(
+        work_order, work_order.approved_plan.risk_class, audit.role, auditor, written, audit
+    )
     if gaps:
         return _independence_attention(work_order, gaps)
     return _use(work_order, auditor).evolve(final_audit=audit)
@@ -538,11 +541,20 @@ def _gaps(
     role: Role,
     auditor: Profile,
     producers: tuple[Profile, ...],
+    audit: AuditRecord | None = None,
 ) -> list[str]:
-    """Unmet requirements the user has not explicitly waived."""
+    """Unmet requirements the user has not explicitly waived.
+
+    With a recorded audit, a fresh session also needs the runner's evidence.
+    """
     required = work_order.execution_profile.independence_policy.required(risk_class)
     waived = work_order.waived_independence
-    return [g for g in independence_gaps(required, role, auditor, producers) if g not in waived]
+    gaps = (
+        independence_gaps(required, role, auditor, producers)
+        if audit is None
+        else audit_independence_gaps(required, audit, auditor, producers)
+    )
+    return [g for g in gaps if g not in waived]
 
 
 def _independence_attention(work_order: WorkOrder, gaps: list[str]) -> WorkOrder:
@@ -680,7 +692,7 @@ def approve_code(
         for a in block.attempts
         if a.role == Role.PRIMARY_CODE_EXECUTOR
     )
-    gaps = _gaps(work_order, risk_class, audit.role, auditor, executors)
+    gaps = _gaps(work_order, risk_class, audit.role, auditor, executors, audit)
     if gaps:
         return _independence_attention(work_order, gaps)
     return _update_block(_use(work_order, auditor), candidate.evolve(status=B.CODE_APPROVED))
@@ -812,7 +824,7 @@ def approve_memory(
     curators = tuple(
         work_order.used_profile(a.profile) for a in block.attempts if a.role == Role.MEMORY_CURATOR
     )
-    gaps = _gaps(work_order, block.risk_class, audit.role, auditor, curators)
+    gaps = _gaps(work_order, block.risk_class, audit.role, auditor, curators, audit)
     if gaps:
         return _independence_attention(work_order, gaps)
     return _update_block(_use(work_order, auditor), candidate.evolve(status=B.BLOCK_CHECKPOINT))

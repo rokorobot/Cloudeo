@@ -60,6 +60,7 @@ from cloudeo.control.model import (
     IndependenceRequirement,
     Permissions,
     Role,
+    SessionEvidence,
     UserAction,
     UserDecision,
     WorkOrderStatus,
@@ -689,6 +690,37 @@ def test_v2c_14_a_stored_approval_without_independence_is_rejected():
         wo.evolve(blocks=(block.evolve(risk_class="medium"),))
     with pytest.raises(ValidationError, match="risk class"):
         wo.evolve(blocks=(block.evolve(risk_class=None),))
+
+
+@pytest.mark.negative
+def test_v2c_14_an_audit_without_fresh_session_evidence_cannot_approve():
+    wo = m.begin_attempt(executing(), "b1", profile=OPUS)
+    wo = m.record_tests(m.finish_run(wo, "b1"), "b1", passing_checks(state()))
+    reused = SessionEvidence(
+        session_id="sess-0", fresh=False, evidence=ref("runner_session", "sess-0")
+    )
+    # The profile declares a fresh session, but the runner must show it.
+    for session in (None, reused):
+        escalated = m.approve_code(
+            wo,
+            "b1",
+            audit=audit(state(), session=session),
+            changes=changes(),
+            current_state=state(),
+        )
+        assert escalated.status == S.USER_ATTENTION_REQUIRED
+        assert gap_refs(escalated) == {"code_auditor:fresh_session"}
+        assert escalated.block("b1").status == B.BLOCK_RESULT
+    ok = m.approve_code(wo, "b1", audit=audit(state()), changes=changes(), current_state=state())
+    block = ok.block("b1")
+    # A stored approval whose audit has no fresh-session evidence is rejected on reload.
+    with pytest.raises(ValidationError, match="code_auditor:fresh_session"):
+        ok.evolve(blocks=(block.evolve(code_audit=block.code_audit.evolve(session=None)),))
+    # The final audit needs the same evidence.
+    wo = m.enter_final_verification(block_done(executing()), accepted_baseline=BASE)
+    wo = m.record_final_audit(wo, audit(state(), Role.FINAL_VERIFIER, FINAL, session=None))
+    assert wo.final_audit is None
+    assert gap_refs(wo) == {"final_verifier:fresh_session"}
 
 
 # --- V2C-18: exact, recorded profile versions ---

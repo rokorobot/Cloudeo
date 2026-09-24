@@ -23,6 +23,7 @@ from cloudeo.control.model import (
     ProjectExecutionProfile,
     Role,
     RoleBinding,
+    SessionEvidence,
     StateIdentity,
     TestRecord,
 )
@@ -194,7 +195,17 @@ def passing_checks(s, passed=True):
     return TestRecord(passed=passed, state=s, evidence=ref("tests", "t-1"))
 
 
-def audit(s, role=Role.CODE_AUDITOR, auditor=SOL, status="VERIFIED", repair="not_needed"):
+FRESH = SessionEvidence(session_id="sess-1", fresh=True, evidence=ref("runner_session", "sess-1"))
+
+
+def audit(
+    s,
+    role=Role.CODE_AUDITOR,
+    auditor=SOL,
+    status="VERIFIED",
+    repair="not_needed",
+    session=FRESH,
+):
     return AuditRecord(
         role=role,
         auditor=auditor,
@@ -203,6 +214,7 @@ def audit(s, role=Role.CODE_AUDITOR, auditor=SOL, status="VERIFIED", repair="not
         format_repair=repair,
         audited_state=s,
         evidence=ref("audit", "a-1"),
+        session=session,
     )
 
 

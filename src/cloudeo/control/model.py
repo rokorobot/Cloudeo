@@ -427,6 +427,17 @@ class StateIdentity(_Frozen):
     content_sha256: Sha256
 
 
+class SessionEvidence(_Frozen):
+    """What the audit runner observed about the session it ran the audit in.
+
+    Supplied by the runner, never by the auditing agent's own claim (§9).
+    """
+
+    session_id: Text
+    fresh: bool
+    evidence: EvidenceRef
+
+
 class AuditRecord(_Frozen):
     """A normalized audit result (AuditorVerification) and the state it covers."""
 
@@ -437,6 +448,7 @@ class AuditRecord(_Frozen):
     format_repair: Literal["not_needed", "not_provided", "accepted", "rejected"]
     audited_state: StateIdentity
     evidence: EvidenceRef
+    session: SessionEvidence | None = None
 
     @property
     def authoritative(self) -> bool:
@@ -446,6 +458,24 @@ class AuditRecord(_Frozen):
             and self.reason == "report_complete"
             and self.format_repair != "accepted"
         )
+
+
+def audit_independence_gaps(
+    required: tuple[IndependenceRequirement, ...],
+    audit: AuditRecord,
+    auditor: AgentProfile | DirectToolProfile,
+    producers: tuple[AgentProfile | DirectToolProfile, ...],
+) -> tuple[str, ...]:
+    """independence_gaps() for a recorded audit (V2C-14).
+
+    A fresh session is met only if the profile declares one and the runner's
+    evidence shows this audit actually ran in a fresh session; without that
+    evidence the check fails closed.
+    """
+    gaps = set(independence_gaps(required, audit.role, auditor, producers))
+    if not (audit.session is not None and audit.session.fresh):
+        gaps.add(f"{audit.role}:{_I.FRESH_SESSION}")
+    return tuple(f"{audit.role}:{r}" for r in required if f"{audit.role}:{r}" in gaps)
 
 
 class TestRecord(_Frozen):
@@ -846,9 +876,9 @@ class WorkOrder(_Frozen):
             ]
             checks.append((self.approved_plan.risk_class, self.final_audit, written))
         for risk_class, audit, producers in checks:
-            gaps = independence_gaps(
+            gaps = audit_independence_gaps(
                 policy.required(risk_class),
-                audit.role,
+                audit,
                 used[audit.auditor],
                 tuple(used[r] for r in dict.fromkeys(producers)),
             )

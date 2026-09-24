@@ -1676,21 +1676,28 @@ Design choices:
 
 - A project policy can be stricter than the contract but never weaker. Only
   a per-WorkOrder, recorded waiver can accept less.
-- "Fresh session" is checked as the auditor profile's declared `session`.
-  Confirming at runtime that an audit really ran in a fresh session belongs to
-  the audit runners; V2C-20's deferred obligation now says so.
+- A fresh session is met only when the auditor profile declares one **and**
+  the audit carries the runner's `SessionEvidence` showing this audit ran in a
+  fresh session. Without that evidence the check fails closed. The
+  requirement stays with V2C-14; producing the evidence is runtime work. For
+  final verification that work is V2C-20's deferred obligation (the contract
+  requires a fresh audit there). For code and Memory Audits, no audit can
+  approve until an audit runner supplies the evidence.
 - Model families and inference providers are compared as exact strings.
 
 Validation (offline, with the `longhorizon` extra):
 
-- Full suite: **661 collected, 648 passed, 13 strict-xfailed**, with 0
+- Full suite: **662 collected, 649 passed, 13 strict-xfailed**, with 0
   failures, errors, or unexpected passes. Relative to `86993de` (651
-  collected, 636 passed, 15 xfailed): +12 passing tests (10 in
+  collected, 636 passed, 15 xfailed): +13 passing tests (11 in
   `tests/test_control_machine.py`, 2 in `tests/test_control_store.py`), and
   `test_deferred_obligation[V2C-14]` and `[V2C-18]` removed.
-- Traceability: **10 ENFORCED, 13 DEFERRED, 0 NOT_APPLICABLE.**
-- `scripts/v2c_gate.py` first failed on exactly that manifest diff (12 added,
-  2 removed). The manifest was then regenerated deliberately (95 entries: 82
-  `pass`, 13 `xfail`), and the gate passes.
-- Each new guard was disabled in turn (11 guards); its negative test failed
+- Traceability: **10 ENFORCED, 13 DEFERRED, 0 NOT_APPLICABLE.** The V2C-01 K1
+  check still passes: `cloudeo.control` imports nothing it forbids.
+- `scripts/v2c_gate.py` failed first on exactly that manifest diff, in two
+  steps: 12 added and 2 removed in `beb42e2`, then
+  `test_v2c_14_an_audit_without_fresh_session_evidence_cannot_approve` added.
+  Each time the manifest was regenerated deliberately afterwards (now 96
+  entries: 83 `pass`, 13 `xfail`), and the gate passes.
+- Each new guard was disabled in turn (12 guards); its negative test failed
   every time.
