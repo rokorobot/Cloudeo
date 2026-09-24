@@ -1,0 +1,605 @@
+{
+  "detail": {
+    "wo-1": {
+      "attention": {
+        "availableDecisions": [
+          "resume",
+          "replan",
+          "change_agent",
+          "change_budget",
+          "defer",
+          "abort"
+        ],
+        "code": "INDEPENDENCE_UNAVAILABLE",
+        "decisions": [],
+        "headline": "no independent final_verifier",
+        "pausedAtCheckpoint": "cccccccccccccccccccccccccccccccccccccccc",
+        "raisedFrom": "executing",
+        "reasons": [
+          {
+            "code": "INDEPENDENCE_UNAVAILABLE",
+            "evidenceCount": 1,
+            "severity": "blocking",
+            "status": "open",
+            "suggestions": [],
+            "summary": "no independent final_verifier"
+          }
+        ]
+      },
+      "audit": {
+        "artifactCount": 4,
+        "auditStatus": "VERIFIED",
+        "auditedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "auditor": "sol-auditor v1 \u00b7 code_auditor",
+        "authoritative": true,
+        "blockId": "b1",
+        "blockTitle": "implement b1",
+        "checkpoint": "cccccccccccccccccccccccccccccccccccccccc",
+        "contentSha": "0000000000000000000000000000000000000000000000000000000000000001",
+        "executor": "opus-coder v1",
+        "proven": [
+          {
+            "label": "acceptance checks recorded as passing on the audited state",
+            "tone": "ok",
+            "value": 1
+          },
+          {
+            "label": "paths changed",
+            "value": 1
+          },
+          {
+            "label": "changed paths outside the block scope",
+            "tone": "ok",
+            "value": 0
+          },
+          {
+            "label": "rejected checkpoints kept as evidence",
+            "tone": "ok",
+            "value": 0
+          }
+        ],
+        "tests": [
+          {
+            "result": "passed",
+            "suite": "acceptance checks"
+          }
+        ],
+        "verdict": "BLOCK_DONE",
+        "verification": "MATCH"
+      },
+      "blocks": {
+        "done": 1,
+        "total": 2
+      },
+      "budget": {
+        "maxAttemptsPerBlock": 2
+      },
+      "checkpoints": {
+        "items": [
+          {
+            "id": "C0",
+            "label": "planned baseline",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "status": "baseline"
+          },
+          {
+            "auditedBy": "sol-auditor v1",
+            "id": "C1",
+            "label": "implement b1",
+            "sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "status": "accepted"
+          }
+        ],
+        "repo": "demo"
+      },
+      "currentStage": "execute",
+      "evidenceCount": 6,
+      "execution": {
+        "blocks": [
+          {
+            "attempts": 1,
+            "failedAttempts": 0,
+            "id": "b1",
+            "phase": "BLOCK_DONE",
+            "status": "proven",
+            "title": "implement b1"
+          },
+          {
+            "attempts": 0,
+            "failedAttempts": 0,
+            "id": "b2",
+            "phase": "PENDING",
+            "status": "pending",
+            "title": "implement b2"
+          }
+        ],
+        "currentBlockId": "b2",
+        "runtime": "unavailable"
+      },
+      "hasDetail": true,
+      "history": [
+        {
+          "event": "created",
+          "state": "draft",
+          "version": 1
+        },
+        {
+          "event": "intake_started",
+          "state": "intake",
+          "version": 2
+        },
+        {
+          "event": "plan_proposed",
+          "state": "plan_proposed",
+          "version": 3
+        },
+        {
+          "event": "plan_approved",
+          "state": "plan_approved",
+          "version": 4
+        },
+        {
+          "event": "candidate_attached",
+          "state": "plan_approved",
+          "version": 5
+        },
+        {
+          "event": "execution_started",
+          "state": "executing",
+          "version": 6
+        },
+        {
+          "event": "block_b1_done",
+          "state": "executing",
+          "version": 7
+        },
+        {
+          "event": "attention_raised",
+          "state": "attention",
+          "version": 8
+        }
+      ],
+      "id": "wo-1",
+      "memoryCuration": [],
+      "objective": "Add the feature.",
+      "plan": {
+        "acceptanceCriteria": [
+          {
+            "status": "unassessed",
+            "text": "feature works"
+          }
+        ],
+        "approval": {
+          "approvedAt": "2026-09-23T12:00:00+00:00",
+          "approvedBy": "robert",
+          "planVersion": 1,
+          "profileVersion": 1
+        },
+        "architectureSummary": "add the feature",
+        "bindings": [
+          {
+            "fallbackConditions": [
+              "model_unavailable",
+              "runtime_unavailable"
+            ],
+            "fallbacks": [
+              "sonnet-coder v1"
+            ],
+            "primary": "opus-coder v1",
+            "role": "primary_code_executor"
+          },
+          {
+            "fallbackConditions": [],
+            "fallbacks": [],
+            "primary": "sol-auditor v1",
+            "role": "code_auditor"
+          },
+          {
+            "fallbackConditions": [],
+            "fallbacks": [],
+            "primary": "memory-curator v1",
+            "role": "memory_curator"
+          },
+          {
+            "fallbackConditions": [],
+            "fallbacks": [],
+            "primary": "memory-auditor v1",
+            "role": "memory_auditor"
+          },
+          {
+            "fallbackConditions": [],
+            "fallbacks": [],
+            "primary": "final-verifier v1",
+            "role": "final_verifier"
+          }
+        ],
+        "blocks": [
+          {
+            "acceptanceChecks": [
+              "uv run pytest -q"
+            ],
+            "goal": "implement b1",
+            "id": "b1",
+            "memoryImpact": false,
+            "order": 1,
+            "scope": [
+              "src/app"
+            ]
+          },
+          {
+            "acceptanceChecks": [
+              "uv run pytest -q"
+            ],
+            "goal": "implement b2",
+            "id": "b2",
+            "memoryImpact": false,
+            "order": 2,
+            "scope": [
+              "src/app"
+            ]
+          }
+        ],
+        "planVersion": 1
+      },
+      "profile": {
+        "id": "demo",
+        "version": "v1"
+      },
+      "project": "demo",
+      "promote": {
+        "checks": [
+          {
+            "text": "Trust kernel re-checks the audited state and promotes"
+          }
+        ],
+        "facts": [],
+        "preconditions": [
+          {
+            "met": false,
+            "text": "Original VERIFIED final audit on record"
+          }
+        ],
+        "summary": "The trust kernel promotes the audited candidate only if it is still the audited state."
+      },
+      "reason": "INDEPENDENCE_UNAVAILABLE",
+      "risk": "low",
+      "source": "control",
+      "stages": {
+        "audit": "pending",
+        "checkpoint": "pending",
+        "execute": "attention",
+        "memory": "skipped",
+        "plan": "done",
+        "promote": "pending",
+        "verify": "pending"
+      },
+      "state": "attention",
+      "timestamps": [
+        {
+          "at": "2026-09-23T12:00:00+00:00",
+          "by": "robert",
+          "label": "Execution profile v1 approved"
+        },
+        {
+          "at": "2026-09-23T12:00:00+00:00",
+          "by": "robert",
+          "label": "Plan v1 approved"
+        }
+      ],
+      "title": "Add the feature.",
+      "verify": {
+        "checks": [
+          {
+            "text": "feature works"
+          }
+        ],
+        "facts": [],
+        "preconditions": [
+          {
+            "met": false,
+            "text": "All 2 blocks BLOCK_DONE"
+          },
+          {
+            "met": true,
+            "text": "final_verifier bound to final-verifier v1"
+          }
+        ],
+        "summary": "final_verifier audits the frozen candidate against the acceptance criteria, read-only and independently of the executor."
+      },
+      "version": 8
+    },
+    "wo-2": {
+      "agent": {
+        "profile": "opus-coder v1",
+        "role": "primary_code_executor"
+      },
+      "audit": {
+        "artifactCount": 3,
+        "auditStatus": "VERIFIED",
+        "auditedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "auditor": "sol-auditor v1 \u00b7 code_auditor",
+        "authoritative": true,
+        "blockId": "b1",
+        "blockTitle": "implement b1",
+        "contentSha": "0000000000000000000000000000000000000000000000000000000000000001",
+        "executor": "opus-coder v1",
+        "pendingNote": "Block b1 is BLOCK_CHECKPOINT; it is not proven until its checkpoint is.",
+        "proven": [
+          {
+            "label": "acceptance checks recorded as passing on the audited state",
+            "tone": "ok",
+            "value": 1
+          },
+          {
+            "label": "paths changed",
+            "value": 1
+          },
+          {
+            "label": "changed paths outside the block scope",
+            "tone": "ok",
+            "value": 0
+          },
+          {
+            "label": "rejected checkpoints kept as evidence",
+            "tone": "ok",
+            "value": 0
+          }
+        ],
+        "tests": [
+          {
+            "result": "passed",
+            "suite": "acceptance checks"
+          }
+        ],
+        "verdict": "NOT_YET_PROVEN",
+        "verification": "PENDING"
+      },
+      "blocks": {
+        "done": 0,
+        "total": 1
+      },
+      "budget": {
+        "maxAttemptsPerBlock": 2
+      },
+      "checkpoints": {
+        "items": [
+          {
+            "id": "C0",
+            "label": "planned baseline",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "status": "baseline"
+          },
+          {
+            "id": "C1",
+            "label": "implement b1",
+            "status": "candidate"
+          }
+        ],
+        "repo": "demo"
+      },
+      "currentStage": "checkpoint",
+      "evidenceCount": 4,
+      "execution": {
+        "blocks": [
+          {
+            "attempts": 1,
+            "failedAttempts": 0,
+            "id": "b1",
+            "phase": "BLOCK_CHECKPOINT",
+            "status": "active",
+            "title": "implement b1"
+          }
+        ],
+        "currentBlockId": "b1",
+        "runtime": "unavailable"
+      },
+      "hasDetail": true,
+      "history": [
+        {
+          "event": "created",
+          "state": "draft",
+          "version": 1
+        },
+        {
+          "event": "intake_started",
+          "state": "intake",
+          "version": 2
+        },
+        {
+          "event": "plan_proposed",
+          "state": "plan_proposed",
+          "version": 3
+        },
+        {
+          "event": "plan_approved",
+          "state": "plan_approved",
+          "version": 4
+        },
+        {
+          "event": "candidate_attached",
+          "state": "plan_approved",
+          "version": 5
+        },
+        {
+          "event": "execution_started",
+          "state": "executing",
+          "version": 6
+        },
+        {
+          "event": "block_b1_code_approved",
+          "state": "executing",
+          "version": 7
+        },
+        {
+          "event": "block_b1_checkpoint",
+          "state": "executing",
+          "version": 8
+        }
+      ],
+      "id": "wo-2",
+      "memoryCuration": [],
+      "objective": "Refresh the importer.",
+      "plan": {
+        "acceptanceCriteria": [
+          {
+            "status": "unassessed",
+            "text": "feature works"
+          }
+        ],
+        "approval": {
+          "approvedAt": "2026-09-23T12:00:00+00:00",
+          "approvedBy": "robert",
+          "planVersion": 1,
+          "profileVersion": 1
+        },
+        "architectureSummary": "add the feature",
+        "bindings": [
+          {
+            "fallbackConditions": [
+              "model_unavailable",
+              "runtime_unavailable"
+            ],
+            "fallbacks": [
+              "sonnet-coder v1"
+            ],
+            "primary": "opus-coder v1",
+            "role": "primary_code_executor"
+          },
+          {
+            "fallbackConditions": [],
+            "fallbacks": [],
+            "primary": "sol-auditor v1",
+            "role": "code_auditor"
+          },
+          {
+            "fallbackConditions": [],
+            "fallbacks": [],
+            "primary": "memory-curator v1",
+            "role": "memory_curator"
+          },
+          {
+            "fallbackConditions": [],
+            "fallbacks": [],
+            "primary": "memory-auditor v1",
+            "role": "memory_auditor"
+          },
+          {
+            "fallbackConditions": [],
+            "fallbacks": [],
+            "primary": "final-verifier v1",
+            "role": "final_verifier"
+          }
+        ],
+        "blocks": [
+          {
+            "acceptanceChecks": [
+              "uv run pytest -q"
+            ],
+            "goal": "implement b1",
+            "id": "b1",
+            "memoryImpact": false,
+            "order": 1,
+            "scope": [
+              "src/app"
+            ]
+          }
+        ],
+        "planVersion": 1
+      },
+      "profile": {
+        "id": "demo",
+        "version": "v1"
+      },
+      "project": "demo",
+      "promote": {
+        "checks": [
+          {
+            "text": "Trust kernel re-checks the audited state and promotes"
+          }
+        ],
+        "facts": [],
+        "preconditions": [
+          {
+            "met": false,
+            "text": "Original VERIFIED final audit on record"
+          }
+        ],
+        "summary": "The trust kernel promotes the audited candidate only if it is still the audited state."
+      },
+      "risk": "low",
+      "source": "control",
+      "stages": {
+        "audit": "done",
+        "checkpoint": "active",
+        "execute": "done",
+        "memory": "skipped",
+        "plan": "done",
+        "promote": "pending",
+        "verify": "pending"
+      },
+      "state": "executing",
+      "timestamps": [
+        {
+          "at": "2026-09-23T12:00:00+00:00",
+          "by": "robert",
+          "label": "Execution profile v1 approved"
+        },
+        {
+          "at": "2026-09-23T12:00:00+00:00",
+          "by": "robert",
+          "label": "Plan v1 approved"
+        }
+      ],
+      "title": "Refresh the importer.",
+      "verify": {
+        "checks": [
+          {
+            "text": "feature works"
+          }
+        ],
+        "facts": [],
+        "preconditions": [
+          {
+            "met": false,
+            "text": "All 1 blocks BLOCK_DONE"
+          },
+          {
+            "met": true,
+            "text": "final_verifier bound to final-verifier v1"
+          }
+        ],
+        "summary": "final_verifier audits the frozen candidate against the acceptance criteria, read-only and independently of the executor."
+      },
+      "version": 8
+    }
+  },
+  "list": {
+    "workOrders": [
+      {
+        "blocks": {
+          "done": 1,
+          "total": 2
+        },
+        "hasDetail": true,
+        "id": "wo-1",
+        "project": "demo",
+        "reason": "INDEPENDENCE_UNAVAILABLE",
+        "source": "control",
+        "state": "attention",
+        "title": "Add the feature."
+      },
+      {
+        "blocks": {
+          "done": 0,
+          "total": 1
+        },
+        "hasDetail": true,
+        "id": "wo-2",
+        "project": "demo",
+        "source": "control",
+        "state": "executing",
+        "title": "Refresh the importer."
+      }
+    ]
+  }
+}
