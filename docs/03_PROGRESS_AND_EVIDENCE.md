@@ -1683,6 +1683,12 @@ Design choices:
   final verification that work is V2C-20's deferred obligation (the contract
   requires a fresh audit there). For code and Memory Audits, no audit can
   approve until an audit runner supplies the evidence.
+- Trust boundary: any caller can construct `SessionEvidence`, so the control
+  layer proves that the evidence was supplied, not who supplied it. It is
+  trusted runtime input that only the integration layer's audit runner may
+  create, never the auditing agent. The producer for code and Memory Audits
+  has no owning invariant yet. It is recorded as an open integration-layer
+  obligation in `14_V2C_TRACEABILITY.md`.
 - Model families and inference providers are compared as exact strings.
 
 Validation (offline, with the `longhorizon` extra):

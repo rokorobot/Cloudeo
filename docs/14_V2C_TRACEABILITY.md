@@ -57,3 +57,22 @@ The meta-tests check that:
 
 **Totals:** 10 ENFORCED, 13 DEFERRED, 0 NOT_APPLICABLE; 13 strict expected-failure
 obligation tests.
+
+## Trust boundaries and open integration obligations
+
+An ENFORCED status means the control layer requires and checks the listed
+evidence. It does not make that evidence authentic: `cloudeo.control` is pure
+and cannot tell who constructed a record. The integration layer (not yet
+built) must be the only producer of these runtime inputs:
+
+- **`SessionEvidence` (V2C-14).** It is trusted runtime input, never an
+  auditor's assertion. Only the audit runner that created the session may
+  create it; the auditing agent must never be able to attest its own
+  freshness. Producers:
+  - final verification: owned by V2C-20 (DEFERRED);
+  - code and Memory Audits: **no invariant owns this yet.** It is an explicit
+    integration-layer obligation. Until a runner supplies the evidence, no
+    code or Memory Audit can approve, because V2C-14 fails closed.
+- `KernelOutcome` (V2C-04), the accepted baseline (V2C-22), and
+  `CheckpointProof` (V2C-19) are likewise runtime inputs whose producers are
+  the DEFERRED obligations in the table.

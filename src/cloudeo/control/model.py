@@ -430,7 +430,10 @@ class StateIdentity(_Frozen):
 class SessionEvidence(_Frozen):
     """What the audit runner observed about the session it ran the audit in.
 
-    Supplied by the runner, never by the auditing agent's own claim (§9).
+    Trust boundary: this layer requires the evidence and checks it, but cannot
+    tell who built it; any caller can construct one. It is trusted runtime
+    input: only the integration layer's audit runner may create it, from the
+    session it created, never from the auditing agent's own claim (§9).
     """
 
     session_id: Text
