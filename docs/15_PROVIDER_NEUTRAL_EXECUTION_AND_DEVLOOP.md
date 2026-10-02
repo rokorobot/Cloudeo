@@ -29,7 +29,7 @@ Cloudeo WorkOrder + Orchestration
 Provider-neutral execution intent                                |
         |                                                        |
         v                                                        |
-Execution profile + adapter registry                             |
+Control-store profile -> ExecutionRequest.kind -> dispatcher       |
         |                                                        |
         +--> Codex CLI / OpenAI                                  |
         +--> Claude Code / Anthropic                             |
@@ -164,6 +164,8 @@ Cloudeo MUST NOT silently fall from subscription-authenticated CLI execution to 
 
 If a subscription quota is exhausted and metered API use is not explicitly pre-approved, the result is a classified unavailable/quota condition followed by an allowed fallback or `USER_ATTENTION_REQUIRED`.
 
+A profile declares its billing mode as immutable data. The allowed modes, whether metered use is allowed, and any metered cap are project-level policy approved with the Project Execution Profile (ADR-035). A metered fallback exists only as an approved fallback binding with its condition.
+
 ### PN-06 — execution completion is never verification
 
 A provider or adapter may report that a task completed. Only Cloudeo verification can produce `CODE_APPROVED`, `BLOCK_DONE`, or promotion.
@@ -174,19 +176,9 @@ No adapter may grant itself verification authority.
 
 No planner/executor/reviewer pair may converse without a WorkOrder budget.
 
-For DevLoop V1:
+Bounds that decide whether work may continue (repair rounds, stopping on a repeated classified failure, scope expansion, baseline drift) are **control policy**. If adopted they are added as control rules and recorded in the control store (ADR-035, "Loop policy belongs to control"). DevLoop only runs the recipe; it never decides whether work may proceed. Baseline drift continues to follow the existing control rules.
 
-```text
-max implementation rounds: configurable, default 3
-max repair/review rounds: configurable, default 3
-same classified failure twice: stop/escalate
-scope expansion: stop/escalate
-baseline drift: stop/replan according to existing control rules
-merge to protected/main branch: human gate
-production deployment: human gate
-```
-
-The control store records every round.
+Publishing a branch or pull request, merging it, and production deployment are separate human-approved actions outside the gate (see §13.5).
 
 ### PN-08 — evidence, not prose, is authority
 
@@ -248,12 +240,22 @@ If it does, the abstraction is wrong or the new capability is a genuinely new ex
 
 The provider-neutral extension MUST be added to the existing V2C traceability discipline rather than creating a parallel compliance system.
 
-`docs/14_V2C_TRACEABILITY.md` remains the canonical map for V2C implementation status. New provider-neutral invariants introduced by the next ADR should either:
+`docs/14_V2C_TRACEABILITY.md` remains the canonical map for V2C implementation status. New provider-neutral invariants introduced by ADR-035 should either:
 
 - be mapped into the existing traceability document when they refine a V2C invariant; or
 - receive a clearly separate provider-neutral invariant namespace and traceability table when they are genuinely new.
 
 No invariant is considered enforced merely because an adapter test passes; the traceability record must point to the enforcing code and offline test.
+
+ADR-035 traces the genuinely new invariants in `14_V2C_TRACEABILITY.md` under a Provider-Neutral (PN) section: PN-01, PN-03, PN-04, PN-05, PN-07, and PN-10 from this document, plus PN-12 and PN-13 below. All are DEFERRED until implemented.
+
+### PN-12 — dependency direction (from ADR-035)
+
+`cloudeo.orchestration` may depend on `cloudeo.control` and `cloudeo.execution`. The edges `control -> execution`, `control -> orchestration`, `execution -> control`, and `execution -> orchestration` are forbidden, each with a mechanical AST check and a negative test. See §17.
+
+### PN-13 — native-CLI isolation (from ADR-035)
+
+A candidate Git worktree is not a security boundary. A write-capable native agent CLI runs only in an OS-isolated copy of the candidate. See §8.3.
 
 ---
 
@@ -288,24 +290,23 @@ No invariant is considered enforced merely because an adapter test passes; the t
                                 |
                                 v
 +----------------------------------------------------------------+
-|                    EXECUTION POLICY / REGISTRY                   |
-| ExecutionProfile registry                                      |
-| Adapter registry                                                |
-| Capability filter                                               |
-| Health / quota observations                                     |
-| Explicit fallback conditions                                    |
+|             CONTROL-OWNED POLICY (cloudeo.control)               |
+| ExecutionProfile registry (control store, canonical)            |
+| ProjectExecutionProfile bindings, fallback conditions,          |
+| billing policy, independence policy, loop policy                |
 +-------------------------------+--------------------------------+
                                 |
                                 v
 +----------------------------------------------------------------+
-|                       EXECUTION PLANES                           |
+|     EXECUTION (cloudeo.execution): ExecutionDispatcher           |
+|  routes ONLY by ExecutionRequest.kind                            |
 | direct_tool | uhp_harness | native_agent_cli | model_api |      |
-| browser | human | future                                        |
+| browser | human | future   (each plane = one request kind)       |
 +-------------------------------+--------------------------------+
                                 |
                                 v
 +----------------------------------------------------------------+
-|                        ADAPTERS                                  |
+|     ADAPTERS (adapter registry lives in cloudeo.execution)       |
 | treg | uhp | codex_cli | claude_code | kimi_code |             |
 | openai_compatible_http | future                                 |
 +-------------------------------+--------------------------------+
@@ -332,7 +333,7 @@ ExecutionOutcome
 ExecutionDispatcher
 ```
 
-This is an execution-class seam and SHOULD be preserved.
+`ExecutionRequest.kind` is the execution-plane seam and MUST be preserved. `ExecutionDispatcher` remains the sole router by request kind. A new plane is a new request kind with a neutral request model (ADR-035).
 
 The new design adds provider/runtime extensibility around it instead of replacing it wholesale.
 
@@ -351,7 +352,8 @@ Accepted ADR-030 is a hard boundary for this design:
 - `cloudeo.control` remains pure policy/state-machine code and owns WorkOrder transitions.
 - dependency direction is one-way: orchestration may depend on control's public surface; control never depends on orchestration.
 - `cloudeo.orchestration` collects trusted runtime evidence and translates it into public control inputs.
-- orchestration may read a WorkOrder but MUST NOT construct, mutate, or derive a changed WorkOrder or records nested in one; every WorkOrder transition goes through the public control state machine.
+- orchestration may read a WorkOrder but MUST NOT construct, copy with changes, or mutate WorkOrder state records owned by the state machine; every WorkOrder transition goes through the public control state machine. Public control input/evidence objects such as `KernelOutcome` may be constructed by orchestration as required.
+- ADR-035 amends ADR-030 in one respect only: orchestration may also depend on `cloudeo.execution`.
 - orchestration may consume trusted runtime evidence such as `GatedPromotionResult`, `WorkspaceBroker.accepted_state()`, `SessionEvidence`, and normalized runtime evidence without weakening their meaning.
 - direct `WorkspaceBroker.promote()` remains permanently forbidden outside the authorized promotion gate path.
 - `GatedPromotionResult` is mapped to the control-owned `KernelOutcome`; orchestration does not invent promotion state.
@@ -393,34 +395,31 @@ It contains no provider name, model name, CLI command, API base URL, token, or s
 
 ### 5.2 `ExecutionProfile`
 
-Extend the accepted V2 concept rather than create a competing object.
+There is no new profile type here. The existing V2 control types are canonical and are not redefined by this document:
 
-```python
-class ExecutionProfile(BaseModel):
-    id: str
-    version: int
-    version_fingerprint: str
-
-    execution_plane: ExecutionPlane
-    adapter_id: str
-    adapter_version_constraint: str | None
-
-    provider: str | None
-    inference_provider: str | None
-    requested_model: str | None
-
-    capabilities: frozenset[Capability]
-    permissions: PermissionEnvelope
-    budget: StepBudget
-
-    auth_profile_ref: str | None
-    billing_policy: BillingPolicy
-    runtime_options: dict[str, JsonValue]
+```text
+_ExecutionProfileBase   profile_id, version, permissions, limits, eligible_roles
+AgentProfile            runtime (harness_id/version), model (provider, model_id,
+                        model_version, family, inference_provider), reasoning,
+                        context_policy, session ("fresh" | "persistent")
+DirectToolProfile       capability, provider
+ProjectExecutionProfile role bindings and fallback bindings
 ```
 
-`runtime_options` is adapter-owned and must not be interpreted by the control layer.
+Computed fingerprints (`ProfileRef`), model `family`, `inference_provider`, `session`, `eligible_roles`, `permissions`, and `limits` are preserved as they are. The registry is the existing control-store profile registry. Profiles remain immutable once registered.
 
-Profiles remain immutable once used.
+Provider-neutral profile data that a later slice needs is added to these types as **additive fields**, each in its own slice. Candidates:
+
+```text
+adapter_id            selects the adapter within a plane's backend
+execution_plane       the request kind the profile executes as
+billing_mode          immutable declaration; policy lives in the project profile
+auth_profile_ref      non-secret reference only
+```
+
+Adding fields changes every profile's fingerprint once, so it happens before profiles are relied on outside tests. No second profile type or profile registry is created. Adapter-owned runtime options, if any, are opaque to control and are added only with the same care.
+
+`Permissions` is the authority a profile is granted, evaluated by control. Capabilities (§5.3) are facts about an adapter, established by conformance tests and evaluated in `cloudeo.execution`. Neither replaces the other.
 
 ### 5.3 `AdapterDescriptor`
 
@@ -474,7 +473,7 @@ Absence of quota information never means unlimited quota.
 
 Secrets do not belong in `ExecutionProfile`, WorkOrder Memory, Project Memory, logs, or Git.
 
-Profiles carry only an `auth_profile_ref`.
+Profiles carry at most a non-secret `auth_profile_ref`. Secrets never enter profiles, Git, logs, or evidence.
 
 Example auth modes:
 
@@ -497,7 +496,7 @@ self_hosted
 unknown
 ```
 
-Policy example:
+Policy example (project-level, approved with the Project Execution Profile, not stored in an adapter or a profile):
 
 ```python
 BillingPolicy(
@@ -506,6 +505,8 @@ BillingPolicy(
     max_metered_cost_usd=None,
 )
 ```
+
+The profile declares one immutable billing mode. No adapter may run in a billing mode other than the one its profile declares. There is no silent subscription-to-metered transition: a metered fallback exists only as an approved fallback binding with its condition.
 
 A development project can therefore express:
 
@@ -525,40 +526,28 @@ The adapter MUST report the observed billing mode when known. It MUST NOT infer 
 
 ## 7. Adapter protocol
 
-A provider adapter should be small enough to test independently.
+A provider adapter should be small enough to test independently. Adapters live in `cloudeo.execution` and sit **below** the dispatcher: `ExecutionDispatcher` routes by `ExecutionRequest.kind` to a plane backend, and the backend selects an adapter by `adapter_id` from the adapter registry (§10.1).
 
-Illustrative protocol:
+There is no `ExecutorAdapter.execute(intent, profile)` entry point and no second dispatch path beside the dispatcher. Orchestration builds the plane's neutral request model from a `RoleExecutionIntent` and an already-approved profile; the backend executes that request.
+
+Illustrative shape of a plane-internal adapter:
 
 ```python
-class ExecutorAdapter(Protocol):
+class PlaneAdapter(Protocol):
     descriptor: AdapterDescriptor
 
-    async def health(self, profile: ExecutionProfile) -> AdapterHealth:
-        ...
+    async def health(self) -> AdapterHealth: ...
 
-    async def observe_quota(
-        self, profile: ExecutionProfile
-    ) -> QuotaObservation | None:
-        ...
+    async def observe_quota(self) -> QuotaObservation | None: ...
 
-    async def execute(
-        self,
-        intent: RoleExecutionIntent,
-        profile: ExecutionProfile,
-    ) -> ExecutionOutcome:
-        ...
+    async def run(self, request: <plane request model>) -> ExecutionOutcome: ...
 
-    async def cancel(
-        self,
-        execution_ref: str,
-        profile: ExecutionProfile,
-    ) -> CancellationOutcome:
-        ...
+    async def cancel(self, execution_ref: str) -> CancellationOutcome: ...
 ```
 
 Not every adapter supports every optional method. Unsupported behavior is explicit in the descriptor.
 
-The execution method receives an already-approved immutable profile. It does not choose a different profile, provider, or model on its own authority (ADR-035). A provider-side substitution is recorded as requested versus actual identity and is never an approved fallback.
+The adapter receives an already-approved request. It never picks a different profile, provider, or model on its own authority (ADR-035). A provider-side substitution is recorded as requested versus actual identity and is never an approved fallback.
 
 ---
 
@@ -587,6 +576,10 @@ codex_cli
 claude_code
 kimi_code
 ```
+
+This plane is a new request kind with a neutral request model, routed by the existing dispatcher. Subprocess use belongs in `cloudeo.execution`; orchestration still may not use `subprocess`.
+
+**Isolation rule (ADR-035, PN-13).** A candidate Git worktree is not a security boundary: it shares refs and objects with the canonical repository, so a shell-capable agent in it could move `refs/cloudeo` around the gate. Write-capable Codex, Claude, or Kimi execution requires an OS-isolated copy of the candidate (container, sandbox, or separate user) with no access to the canonical repository or accepted refs. Changes return only through the existing bundle, validate, and apply path (`build_input_bundle`, `validate_output_bundle`, `check_candidate_unchanged`, `apply_delta`), never by writing the worktree. Until that isolation exists and is tested, no native-CLI profile may be bound to a write-capable role.
 
 The generic plane owns subprocess lifecycle semantics. The concrete adapter owns CLI syntax, authentication discovery, structured-output invocation, session continuation, and provider-specific error classification.
 
@@ -618,7 +611,7 @@ A human may satisfy a role step under an approved `HumanExecutionProfile`.
 
 The current `RuntimeIdentity.backend: Literal["treg", "uhp"]` is too closed for the target architecture.
 
-The future normalized identity should use extensible strings/enums at the right dimensions:
+The runtime identity gains the following fields **additively** (existing fields and behavior are preserved) and uses extensible strings/enums at the right dimensions:
 
 ```python
 class RuntimeIdentity(BaseModel):
@@ -649,7 +642,7 @@ No field is fabricated when the runtime does not report it.
 
 ### 9.1 Provider-neutral errors
 
-The current provider/protocol-specific error-source literal should evolve toward:
+`ExecutionError` gains a provider-neutral error class additively; native codes and details are kept as evidence. Orchestration maps error classes to the existing `FallbackCondition` values and to `AUDITOR_ERROR` routing (the producer V2C-12 and V2C-17 still lack), and the LongHorizon `AuditorFailure.kind` maps into the same classes. Control semantics do not change. Illustrative shape:
 
 ```python
 class ExecutionError(BaseModel):
@@ -711,7 +704,7 @@ The normalized fields are stable; the original adapter evidence is retained with
 
 ## 10. Registry and discovery
 
-Cloudeo needs two registries.
+Profile and adapter registries have different owners and are never merged.
 
 ### 10.1 Adapter registry
 
@@ -726,13 +719,13 @@ treg         -> TregAdapter
 ...
 ```
 
-Registration may be built-in, Python-entry-point based, or configuration driven. The control package must not import these implementations.
+The adapter registry belongs only in `cloudeo.execution`. A plane's backend selects an adapter by `adapter_id`; the dispatcher still routes only by request kind. Registration may be built-in, Python-entry-point based, or configuration driven. The control package must not import these implementations.
 
 ### 10.2 Profile registry
 
-Holds immutable approved execution profiles.
+The existing control-store profile registry is canonical and holds immutable approved execution profiles. No second profile registry is introduced.
 
-Role bindings reference profile IDs + versions, never loose provider/model strings.
+Role bindings reference profile IDs + versions (`ProfileRef`), never loose provider/model strings.
 
 ### 10.3 Discovery is advisory until approved
 
@@ -780,38 +773,11 @@ Performance Memory may recommend future profile changes but does not change a li
 
 ## 12. Provider independence for review/audit
 
-Execution and verification SHOULD be separable across providers.
+Execution and verification SHOULD be separable across providers, for example a Codex planner, a Claude executor, and a Kimi reviewer.
 
-Examples:
+This document defines no independence levels. `13_V2_CONTROL_ARCHITECTURE.md` §8.6 and V2C-14 are authoritative: the cumulative risk table, measurement by role against the producers, runner-supplied fresh-session evidence, and `INDEPENDENCE_UNAVAILABLE`. Provider neutrality may add requirements (for example a different provider at a given risk class, through a stricter `IndependencePolicy`) and never relaxes one.
 
-```text
-Codex planner -> Claude executor -> Kimi reviewer
-Kimi planner  -> Claude executor -> Codex reviewer
-Claude planner -> Codex executor -> Claude auditor
-```
-
-Risk policy defines required independence.
-
-Illustrative levels:
-
-```text
-LOW:
-  separate session required
-  same provider allowed
-
-MEDIUM:
-  auditor profile != executor profile
-  separate session required
-
-HIGH:
-  provider != executor provider
-  model family != executor model family where practical
-  read-only auditor
-```
-
-The exact policy remains a Project Execution Profile decision.
-
-Provider diversity is useful for reducing correlated errors, but it never replaces deterministic tests.
+Provider diversity reduces correlated errors but never replaces deterministic tests.
 
 ---
 
@@ -879,6 +845,7 @@ code_auditor (read-only, independence policy)
         |       |
         |       v
         |   repair instruction derived from evidence
+        |   (only if control policy permits another round)
         |       |
         |       +----> primary_code_executor
         |
@@ -890,33 +857,34 @@ code_auditor (read-only, independence policy)
 
 The provider may change only through an already-approved fallback condition or an explicit user-approved `change_agent` path.
 
-### 13.4 Loop budget
+### 13.4 Loop policy is control policy
 
-Initial V1 default:
+DevLoop executes the recipe; it does not decide whether work may proceed. Whether another repair round is allowed, how many rounds a block may use, and whether a repeated classified failure stops the work are control policy. If adopted they are added as control rules (ADR-035) and the control store records every round.
+
+Candidate rules for that later control slice (not decided here):
 
 ```text
-implementation attempts per block: 3
-audit/repair rounds per block: 3
-wall-clock budget: profile/project configured
-same failure class twice: attention
-new scope discovered: attention
-baseline drift: attention/replan
+repair/audit round budget per block
+same classified failure twice
+new scope discovered
+baseline drift (existing control rules)
 ```
 
 No autonomous "keep trying until it works."
 
 ### 13.5 Git behavior
 
-The executor may:
+The executor may, inside an OS-isolated candidate copy (§8.3):
 
-- edit only the candidate/worktree allowed by the block;
+- edit only what the block allows;
 - run deterministic checks;
-- create local commits/checkpoints as permitted by the WorkOrder;
-- prepare a branch and Draft PR when a publishing adapter/policy is later enabled.
+- produce a candidate delta that returns through the existing bundle/validate/apply path.
+
+"Accepted" means promotion of the broker's accepted ref through the gate. Publishing a branch or pull request, or merging it, is a separate future adapter behind a human-approved gate; it is not part of acceptance.
 
 V1 MUST NOT automatically:
 
-- merge to `main`;
+- publish or merge to protected branches;
 - force-push protected branches;
 - deploy production;
 - change repository security settings;
@@ -953,7 +921,7 @@ This chat may remain the place where the user discusses:
 - ambiguity;
 - material deviations;
 - agent/profile changes;
-- merge/deployment decisions.
+- publishing, merge, and deployment decisions (separate human-approved actions).
 
 The local loop handles routine implementation, testing, evidence collection, and bounded repair.
 
@@ -961,13 +929,15 @@ The local loop handles routine implementation, testing, evidence collection, and
 
 ## 15. Initial adapters
 
+None of these is implemented by the first slice (see §25). Native-CLI adapters additionally require the OS isolation of §8.3 before binding to any write-capable role.
+
 ### 15.1 Codex CLI adapter
 
 Purpose:
 
 - subscription-authenticated or explicitly configured execution;
-- repo inspection/editing;
-- shell/test/Git tasks where supported;
+- repo inspection/editing inside an OS-isolated copy;
+- shell/test tasks where supported;
 - planner/reviewer/executor roles according to profile permissions.
 
 Adapter-specific CLI syntax stays inside `codex_cli.py`.
@@ -977,7 +947,7 @@ Adapter-specific CLI syntax stays inside `codex_cli.py`.
 Purpose:
 
 - subscription-authenticated local software execution;
-- repo editing, testing, and Git operations according to profile permissions.
+- repo editing and testing inside an OS-isolated copy, according to profile permissions.
 
 The adapter MUST distinguish subscription session use from explicit API-key billing when observable/configured.
 
@@ -1017,14 +987,13 @@ src/cloudeo/
 
     orchestration/
         devloop.py                  # bounded software-development recipe
-        role_execution.py           # intent -> approved profile -> execution
+        role_execution.py           # intent -> approved profile -> request kind
         evidence.py                 # trusted runtime evidence collection
         ...
 
     execution/
         contracts.py                # normalized execution contracts
-        registry.py                 # adapter registration / lookup
-        profiles.py                 # execution-profile runtime view
+        registry.py                 # adapter registration / lookup (not profiles)
         errors.py                   # provider-neutral error taxonomy
         conformance.py              # shared adapter tests/contracts
 
@@ -1043,8 +1012,8 @@ src/cloudeo/
             openai_compatible.py
 
     auth/
-        refs.py                     # non-secret auth references/policy
-        ...                         # secret backend integration later
+        refs.py                     # non-secret auth references only
+        ...                         # secrets never enter profiles or Git
 ```
 
 Do not implement this tree mechanically if the newer local ADR-030 branch already established better module locations. The dependency rules are more important than exact filenames.
@@ -1053,32 +1022,20 @@ Do not implement this tree mechanically if the newer local ADR-030 branch alread
 
 ## 17. Dependency rules
 
-Allowed direction:
+ADR-035 fixes the dependency direction:
 
-```text
-control
-  ^
-  | public calls / immutable data
-  |
-orchestration
-  |
-  v
-execution contracts / registry
-  |
-  v
-execution planes
-  |
-  v
-provider adapters
-```
+| From | To | Rule |
+| --- | --- | --- |
+| `cloudeo.orchestration` | `cloudeo.control` | allowed (ADR-030) |
+| `cloudeo.orchestration` | `cloudeo.execution` | allowed (ADR-035) |
+| `cloudeo.control` | `cloudeo.execution` | forbidden |
+| `cloudeo.control` | `cloudeo.orchestration` | forbidden (ADR-030) |
+| `cloudeo.execution` | `cloudeo.control` | forbidden |
+| `cloudeo.execution` | `cloudeo.orchestration` | forbidden |
 
-Provider adapters MUST NOT import or mutate WorkOrder state.
+Each forbidden edge gets a mechanical AST check with a negative test when the first ADR-035 slice is implemented.
 
-`control` MUST NOT import provider adapters.
-
-Provider SDK objects MUST NOT cross into `control`.
-
-Secrets MUST NOT cross into `control`.
+Provider adapters MUST NOT import or mutate WorkOrder state. Provider SDK objects and secrets MUST NOT cross into `control`. Everything else in ADR-030 stands: direct `promote()` is forbidden outside the authorized gate; the `subprocess` and `cloudeo.workspace.git` bans apply to orchestration (not to `cloudeo.execution`).
 
 ---
 
@@ -1096,7 +1053,7 @@ Required checks:
 6. **Secret hygiene:** tokens/session secrets do not appear in normalized logs/evidence.
 7. **Billing guard:** forbidden metered mode cannot be entered automatically.
 8. **Capability honesty:** advertised capabilities match conformance behavior.
-9. **Workspace scope:** write-capable adapters cannot bypass Cloudeo candidate/workspace restrictions.
+9. **Workspace scope:** write-capable adapters run only in an OS-isolated copy with no access to the canonical repository or accepted refs, and cannot bypass the bundle/validate/apply path.
 10. **Output preservation:** provider-native output is retained in an opaque evidence envelope.
 11. **Requested vs actual identity:** no invented actual model/harness/provider values.
 12. **Session isolation:** audit sessions are distinct when policy requires it.
@@ -1126,7 +1083,7 @@ Changing the provider requires changing only profile binding/configuration, not 
 
 ### PI-02 — control import boundary
 
-A static check proves `cloudeo.control` imports no module under provider-adapter namespaces and contains no provider SDK imports.
+Static checks prove each forbidden edge of the §17 table, and that `cloudeo.control` and `cloudeo.orchestration` import no provider-specific module and contain no provider SDK imports.
 
 ### PI-03 — provider removal
 
@@ -1163,7 +1120,7 @@ Cloudeo refuses to run the audit on provider A when the risk policy requires pro
 
 Force every implementation attempt to fail verification.
 
-The loop stops exactly at the configured budget and raises attention; it never continues recursively.
+The loop stops exactly at the budget set by control policy and raises attention; it never continues recursively. The stop decision is made by control, not by DevLoop.
 
 ### PI-07 — evidence identity
 
@@ -1179,45 +1136,38 @@ with accepted ADR-030 at `a7b4c58`. This SHA is evidence of the drafting
 baseline, not a permanent architectural dependency.
 
 
-### Phase 0 — architecture reconciliation and decision
+### Phase 0 — architecture reconciliation and decision (done)
 
-The control/orchestration implementation has already started after accepted ADR-030. Therefore this phase freezes **only the new provider-neutral extension**, not the existing V2 control/orchestration work.
+Provider neutrality was recorded as ADR-035 and accepted on 2026-10-01 (ADR-031 to ADR-034 were taken by intervening ADRs). This document is its supporting document and is reconciled to it. No Codex/Claude/Kimi-specific execution code exists or is added until the slices below land.
 
-- Review this document against accepted ADR-030 and `14_V2C_TRACEABILITY.md`.
-- Confirm that current orchestration code at the implementation baseline does not violate the new provider-neutral rules.
-- Record provider neutrality in the next available ADR after ADR-030 (recorded as ADR-035; ADR-031 to ADR-034 were taken by intervening ADRs).
-- Do not add Codex/Claude/Kimi-specific execution code until that ADR is accepted.
-- Existing unrelated orchestration implementation may continue under its already accepted contracts.
+### Phase 1 — first slice (ADR-035)
 
-### Phase 1 — neutral execution metadata
+Inside `cloudeo.execution`, additive and behavior-preserving:
 
-Behavior-preserving work:
+- provider-neutral `ExecutionError` classification (§9.1);
+- additive runtime identity metadata (§9);
+- the dependency and provider-blindness checks of §17.
 
-- introduce `ExecutionPlane`;
-- introduce extensible runtime identity;
-- introduce provider-neutral error classes;
-- introduce opaque native-result envelope;
-- introduce adapter descriptor/registry;
-- preserve Treg and UHP behavior through compatibility tests.
+Not in this slice: provider adapters, native CLI subprocess execution, sandbox implementation, profile migration, Session Fabric implementation, COST implementation, MCP implementation.
 
-No Codex/Claude/Kimi execution yet.
+### Phase 2 — provider-neutral control additions and registry
 
-### Phase 2 — native CLI plane
+Each in its own slice:
 
-Implement the generic process lifecycle once:
+- additive profile fields on the canonical control types (§5.2);
+- project-level billing policy (§6);
+- loop-policy control rules (§13.4);
+- `ExecutionPlane` as the request kind, adapter descriptor, and adapter registry in `cloudeo.execution` (§7, §10.1).
 
-- cwd/workspace binding;
-- timeout;
-- stdout/stderr capture;
-- cancellation;
-- environment filtering;
-- secret redaction;
-- exit classification;
-- evidence capture.
+Preserve Treg and UHP behavior through compatibility tests.
 
-Then plug concrete CLI adapters into it.
+### Phase 3a — OS isolation and native CLI plane
 
-### Phase 3 — three-provider proof
+Prerequisite: the OS-isolated candidate copy of §8.3, implemented and tested. No native-CLI profile is bound to a write-capable role before then.
+
+Implement the generic process lifecycle once (cwd/workspace binding, timeout, stdout/stderr capture, cancellation, environment filtering, secret redaction, exit classification, evidence capture), then plug concrete CLI adapters into it.
+
+### Phase 3b — three-provider proof
 
 Implement:
 
@@ -1231,7 +1181,7 @@ Run the same conformance suite against all three.
 
 The milestone is portability, not sophisticated routing.
 
-### Phase 4 — DevLoop V1
+### Phase 4 — DevLoop V1 (after the isolation prerequisite)
 
 Wire the bounded orchestration recipe:
 
@@ -1277,15 +1227,15 @@ V1 is complete when all of the following are true:
 [ ] Role bindings are snapshotted and immutable for the active WorkOrder.
 [ ] At least two native coding adapters can execute the same implementation block.
 [ ] Kimi/Moonshot is integrated as the third-provider portability proof.
-[ ] Executor edits only the candidate workspace.
+[ ] Executor runs in an OS-isolated copy; changes return only via bundle/validate/apply.
 [ ] Deterministic tests are captured as evidence.
 [ ] Auditor reads a frozen snapshot and cannot mutate it.
 [ ] Failed audit can generate a bounded repair round.
-[ ] Round budget is mechanically enforced.
-[ ] Same classified failure twice can stop/escalate.
+[ ] Round budget is a control rule, mechanically enforced.
+[ ] Same classified failure twice can stop/escalate, as a control rule.
 [ ] Metered API fallback is impossible unless explicitly allowed.
 [ ] `CODE_APPROVED` cannot originate from an adapter.
-[ ] Merge to main remains a human gate.
+[ ] Acceptance is gate promotion; publishing or merging a branch/PR is a separate human-approved action.
 [ ] Production deployment remains a human gate.
 [ ] Provider replacement does not modify control state-machine code.
 [ ] Shared adapter conformance tests pass.
@@ -1301,7 +1251,7 @@ Do not build yet:
 - autonomous cost optimization;
 - provider bidding;
 - dynamic Jev-driven live role switching;
-- autonomous merging;
+- autonomous publishing or merging;
 - autonomous production deployment;
 - browser-UI scraping of ChatGPT/Claude/Kimi;
 - a universal prompt language;
@@ -1330,30 +1280,20 @@ Never patch provider-specific behavior into the control state machine.
 
 ---
 
-## 24. Recommended ADR decision
+## 24. Relationship to ADR-035
 
-On the current post-ADR-030 line, create the next available ADR (recorded as ADR-035; ADR-031 to ADR-034 were taken by intervening ADRs) with a decision equivalent to:
-
-> **Cloudeo is provider-neutral by contract.** Control state and WorkOrder semantics depend only on roles, capabilities, immutable execution profiles, normalized execution evidence, and verification outcomes. Provider/model/runtime-specific behavior is confined to registered adapters below orchestration. Subscription, prepaid, metered, and self-hosted billing modes are explicit policy; no adapter may silently change billing mode. DevLoop is a bounded orchestration recipe over these generic primitives, not an OpenAI/Anthropic/Moonshot-specific workflow.
-
-Status should remain **Proposed** until reviewed against the actual ADR-030 implementation branch. That review is done: the decision was recorded as ADR-035 and accepted on 2026-10-01.
+This document is a supporting document for ADR-035 and proposes no ADR wording of its own. The decision is recorded and accepted as ADR-035 (2026-10-01) in `02_DECISIONS.md`. ADR-035 is normative; where this document differs from it, ADR-030, `13_V2_CONTROL_ARCHITECTURE.md`, or `14_V2C_TRACEABILITY.md`, those govern.
 
 ---
 
 ## 25. Immediate next development slice
 
-After this architecture is reconciled with ADR-030, the first code slice should be deliberately small:
+The first implementation slice is the one ADR-035 fixes. It stays inside `cloudeo.execution` and is additive and behavior-preserving:
 
-```text
-Provider-neutral adapter contract + registry + conformance skeleton
-```
+- provider-neutral `ExecutionError` classification;
+- additive runtime identity metadata;
+- dependency/provider-blindness checks (§17).
 
-It should:
+It must not yet include provider adapters, native CLI subprocess execution, a sandbox implementation, profile migration, Session Fabric implementation, COST implementation, or MCP implementation. It adds no provider SDK dependency and keeps all existing tests green.
 
-- add no provider SDK dependency;
-- add no subprocess execution yet;
-- keep all existing tests green;
-- adapt existing Treg/UHP execution behind the registry;
-- prove the dependency boundary with static tests.
-
-Only after that foundation is accepted should Codex CLI, Claude Code, and Kimi Code adapters be implemented.
+Only after later slices (§20) land should Codex CLI, Claude Code, and Kimi Code adapters be implemented.
