@@ -1511,3 +1511,199 @@ With these, the contract and ADR-022 to ADR-029 are **Accepted**.
 No code, test, dependency, or kernel change. Nothing described in the
 contract is implemented. Invariants V2C-01 to V2C-23 become test obligations
 for the milestones that implement them.
+
+
+---
+
+## 2026-09-23 — V2 control-store foundation
+
+Branch `feat/v2-control-store-foundation`, from `main` at `86e7361`. It is the
+first implementation slice of the accepted V2 control architecture (ADR-022 to
+ADR-029). It adds the pure `cloudeo.control` package and the traceability
+matrix `docs/14_V2C_TRACEABILITY.md`.
+
+No execution, auditing, checkpoint creation, promotion, Memory Curator,
+independence resolver, or Browser Use. The trust kernel, broker, bridge,
+adapters, and LongHorizon are unchanged, and `cloudeo.control` imports none
+of them. It has no LongHorizon dependency, so it is tested with and without
+the extra.
+
+Implemented:
+
+- **`model.py`: the frozen domain records.** WorkOrder, Block, plan versions
+  and approvals, Project Execution Profile snapshots and role bindings,
+  profile references with fingerprints, envelope amendments, attention
+  requests, reasons and decisions, deviations, and audit, test, change,
+  checkpoint-proof, and kernel-outcome evidence records.
+  - **Invariants are model validators**, so they hold on every construction
+    and every reload. For example:
+    - no candidate or blocks before an approved plan;
+    - `PROMOTED` only with a promoted kernel outcome;
+    - `CODE_APPROVED` only with a provable code approval;
+    - **`BLOCK_DONE` only with a checkpoint proving the authoritative block
+      state;**
+    - exactly one open attention request while in attention.
+  - **`check_evolution()`** enforces the rules between versions:
+    - the legal transition table;
+    - append-only histories;
+    - an immutable objective, candidate, and planned baseline;
+    - profile snapshot and budget changes only through approved amendments;
+    - immutable `BLOCK_DONE` blocks, closed attention requests, and terminal
+      WorkOrders.
+- **`machine.py`: pure transition functions** for the WorkOrder and block state
+  machines, each rejecting with an explicit code or escalating to
+  `USER_ATTENTION_REQUIRED`. `prove_block_checkpoint()` is the only path to
+  `BLOCK_DONE`. A mismatching proof is kept as evidence and raises
+  `BLOCK_CHECKPOINT_MISMATCH`.
+- **`store.py`: the `ControlStore` interface and `SqliteControlStore`.**
+  - Writes use `BEGIN IMMEDIATE` and compare-and-swap on `(id, version)`,
+    re-validate the record, and apply `check_evolution()`.
+  - Events are append-only, with a full replay; there is no delete.
+  - Project Execution Profile versions are immutable and sequential, and a
+    WorkOrder's snapshot must be a stored, approved version.
+
+**Traceability** (`14_V2C_TRACEABILITY.md`): each invariant has exactly one
+status. The result is **8 ENFORCED, 15 DEFERRED, 0 NOT_APPLICABLE**.
+
+- ENFORCED needs a guard plus positive and `negative`-marked rejection tests.
+- DEFERRED is held by a strict expected-failure test that names the invariant,
+  so an unexpected pass fails CI. Foundation guards for deferred invariants
+  are listed as supporting evidence only. For example, checkpoint integrity
+  (V2C-19) stays DEFERRED although the model validates a supplied proof.
+
+Meta-tests enforce:
+
+- one status and existing named tests per invariant;
+- strict, invariant-named xfails for every DEFERRED obligation;
+- a real negative test for every ENFORCED invariant;
+- agreement between the contract, the matrix, and the document, with no
+  `TODO`;
+- no generic `mark_block_done()`: `prove_block_checkpoint` is the only
+  `BLOCK_DONE` setter.
+
+Bug found and fixed during the gate: `RoleBinding.fallback_conditions` is a
+`frozenset`, and its serialized order depended on the process hash seed. The
+canonical hash of the same profile therefore differed between processes, which
+could make the store's immutability and stored-snapshot checks fail
+intermittently. It now serializes sorted. A regression test compares the hash
+across `PYTHONHASHSEED` 0 to 7; it fails without the fix.
+
+Architecture question raised (not resolved in code): the contract says that
+baseline drift needs "a new approval", but it defines no transition that
+adopts a new baseline (re-intake or rebase). This slice keeps the planned
+baseline immutable, the literal reading. A drifted WorkOrder can therefore
+only be aborted today.
+
+Validation (node-ID audit, offline, with the `longhorizon` extra):
+
+- At feature tip `36805c7`, pytest collects **651** tests: **636 pass** and
+  **15 strict-xfail**, with 0 failures, 0 errors, and 0 unexpected passes.
+- Relative to the accepted V2 architecture base `86e7361` (566 passed), 85
+  control-suite node IDs were added and none removed: 70 passing cases and
+  the 15 DEFERRED strict-xfail obligations. They are all in
+  `tests/test_control_machine.py` (50), `tests/test_control_store.py` (14),
+  and `tests/test_v2c_traceability.py` (21). None is a helper or fixture;
+  `tests/control_helpers.py` contributes no tests.
+- From `647eb9a` (624 passed, 1 failed, 15 xfailed; 640 collected) to
+  `36805c7`, passes rise by 12: 11 net additional tests (14 added, 3
+  meta-tests replaced; the 15 xfails renamed from `test_remaining_obligation`
+  to `test_deferred_obligation`), plus
+  `test_reload_is_deterministic_and_replays_every_version`, which failed at
+  `647eb9a` from the hash-seed bug and passes after the fix.
+- The earlier 634-pass and 69 + 15 expectations have no recoverable
+  machine-generated provenance and are superseded by this node-ID audit.
+
+Durable gate: `scripts/v2c_gate.py` runs the full suite once and fails on a
+non-zero pytest exit, any failure, error, or unexpected pass, or any
+non-strict control-suite xfail. It requires the control suite's node IDs and
+outcomes to equal `scripts/v2c_control_manifest.tsv` exactly (85 entries: 70
+`pass`, 15 `xfail`) and prints added, removed, and changed IDs. It does not
+check the whole suite's pass count, so unrelated new tests do not fail it.
+Checked: a tampered manifest, a non-strict obligation, and an unrelated
+failing test each fail the gate; an unrelated passing test does not.
+
+## 2026-09-24 — ExecutionProfile registry and auditor independence (V2C-18, V2C-14)
+
+Branch `feat/v2-profile-registry-independence`, stacked on
+`feat/v2-control-store-foundation` at `86993de` (not merged). Second slice
+of the V2 control architecture. It stays inside `cloudeo.control`: pure model
+and state-machine code plus the SQLite store. There is no execution, and no
+kernel, broker, bridge, adapter, or LongHorizon change (V2C-01 still holds).
+
+**V2C-18: ExecutionProfile registry.**
+
+- `AgentProfile` (runtime, model with family and inference provider,
+  reasoning, context policy, session) and `DirectToolProfile` (capability,
+  provider). Both have an id, a version, permissions (workspace access,
+  network, tools), limits, and eligible roles (§8.3). `BrowserExecutionProfile`
+  and `HumanExecutionProfile` are not added; Browser Use is a non-goal.
+- A `ProfileRef` fingerprint is the canonical SHA-256 of the definition, so a
+  reference names exactly one version.
+- `SqliteControlStore.register_profile()`: versions are sequential and
+  immutable once registered (re-registering the same content is a no-op).
+- A `ProjectExecutionProfile` carries the exact definitions of every bound
+  version, so the snapshot is self-contained and its hash covers them. It
+  validates role eligibility, requires `read_write` for write-capable roles,
+  and the store accepts it only if every definition is the registered one.
+- `WorkOrder.used_profiles` records the definition of every version that ran
+  an attempt or an audit. It is append-only, survives a `change_agent`
+  amendment, and each new entry must be registered. Every attempt and audit
+  must name a recorded version with the same fingerprint.
+
+**V2C-14: auditor independence (§8.6).**
+
+- `IndependencePolicy` is part of the Project Execution Profile, and so of the
+  approved envelope, as the contract requires. It defaults to the §8.6 table
+  and can only add requirements, never remove them.
+- `independence_gaps()` measures an auditor against the producers of what it
+  audits, by role: `code_auditor` against the executors, `memory_auditor`
+  against the curators, and `final_verifier` against every write-capable
+  profile used, including fallbacks, in superseded blocks, and under an
+  earlier snapshot.
+- It is checked at plan approval (the bound primaries), before every executor
+  or curator attempt (so a fallback that would break independence never
+  runs), and before any code, memory, or final audit is recorded. A gap raises
+  `INDEPENDENCE_UNAVAILABLE` with one `independence_gap` evidence ref per
+  unmet `role:requirement`.
+- Only an explicit user waiver of that reason accepts those gaps. It is
+  derived from the recorded decision, never automatic.
+- The WorkOrder validator re-checks every approving audit on every reload.
+  Each block records the risk class its audits were judged by, so a later
+  replan to a stricter class does not re-judge finished blocks; the final
+  audit is judged by the current plan.
+
+Design choices:
+
+- A project policy can be stricter than the contract but never weaker. Only
+  a per-WorkOrder, recorded waiver can accept less.
+- A fresh session is met only when the auditor profile declares one **and**
+  the audit carries the runner's `SessionEvidence` showing this audit ran in a
+  fresh session. Without that evidence the check fails closed. The
+  requirement stays with V2C-14; producing the evidence is runtime work. For
+  final verification that work is V2C-20's deferred obligation (the contract
+  requires a fresh audit there). For code and Memory Audits, no audit can
+  approve until an audit runner supplies the evidence.
+- Trust boundary: any caller can construct `SessionEvidence`, so the control
+  layer proves that the evidence was supplied, not who supplied it. It is
+  trusted runtime input that only the integration layer's audit runner may
+  create, never the auditing agent. The producer for code and Memory Audits
+  has no owning invariant yet. It is recorded as an open integration-layer
+  obligation in `14_V2C_TRACEABILITY.md`.
+- Model families and inference providers are compared as exact strings.
+
+Validation (offline, with the `longhorizon` extra):
+
+- Full suite: **662 collected, 649 passed, 13 strict-xfailed**, with 0
+  failures, errors, or unexpected passes. Relative to `86993de` (651
+  collected, 636 passed, 15 xfailed): +13 passing tests (11 in
+  `tests/test_control_machine.py`, 2 in `tests/test_control_store.py`), and
+  `test_deferred_obligation[V2C-14]` and `[V2C-18]` removed.
+- Traceability: **10 ENFORCED, 13 DEFERRED, 0 NOT_APPLICABLE.** The V2C-01 K1
+  check still passes: `cloudeo.control` imports nothing it forbids.
+- `scripts/v2c_gate.py` failed first on exactly that manifest diff, in two
+  steps: 12 added and 2 removed in `beb42e2`, then
+  `test_v2c_14_an_audit_without_fresh_session_evidence_cannot_approve` added.
+  Each time the manifest was regenerated deliberately afterwards (now 96
+  entries: 83 `pass`, 13 `xfail`), and the gate passes.
+- Each new guard was disabled in turn (12 guards); its negative test failed
+  every time.

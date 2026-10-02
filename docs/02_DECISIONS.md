@@ -1719,3 +1719,1843 @@ class, or independence policy. Jev used for policy follows the same bound.
 **Storage:** the Cloudeo control store (SQLite initially) sits behind a
 storage interface with record versions and compare-and-swap transitions, so
 PostgreSQL can replace it without changing WorkOrder semantics.
+
+---
+
+## ADR-030 — Orchestration boundary: runtime integration above the control layer
+
+**Status:** Accepted (2026-09-24), with three review amendments (the
+WorkOrder-transition rule, lifecycle primitives, and what the evidence digest
+proves); not yet implemented.
+
+**Context:** `cloudeo.control` (ADR-022 to ADR-029) is pure. It holds the
+WorkOrder and block state machines, the Project Execution Profile, and the
+invariant checks, and V2C-01 (K1) forbids it to import the broker, bridge,
+LongHorizon, or `subprocess`. Its remaining DEFERRED obligations all need
+facts only runtime components can supply: a real `GatedPromotionResult`
+(V2C-04), the broker's accepted baseline (V2C-22), runner-created
+`SessionEvidence` (V2C-14/V2C-20), and later a `CheckpointProof` from Git
+objects (V2C-19). `14_V2C_TRACEABILITY.md` records these as trusted runtime
+inputs whose producers do not exist yet. They need one home, with one rule
+for how they enter the control layer, instead of an exception for each.
+
+**Decision:** add a package `cloudeo.orchestration`, the runtime integration
+layer.
+
+- **`cloudeo.control` stays the pure policy and state-machine layer.**
+  Nothing about it changes, including V2C-01.
+- **`cloudeo.orchestration` acquires trusted runtime evidence; `cloudeo.control`
+  evaluates it.** Orchestration calls runtime components, observes their
+  results, converts them into control-layer inputs (`KernelOutcome`, the
+  accepted baseline, `SessionEvidence`, later `CheckpointProof` and
+  normalized audit records), applies them only through the
+  `cloudeo.control.machine` functions, and persists through `ControlStore`.
+- **Scope rule (no dumping ground):** `cloudeo.orchestration` coordinates
+  runtime components and converts trusted runtime observations into control
+  inputs. Policy belongs in `cloudeo.control`; low-level broker, Git, bridge,
+  and kernel behavior stays in its existing owning package. A change that
+  decides *whether* something is allowed goes into `cloudeo.control`. A
+  change to *how* a runtime component works goes into that component's
+  package.
+- **Orchestration never weakens or bypasses a control decision.** It may read
+  a WorkOrder and invoke the public transition operations in
+  `cloudeo.control.machine`, but must never construct, copy-with-changes, or
+  mutate WorkOrder state directly: every WorkOrder transition goes through
+  the control state machine. It also does not pick profiles or fallbacks on
+  its own authority, and does not reinterpret a rejection or an attention
+  request as success.
+- **Promotion stays gate-owned (K1 still applies).** Direct `promote()` is
+  permanently forbidden outside the authorized promotion gate; orchestration
+  may invoke that gate (`checkpoint_and_promote_verified()`, or
+  `run_managed_with_promotion_gate()` which calls it), and never writes
+  `refs/cloudeo`. In the V2C-04/V2C-22 slice, orchestration also makes no
+  direct `checkpoint_candidate()`, `reject()`, or `cleanup()` calls. Any
+  future use of those lifecycle primitives, including V2C-19 block
+  checkpointing, requires an explicitly owned adapter and decision and must
+  not create an alternate promotion path.
+
+**Dependency direction** (one way):
+
+| Package | May import | Must not import or call |
+| --- | --- | --- |
+| `cloudeo.control` | standard library, pydantic, `cloudeo.workspace.models` | `cloudeo.orchestration`; broker, bridge, LongHorizon, `subprocess` (V2C-01, unchanged) |
+| `cloudeo.orchestration` | `cloudeo.control`; the `WorkspaceBroker` protocol and `cloudeo.workspace.models`; the gate entry points and result types in `cloudeo.longhorizon` | `cloudeo.workspace.git` (the concrete implementation is injected); `subprocess`; direct `promote()` calls (permanently); direct `checkpoint_candidate()`, `reject()`, `cleanup()` calls (in the first slice; see above); `refs/cloudeo` or `update-ref` strings |
+| authorized gate (`cloudeo.longhorizon.promotion_gate`) | unchanged | unchanged; it remains the only promotion path |
+
+V2C-01 stays scoped to `cloudeo.control`. It does not forbid orchestration to
+import the runtime interfaces orchestration exists to integrate.
+
+**Mechanical checks** (added with the first implementation slice, in the style
+of the V2C-01 AST checker, each with a negative test against violating code):
+
+1. `cloudeo.control` imports nothing from `cloudeo.orchestration`.
+2. `cloudeo.orchestration` makes no `promote` attribute call (a permanent
+   check). In the first slice it also makes no `checkpoint_candidate`,
+   `reject`, or `cleanup` attribute call; that part of the check changes only
+   with the explicit decision a lifecycle adapter requires. It imports
+   neither `cloudeo.workspace.git` nor `subprocess`, and has no
+   `refs/cloudeo` or `update-ref` string.
+3. All WorkOrder transitions go through the control state machine. An
+   AST-based check that `cloudeo.orchestration` never constructs a
+   `WorkOrder` (or a record nested in one), never derives a changed copy of
+   one (`evolve`, `model_copy`, `model_validate`, `model_construct`, or an
+   equivalent), and never assigns to its attributes. It changes a WorkOrder
+   only by calling functions from `cloudeo.control.machine` and persists it
+   only through `ControlStore`. The check is scoped to WorkOrder state, so an
+   unrelated object with an `evolve()` method is not rejected; a textual scan
+   for `.evolve(` may be kept as an extra, coarser check.
+
+**First slice (V2C-04 and V2C-22 only):**
+
+- **V2C-04:** one deterministic function `GatedPromotionResult → KernelOutcome`:
+  - `promotion_attempted = True` (the gate ran);
+  - `stage` = the result's `stage`;
+  - `checkpoint_commit` = `checkpoint.commit` when a checkpoint exists, else
+    `None`;
+  - `reason` = `decision.reason`;
+  - `evidence` = `EvidenceRef(kind="gated_promotion_result",
+    ref=<digest>)`, so the same result always maps to the same outcome. The
+    digest is domain-separated and versioned: SHA-256 over the tag
+    `gated-promotion-result:v1` followed by the canonical serialization of
+    the result. Another evidence type, or a later serialization, therefore
+    never produces a digest with the same meaning. The digest identifies the
+    canonical contents of the observed `GatedPromotionResult`; it is an
+    integrity/content reference, not proof that the result came from an
+    authorized gate.
+  - It fails closed: if the result is internally inconsistent (for example
+    `stage == "promoted"` without a checkpoint or a `PromotionResult`), it
+    raises instead of producing an outcome. The mapped
+    `KernelOutcome.promoted` must equal `GatedPromotionResult.promoted` for
+    every input.
+- **V2C-22:** read `WorkspaceBroker.accepted_state()` and pass its
+  `accepted_commit` into the existing `accepted_baseline=` parameters
+  (`start_intake`, `attach_candidate`, `start_execution`,
+  `enter_final_verification`, `decide`, `resume_deferred`). Its `workspace_id`
+  must equal the candidate's once one is attached. Drift handling stays
+  entirely in `cloudeo.control`.
+- Validation stays offline: a real `GitWorkspaceBroker` on a temporary
+  repository, and gate results produced by the real gate.
+
+**Trust boundary:** the control layer still cannot tell who built a record;
+any caller can construct a `KernelOutcome` or pass a baseline. As with
+`SessionEvidence`, ENFORCED for V2C-04 and V2C-22 will mean: the
+orchestration path is the producer, it is tested against the real gate and
+broker, and the mechanical checks hold. It will not mean that the control
+layer authenticates its inputs.
+
+**Explicitly not in this ADR's first slice:**
+
+- V2C-02 (dispatch only through `begin_attempt`), V2C-09 (execution-time
+  `memory_paths` restriction), V2C-19 (block checkpoints), and V2C-20 (the
+  final verification runner). The new package does not make them in scope.
+- The `SessionEvidence` producer for code and Memory Audits (the open
+  obligation in `14_V2C_TRACEABILITY.md`). It belongs to orchestration, in a
+  later slice.
+- Mapping `ManagedPromotionResult` "not attempted" outcomes. No manager run is
+  invoked in this slice.
+- Any change to the kernel, broker, bridge, adapters, gate, or LongHorizon.
+
+**Project-to-workspace binding (limitation):** before a candidate is
+attached (at intake), nothing yet says which workspace belongs to a
+WorkOrder's project; the contract's `ProjectTarget` (§4.1) is not
+implemented. The first slice takes the broker for the project's workspace as
+an explicit argument, rather than inventing a project-to-workspace registry.
+It proves that orchestration reads the broker's actual `accepted_state()` and
+records its `workspace_id` and `accepted_commit`. It does not prove that the
+caller supplied the broker belonging to that project. That binding remains a
+future obligation once the project-target model exists.
+
+**Consequences:** each deferred obligation gets one place for its producer,
+and one rule for how that producer's output reaches policy. The package
+boundary is mechanically checked from the first line of code, so it cannot
+erode silently.
+
+---
+
+## ADR-031 — Session Fabric and Coordination Store boundary
+
+**Status:** Accepted (2026-10-01); architecture only, not yet implemented.
+Amended 2026-10-01 before acceptance: the Session Fabric runtime contracts
+and every concrete fabric adapter live in `cloudeo.execution` (see "Package
+boundary"). ADR-035's boundary is preserved.
+
+**Supporting document:** `16_SESSION_FABRIC_AND_COORDINATION_STORE.md` holds
+the rationale, diagrams, and examples. This entry is the decision record and
+is normative on its own. Where the two differ, this entry governs.
+
+**Context:** long-running autonomous work needs several independently
+steerable sessions (coordinator, implementer, researcher, auditor, reviewer).
+They must be created and terminated, stay observable, exchange messages, hand
+work over, survive coordinator restarts, and report identity, environment,
+usage, cost, and failures across several execution providers. Provider
+runtimes offer some of this natively, but their semantics differ and change
+independently.
+
+**Decision:** Cloudeo adds a provider-neutral **Session Fabric** and
+**Coordination Store**. Session and coordination policy and lifecycle state
+live in `cloudeo.orchestration`; the Session Fabric runtime contracts and
+every adapter live in `cloudeo.execution` (see "Package boundary"). Together
+they provide durable lifecycle, communication, observability, runtime
+coordination, provenance, and resource accounting for independently
+addressable agent sessions, without giving those sessions authority over
+WorkOrder state, accepted workspace state, promotion, human approval, or
+policy.
+
+- Cloudeo owns the coordination semantics. Provider APIs supply execution and
+  transport capabilities only.
+- A provider-native session is an execution resource. It is never itself a
+  Cloudeo authority.
+- The governing layering of authority is execution providers and runtimes →
+  Session Fabric → Cloudeo orchestration → Cloudeo control → trust kernel,
+  never the reverse. Package import directions are those of ADR-030 and
+  ADR-035.
+- `cloudeo.control` remains provider-blind. It does not import or depend on
+  Session Fabric, provider session APIs, messaging transports, runtime
+  coordination records, or cloud-specific execution types.
+
+The decision introduces five logical concepts: `Session`,
+`SessionFabricAdapter`, `SessionSupervisor`, `CoordinationMessage`, and
+`CoordinationStore`. They belong to the orchestration and runtime side. They
+do not become part of the pure control state machine.
+
+**Package boundary (ADR-035 governs):**
+
+- `cloudeo.execution` owns the provider-neutral Session Fabric runtime
+  contracts: the `SessionFabricAdapter` contract, its capability
+  descriptions, and the observation DTOs an adapter returns (runtime status,
+  requested and observed identity, usage, cost, and failures).
+- Every concrete provider-specific fabric adapter (Claude Code, Codex, Kimi,
+  or any other provider) also lives in `cloudeo.execution`. None lives in
+  `cloudeo.orchestration`.
+- `cloudeo.orchestration` owns Session and coordination policy and lifecycle
+  state: `SessionSupervisor`, Session records and identities, leases,
+  coordination records, and the Coordination Store. It consumes only the
+  neutral execution contracts and builds its records from their
+  observations. It never defines a provider adapter interface that execution
+  must implement, and never imports, names, or branches on a
+  provider-specific implementation module or type.
+- `cloudeo.execution` never imports `cloudeo.orchestration` or
+  `cloudeo.control`.
+- **Session Fabric lifecycle operations are a separate execution service
+  boundary.** `create_session`, messaging, handover, `terminate_session`, and
+  the other fabric operations are offered by `cloudeo.execution` through the
+  Session Fabric contracts, and orchestration reaches adapters only through
+  that boundary. They are not execution request kinds and are not routed
+  through `ExecutionDispatcher`, which remains the router for execution
+  request kinds only (ADR-035).
+- `SessionFabricAdapter` names the neutral contract, never a
+  provider-specific class.
+
+**Session:** a Session is an independently addressable runtime context
+executing one Cloudeo role or bounded responsibility.
+
+- A normalized Session identity records at minimum:
+  - `session_id`;
+  - `provider`, `runtime`, `profile_fingerprint`, `role`;
+  - `project_id`, `workorder_id`, and `block_id` / `attempt_id` when
+    applicable;
+  - `parent_session_id` when applicable;
+  - `workspace_binding`, `access_mode`;
+  - `fabric_provider`, `fabric_region`, `runtime_class`,
+    `runtime_instance_id`;
+  - `runtime_environment`, `runtime_environment_version`,
+    `runtime_environment_fingerprint`;
+  - `created_at`, `last_activity_at`, `runtime_status`.
+- Additional runtime metadata may include `requested_model`, `actual_model`,
+  `requested_harness`, `actual_harness`, `provider_session_id`,
+  `capabilities`, `usage`, `runtime_cost`, and `termination_reason`.
+- Requested and observed runtime identity stay separate whenever the provider
+  may substitute or omit identity information.
+- Runtime-environment identity must be stable enough to explain or reproduce
+  the environment in which a governed Session executed. The architecture must
+  not depend on any one environment technology (VM image, container image,
+  provider cloud environment, local reproducible environment, or a future
+  format).
+- A Session's runtime status is observational runtime evidence. It never
+  means WorkOrder success, `CODE_APPROVED`, `BLOCK_DONE`, `VERIFIED`,
+  `PROMOTED`, or human approval. Those meanings stay with their existing
+  authorities.
+
+**Lifecycle:** provider-specific session states are normalized into a small
+Cloudeo lifecycle such as `STARTING`, `RUNNING`, `IDLE`, `HANDOVER`,
+`TERMINATING`, `TERMINATED`, `FAILED`, and `LOST`. The fabric adapter maps
+native state onto it and may keep richer native state separately.
+
+- `LOST` means Cloudeo can no longer reliably observe the runtime session. It
+  must never be normalized to successful completion.
+- A provider reporting that a session completed means only that the runtime
+  ended normally. It does not advance a WorkOrder.
+
+**Session Fabric:** the provider-neutral runtime boundary through which
+Cloudeo manages addressable sessions.
+
+- A `SessionFabricAdapter` supports operations equivalent to
+  `create_session`, `inspect_session`, `send_message`, and
+  `terminate_session`.
+- Optional capabilities may include `wake_session`, `resume_session`,
+  `steer_session`, and `list_runtime_sessions`. These are capabilities, not
+  assumptions. Cloudeo must not require every provider to expose identical
+  native session features; capability discovery determines what a fabric can
+  actually do.
+- Provider-native features (cross-session messaging, cloud session creation,
+  remote control, CLI processes, local harness processes, cloud VM workers)
+  are adapter mechanisms and stay behind their Session Fabric adapters in
+  `cloudeo.execution`.
+- Provider-specific concepts must not leak into WorkOrder,
+  ImplementationBlock, the control state machine, promotion semantics,
+  verification semantics, HumanDecision, or Project Execution Profile
+  semantics, and no provider-specific type may appear in
+  `cloudeo.orchestration`. A provider transport may be replaced without
+  changing those contracts.
+
+**SessionSupervisor:** the orchestration component responsible for runtime
+session lifecycle.
+
+| It may | It may not |
+| --- | --- |
+| create sessions required by an approved execution step | construct or mutate WorkOrder state directly, or derive a changed WorkOrder copy |
+| attach the correct role and ExecutionProfile | alter an approved plan |
+| bind the permitted workspace and an approved runtime environment | alter Project Execution Profile bindings |
+| observe runtime state and route messages | choose an unapproved model or provider |
+| perform allowed handover and terminate sessions | weaken auditor-independence requirements |
+| record runtime usage and cost | grant human approval |
+| replace or retry a failed runtime only where existing policy permits it | promote or reject accepted workspace state directly |
+
+All WorkOrder transitions continue through the public `cloudeo.control`
+state-machine boundary established by ADR-030.
+
+**Child sessions are requests, not authority:** a coordinator session may
+decide that more work would benefit from another session. That gives it no
+authority to create arbitrary Cloudeo workers. Its request goes to
+`SessionSupervisor`, which checks, before any session is created:
+
+- the role is approved;
+- the request is inside the approved envelope;
+- the profile is approved;
+- budget is available;
+- independence is preserved;
+- the runtime environment is allowed;
+- the workspace access is valid.
+
+A provider-native `create_session` facility may perform the final operation,
+but it never bypasses this decision point.
+
+**Coordination Store:** a durable store for operational records shared
+between orchestration instances and sessions.
+
+- It stores sessions, session relationships, messages, delivery state,
+  handover records, runtime observations, execution and job references,
+  artifact references, structured feedback and friction reports, usage and
+  cost observations, runtime capability observations, and
+  runtime-environment provenance. It may also store non-authoritative
+  operational notes or evidence references.
+- It is not a second control plane.
+- It extends the persistence architecture of the control store (ADR-029
+  storage rule, V2C-23) and does not create an independent knowledge-base
+  authority. Initially both may use the same physical SQLite database. They
+  remain logically separate namespaces and interfaces with different
+  authority:
+  - control records: WorkOrders, plans, envelopes, profile snapshots,
+    attention state, HumanDecisions;
+  - coordination records: sessions, messages, handovers, runtime
+    observations, environment provenance, usage, costs, artifacts, feedback.
+- Physical co-location does not permit coordination code to mutate control
+  records directly. Only the public control interfaces may transition control
+  state.
+- **No duplicate source of truth.** Coordination records may reference
+  `project_id`, `workorder_id`, `block_id`, `attempt_id`, `candidate_id`,
+  `profile_fingerprint`, `approval_id`, `artifact_id`, and
+  `runtime_environment_fingerprint`. They must not keep competing mutable
+  copies of the authoritative objects behind those identifiers. The
+  Coordination Store is not the WorkOrder authority, not the Workspace
+  Broker, not Project Memory, and not the Performance Memory authority.
+  Derived projections may be cached for UI and read purposes, but the
+  authoritative source must remain identifiable.
+- **Project Memory stays distinct (ADR-023 unchanged).** A session may write
+  operational notes, proposals, findings, or feedback into the Coordination
+  Store. Those records do not become Project Memory because agents agree
+  with them. The only path is: session finding → operational record or
+  proposal → approved memory-curation flow → candidate Project Memory →
+  independent Memory Audit → promotion → canonical Project Memory.
+- **Storage and concurrency.** The store follows the control store's
+  principles: durable identifiers; record versions where records are
+  mutable; compare-and-swap or transactional updates where races matter;
+  idempotency identifiers for retried operations; append-oriented history
+  where appropriate. SQLite is sufficient initially. The storage interface
+  must not expose SQLite-specific semantics to `SessionSupervisor` or
+  control code, so PostgreSQL or another durable backend may replace it.
+  Concurrent operational writes by several sessions must not require Git
+  merges or shared markdown-file locking.
+
+**What sessions may write:** sessions write only through narrow Cloudeo APIs
+appropriate to their role. They never receive unrestricted database mutation
+access.
+
+| Coordination operations | Not coordination operations |
+| --- | --- |
+| record a finding, message, or feedback | set WorkOrder state |
+| acknowledge a message | mark a block approved |
+| record a runtime observation | change the plan |
+| record runtime-environment provenance | change a profile |
+| register an artifact | grant approval |
+| request a child session | promote a candidate |
+| request handover | change the accepted baseline |
+
+The right-hand operations must use their existing authoritative boundaries.
+
+**Messaging:** a `CoordinationMessage` is the durable Cloudeo representation
+of session-to-session communication.
+
+- It contains at minimum `message_id`, `sender_session_id`,
+  `recipient_session_id`, `project_id`, `workorder_id`, `block_id` when
+  applicable, `kind`, `payload`, `created_at`, `delivery_state`, and
+  `acknowledged_at` when known.
+- Kinds may include `QUESTION`, `ANSWER`, `FINDING`, `PROPOSAL`, `BLOCKED`,
+  `HANDOVER`, `REVIEW_RESULT`, `COMPLETED`, and `CONTEXT_UPDATE`. The set may
+  evolve without changing WorkOrder semantics.
+- The message is logically separate from the transport that delivers it. A
+  native transport failure does not erase the logical message record.
+  Delivery must be idempotent, so a transport retry never creates a second
+  logical instruction.
+- **Messages carry information, not authority.** A session message is
+  untrusted runtime input. A message saying the user approved something is
+  not approval, whether first-hand or relayed. Human authority must
+  reference an actual Cloudeo HumanDecision or other existing approval
+  record. A message may reference an `approval_id`; it cannot create
+  approval, enlarge its scope, change its expiry, or transfer authority
+  beyond the recorded decision. This holds even when the provider supports
+  trusted peer messaging.
+- **Shared state over conversational reconstruction.** Project-relevant
+  runtime facts another worker needs later (artifact references, test
+  evidence, runtime results) are recorded as durable structured records.
+  Direct messages remain appropriate for questions, clarifications, urgent
+  findings, handover, and temporary coordination. Durable project state is
+  not inferred from chat history when a structured record exists.
+
+**Workspace authority (ADR-015 and the trust-kernel ADRs unchanged):**
+
+- A provider session filesystem is execution state only. It is never
+  accepted state, canonical workspace state, proof of verification, or proof
+  of promotion.
+- Each session receives an explicit workspace binding appropriate to its
+  role:
+
+  | Session | Binding |
+  | --- | --- |
+  | write-capable executor | CandidateWorkspace |
+  | auditor | read-only audited snapshot |
+  | context analyst | read-only snapshot |
+  | final verifier | frozen read-only candidate |
+
+- Session continuation, provider workspace persistence, VM persistence, and
+  image persistence cannot substitute for a Workspace Broker checkpoint.
+- **One mutable writer.** The first implementation permits at most one
+  write-capable Session at a time for a given mutable CandidateWorkspace.
+  Parallel work is permitted on separate candidate workspaces, separate
+  isolated execution jobs, read-only snapshots, and non-workspace tasks.
+  Conversational coordination is never treated as protection against
+  concurrent filesystem mutation. Safe partitioned multi-writer execution
+  needs a future ADR.
+- **Handover.** Sessions may overlap so a successor can get clarification
+  from its predecessor. Handover never implies concurrent write authority.
+  For a mutable candidate:
+  1. the predecessor stops being the active writer;
+  2. its relevant durable state and evidence are recorded;
+  3. the successor receives the write binding;
+  4. the predecessor may remain available for read-only clarification;
+  5. the predecessor is later terminated.
+
+  A handover message cannot transfer policy or approval authority.
+
+**Independence and routing (ADR-027 unchanged):**
+
+- A fresh session is not automatically independent enough for every risk
+  class. `SessionSupervisor` records the observed execution identities
+  needed to evaluate independence, where available: profile fingerprint,
+  model family, inference provider, runtime and harness, session identity,
+  workspace access, and runtime-environment fingerprint. Control policy
+  decides whether independence is satisfied.
+- Session Fabric must not silently weaken independence because a desired
+  runtime is unavailable. If the approved requirements cannot be met, the
+  existing `INDEPENDENCE_UNAVAILABLE` / `USER_ATTENTION_REQUIRED` path
+  applies.
+- Session Fabric introduces no autonomous model shopping. A runtime session
+  is created from the WorkOrder's snapshotted Project Execution Profile:
+  the bound primary, then an approved ordered fallback only if an approved
+  fallback condition occurs. `SessionSupervisor` records every actual
+  runtime identity and switch. It may not select a provider because it looks
+  cheaper, faster, or more capable.
+
+**Economics are evidence, not policy:** Session Fabric exposes observed
+usage and cost (runtime duration, runtime class, runtime cost, model and
+token usage, provider cost when available, network and storage observations
+when relevant). It does not decide whether a cheaper or more expensive
+resource should be used. Economic optimization belongs to the COST policy
+(ADR-033) and stays subordinate to control.
+
+**Failures and ambiguity:** a lost, unreachable, timed-out, or ambiguously
+terminated provider session is recorded as runtime evidence. It never
+fabricates a WorkOrder result. The path is: runtime observation →
+orchestration classification → control input → retry, fallback, or
+`USER_ATTENTION_REQUIRED`. Retry or replacement occurs only where the
+approved envelope and existing policy allow it. Unknown runtime state fails
+closed wherever continuing would need positive evidence.
+
+**Observability and audit:**
+
+- Mission Control may read the Session Fabric projection: sessions and their
+  status per WorkOrder, messages, runtime identity, runtime environment,
+  workspace binding, usage, cost, artifacts, failures, and handover history.
+  It remains an observer and controller over Cloudeo state. Missing runtime
+  evidence is shown as unavailable or unknown, never invented.
+  Provider-native UI is supplementary observability, not Cloudeo authority.
+- After a run, the coordination layer must be able to answer: which sessions
+  existed and why each was created; which role and profile each executed;
+  which provider, model, and runtime actually ran; which runtime environment
+  and version; which fabric region and runtime class; which workspace it
+  could access; who created or requested it; what it sent and received; what
+  artifacts and evidence it produced; when handover occurred; how much it
+  consumed and cost; why it was stopped or replaced; and which human
+  approvals it referenced. Provider-native session history alone is not a
+  sufficient durable audit record.
+- **Feedback channel.** Sessions may record structured feedback about their
+  operating environment (missing tool, stale instruction, permission
+  friction, flaky test, unexpected cost, mis-sized VM, repeated setup work).
+  Feedback is evidence for later triage. It never authorizes an agent to
+  rewrite policies, permissions, project instructions, execution profiles,
+  or architecture. Any resulting change follows the normal decision path.
+
+**Security boundary:** Session Fabric preserves least authority.
+
+- Credentials are supplied through runtime secret mechanisms. They are never
+  stored in reusable runtime images, coordination messages, or Project
+  Memory.
+- One session cannot grant another session new privileges or user consent.
+- Runtime messages are untrusted input.
+- Provider-native session creation does not bypass Cloudeo authorization.
+- Provider-native shared filesystems do not become accepted state.
+- Coordination records cannot directly mutate Workspace Broker refs or
+  WorkOrder state.
+- Write-capable workspace access is explicitly bound and auditable.
+
+A compromised worker therefore stays bounded by Cloudeo's control and
+workspace boundaries.
+
+**Architecture checks:** enforced mechanically where practical.
+
+| Check | Rule |
+| --- | --- |
+| SF-01 dependency direction | `cloudeo.control` must not import `cloudeo.orchestration`, Session Fabric, or provider adapters. `cloudeo.execution`, including every fabric adapter, must not import `cloudeo.orchestration` or `cloudeo.control` (ADR-035). |
+| SF-02 no WorkOrder mutation | Session and coordination code must not construct a changed WorkOrder, mutate one, or perform WorkOrder transitions outside the public control machine. |
+| SF-03 no promotion bypass | Session and coordination code must never call Workspace Broker `promote()` or modify Cloudeo refs directly. |
+| SF-04 no authority in messages | No `CoordinationMessage` may itself satisfy a human-approval requirement. |
+| SF-05 provider neutrality | No provider-specific session type may appear in WorkOrder, control-machine, or kernel contracts, or in `cloudeo.orchestration`. Concrete provider-specific fabric adapters exist only under `cloudeo.execution`. Orchestration imports no provider-specific implementation module or type and defines no adapter interface for execution to implement. |
+| SF-06 profile discipline | Every governed Session references the approved, snapshotted execution profile under which it was created. |
+| SF-07 workspace discipline | Every workspace-capable Session has an explicit access mode and workspace binding. |
+| SF-08 single mutable writer | At most one active write-capable Session holds the mutable binding for the same CandidateWorkspace in the initial implementation. |
+| SF-09 completion is not verification | No provider or session completion status maps directly to `CODE_APPROVED`, `BLOCK_DONE`, `VERIFIED`, or `PROMOTED`. |
+| SF-10 actual identity is evidence | Requested provider, model, or harness identity must not be substituted for observed actual identity when the runtime reports them separately. |
+| SF-11 durable coordination | Cloudeo-significant session creation, handover, and cross-session messages have durable coordination records independent of provider-native UI. |
+| SF-12 unknown fails closed | Loss of reliable session or runtime observation must never fabricate successful completion. |
+| SF-13 reproducible runtime provenance | Every governed Session records the runtime-environment identity and version, or an explicit `unknown` / `unavailable` state. |
+| SF-14 economics are observational | Session Fabric may record runtime cost and usage but must not change provider, model, or runtime policy for economic reasons. |
+
+These checks are not yet traced in `14_V2C_TRACEABILITY.md`.
+
+**Non-goals:** this ADR does not introduce a provider-specific (Claude) or
+Ubicloud-specific core architecture; unrestricted self-spawning agents;
+arbitrary agent-created database schemas; agent-to-agent delegation of human
+consent; multi-writer mutable candidate workspaces; automatic modification of
+Project Execution Profiles; automatic policy learning; automatic Project
+Memory mutation; a replacement for the Workspace Broker, the trust kernel,
+or WorkOrder state; CPU/GPU fleet scheduling or general distributed-compute
+scheduling; an economic optimization policy; or a requirement for always-on
+cloud execution.
+
+**Relationship to prior ADRs:** this ADR extends and does not supersede
+ADR-015 (the Workspace Broker owns accepted state), ADR-020 and ADR-021
+(verification and promotion-gate authority), ADR-022, ADR-023, ADR-025,
+ADR-026, ADR-027, ADR-028, ADR-029, and ADR-030. Where Session Fabric
+acquires runtime evidence, ADR-030 governs how it enters control. Where it
+executes work, the Workspace Broker and trust kernel govern accepted state.
+ADR-032 chooses a first concrete cloud implementation and ADR-033 optimizes
+among permitted runtime choices, neither changing this boundary. ADR-035
+governs where provider-specific code lives and the import directions between
+`cloudeo.control`, `cloudeo.orchestration`, and `cloudeo.execution`. This
+ADR does not amend it.
+
+**Implementation gate:** no provider-specific multi-session implementation
+begins until this ADR is accepted. After acceptance, work proceeds in bounded
+slices, each preserving the checks above before the next begins:
+
+1. **Contracts only:** Session identity and normalized status,
+   runtime-environment provenance, `CoordinationMessage`, fabric
+   capabilities, narrow store protocols. The fabric runtime contracts and
+   observation DTOs go in `cloudeo.execution`; Session and coordination
+   records go in `cloudeo.orchestration`.
+2. **Durable Coordination Store:** SQLite implementation, migrations,
+   concurrency and idempotency tests, no provider integration.
+3. **`SessionSupervisor` with a fake fabric:** lifecycle, messaging,
+   child-session authorization, the single-writer invariant, handover,
+   failure semantics.
+4. **First real fabric adapter, under `cloudeo.execution`:** provider-native
+   session lifecycle and messaging, with no control semantic changes and no
+   provider-specific import in orchestration.
+5. **Mission Control projection:** sessions, relationships, messages, runtime
+   identity, runtime-environment provenance, usage and cost, and
+   unknown/unavailable state.
+
+**Consequences:** Cloudeo owns coordination semantics and authoritative
+workflow state; providers supply execution and communication capabilities. A
+session may observe, reason, execute, communicate, and propose. It may not
+acquire authority merely by coordinating with another session. Independently
+addressable sessions become an execution capability of Cloudeo, compatible
+with Claude, Codex, Kimi, and future runtimes, and unable to bypass the
+existing verification and promotion kernel.
+
+---
+
+## ADR-032 — Cloud Execution Fabric and reproducible runtime environments
+
+**Status:** Accepted (2026-10-01); infrastructure architecture only, not yet
+implemented. Amended 2026-10-01 before acceptance: the fabric contracts and
+the Ubicloud-specific implementation live in `cloudeo.execution` (see
+"Package boundary"), and provider credentials are confined to the
+provider-specific execution adapter (see "Network and secrets").
+
+**Supporting document:**
+`17_CLOUD_EXECUTION_FABRIC_AND_RUNTIME_ENVIRONMENTS.md` holds the rationale,
+diagrams, examples, and the Ubicloud source references. This entry is the
+decision record and is normative on its own. Where the two differ, this entry
+governs.
+
+**Context:** Cloudeo needs execution environments that are isolated,
+reproducible, disposable, programmatically provisioned, auditable,
+cost-observable, fast to create, suitable for Claude, Codex, Kimi, and future
+runtimes, and independent of any one AI provider's proprietary cloud session
+environment. It must be able to say where a Session ran, in which
+environment and image version, on which compute class and network, at what
+cost, and whether the environment was destroyed afterwards.
+
+**Decision:** Cloudeo adds a provider-neutral **Cloud Execution Fabric**
+beneath the Session Fabric of ADR-031. It provisions, observes, and destroys
+the isolated compute environments in which governed Sessions may run.
+
+- The first managed implementation targets **Ubicloud**, with the initial
+  European deployment in Ubicloud's `eu-central-h1` location.
+- Ubicloud is the preferred initial managed compute substrate, not an
+  architectural dependency of Cloudeo.
+- The layering is `SessionSupervisor` → Session Fabric → Cloud Execution
+  Fabric → a concrete fabric (`UbicloudFabric`, or a local or future fabric)
+  → an isolated runtime.
+- Cloud-specific types and APIs must not leak into `cloudeo.control`,
+  `cloudeo.orchestration`, WorkOrder semantics, verification semantics, or
+  the trust kernel.
+- The Cloud Execution Fabric does not own WorkOrder policy.
+
+The decision introduces `CloudExecutionFabric`, `CloudRuntimeSpec`,
+`RuntimeEnvironmentSpec`, `RuntimeInstance`, `RuntimeEnvironmentArtifact`,
+and `RuntimeObservation`. For a Session request passed by
+`SessionSupervisor`, the fabric chooses an approved runtime specification,
+provisions an isolated instance, attaches network and security policy,
+injects ephemeral bootstrap material, observes lifecycle and usage, and
+destroys the instance.
+
+**Package boundary (ADR-035 governs):**
+
+- The provider-neutral Cloud Execution Fabric contracts and observation
+  types named above live in `cloudeo.execution`.
+- The Ubicloud-specific implementation (`UbicloudFabric`, with every
+  Ubicloud API type, identifier format, and constraint check) also lives in
+  `cloudeo.execution`, as does any later cloud implementation.
+- `cloudeo.orchestration` consumes only the neutral contracts. No
+  Ubicloud-specific type appears in it, and it defines no fabric interface
+  for execution to implement.
+- `cloudeo.execution` never imports `cloudeo.orchestration` or
+  `cloudeo.control`.
+- Provisioning operations, like Session Fabric lifecycle operations
+  (ADR-031), are not execution request kinds and are not routed through
+  `ExecutionDispatcher`.
+
+**Scope against ADR-031:** ADR-031 defines what a governed Session is and
+stays valid whatever the substrate (a provider-managed cloud environment, a
+local runtime, an Ubicloud VM, a future cloud VM, or a future container or
+sandbox fabric). This ADR specializes only the cloud-hosted isolated-worker
+path.
+
+**Ubicloud is an implementation, not the architecture:**
+
+- The first implementation uses Ubicloud's managed service, not self-hosted
+  Ubicloud. Cloudeo chooses the location, runtime class, runtime-environment
+  image and version, network and security configuration, and lifecycle.
+  Ubicloud remains responsible for physical host placement and the
+  underlying infrastructure.
+- **Physical-host opacity.** Cloudeo must not depend on knowing which
+  bare-metal server hosts an instance, and does not schedule individual
+  hosts. It cares about the declared location, runtime class, architecture,
+  environment identity, provider instance identity, and observed execution
+  properties. Host selection, if a future self-hosted fabric offers it,
+  belongs to that adapter and a later scheduling policy.
+- The interface must permit other implementations (a local VM fabric, AWS,
+  Azure, GCP, direct Hetzner, on-premises, a future sandbox provider).
+- No WorkOrder or control-layer object may require an Ubicloud-specific VM,
+  project, firewall, subnet, image, or location type. Provider-native
+  identifiers such as `fabric_provider`, `fabric_region`,
+  `runtime_instance_id`, and `runtime_class` are runtime provenance held as
+  orchestration evidence, not control semantics.
+- Current Ubicloud Machine Image constraints (the source VM must be stopped
+  and have a single disk of at most 40 GiB; a VM created from the image
+  needs a boot disk at least as large as the captured disk) are adapter
+  facts as of 2026-09-28. The Ubicloud adapter must enforce or surface them.
+  The generic fabric must not encode a universal 40 GiB limit.
+
+**Reproducible runtime environments:**
+
+- Cloud worker VMs start from a reproducible, versioned runtime environment.
+  For Ubicloud the preferred mechanism is an Ubicloud Machine Image (UMI),
+  built from a clean base OS plus Python/uv, Node/pnpm, Git, the Cloudeo
+  runtime, the UHP client, common build and test tooling, telemetry and
+  bootstrap support, and approved agent-runtime dependencies.
+- A reusable image must not contain provider API secrets, GitHub
+  credentials, user credentials, long-lived tokens, project-specific
+  secrets, accepted project state, or mutable WorkOrder state. Those are
+  injected only at runtime through approved secret and bootstrap mechanisms.
+- **Immutable pinning.** A governed WorkOrder executes against an immutable
+  runtime-environment version or fingerprint. A moving alias such as
+  `latest` may be used for development convenience but is never the
+  authoritative runtime identity of an execution that must be reproducible.
+  The record carries the kind, name, version, and immutable fingerprint.
+  Where a provider exposes both a friendly version label and an immutable
+  native identifier, Cloudeo records both.
+- **Environment identity is generic** (for example `ubicloud-machine-image`,
+  `container-image`, `local-environment-lock`, `provider-cloud-environment`).
+  The control layer must not need to understand how an image was built.
+- **Image strategy.** There is at least one small production worker image,
+  `cloudeo-worker`. A separate `cloudeo-eval` image may hold evaluation
+  tooling that would otherwise bloat it. The architecture permits several
+  approved, purpose-specific images (browser, GPU, security-audit workers)
+  and avoids installing every tool into every worker. Project repositories,
+  candidate workspaces, and secrets are normally materialized after instance
+  creation, not baked into the image.
+- **Build discipline.** Images come from a reproducible, documented build,
+  not manually configured snowflake VMs: environment definition → candidate
+  image → bootstrap validation → toolchain validation → security and
+  sanitization check → capture of an immutable version → recorded
+  fingerprint and version → eligible for governed execution. A failed build
+  never moves a production alias automatically. Rollback selects an earlier
+  known-good immutable version.
+- **Update policy.** Images are updated intentionally (security patches, OS,
+  Cloudeo runtime, toolchain, agent runtime, dependency, and bootstrap
+  changes). A new version changes the execution environment and therefore
+  the runtime provenance. For controlled comparisons the version stays
+  pinned. A new image must not silently alter an already-approved
+  WorkOrder's runtime environment where that environment is part of its
+  approved envelope.
+
+**Worker lifecycle:**
+
+- Write-capable agent workers are disposable by default: approved execution
+  step → provision an isolated VM → attach private network and security
+  policy → inject temporary bootstrap material and secrets → materialize the
+  governed workspace → run the Session → collect durable evidence and
+  artifacts → revoke temporary credentials → destroy the VM.
+- A runtime VM is execution state only. It is never accepted workspace
+  state. Destroying a VM must not destroy the authoritative evidence Cloudeo
+  needs.
+- **Topology.** The preferred early shape is a small persistent control
+  plane (Cloudeo API, orchestration, `SessionSupervisor`, Mission Control)
+  with a durable control and coordination store, plus ephemeral worker VMs.
+  Expensive compute is allocated only while useful. Not every Cloudeo
+  component has to run in an ephemeral VM.
+- **No always-on worker pool by default.** The default is create on demand,
+  execute, destroy. A warm pool may be introduced later only if measured
+  startup latency or workload volume justifies its fixed cost, and it then
+  needs explicit policy and lifecycle controls.
+- **No Kubernetes initially.** The first deployment does not require it.
+  Kubernetes may be reconsidered when concurrency, scheduling scale, service
+  density, or operational evidence shows a need.
+- **Session reuse is not VM reuse.** ADR-031 may permit reuse of an eligible
+  Session; that does not imply indefinite reuse of the underlying VM. The
+  initial write-capable worker implementation prefers a simple, auditable
+  mapping. Optimizing reuse belongs to COST and must preserve isolation and
+  workspace authority.
+- **Managed PostgreSQL is optional.** This ADR does not replace the
+  SQLite-first store behind a storage interface (ADR-029). A migration
+  happens only when concurrency, availability, deployment topology, or
+  operations justify it, and the storage interface must allow it without
+  changing WorkOrder semantics.
+
+**Runtime classes and architecture:**
+
+- The fabric can select a runtime class but does not define the economic
+  optimizer. The initial implementation supports a small set of explicitly
+  approved classes (small shared or burstable, general-purpose dedicated,
+  larger dedicated, a future GPU class). The exact class is runtime
+  configuration. No Cloudeo core type assumes a particular Ubicloud class
+  name. Right-sizing policy belongs to ADR-033.
+- A larger VM is not automatically preferred. The runtime layer collects
+  enough observations (runtime class, wall-clock duration, CPU and memory
+  pressure where available, runtime cost, execution success or failure, and
+  the verification result reference) to compute cost per successfully
+  verified WorkOrder later. The fabric records evidence; it does not choose
+  an economically optimal class itself.
+- **x86 first.** The initial worker environment uses the architecture with
+  the lowest compatibility risk for the Cloudeo toolchain. ARM is not
+  selected because of a lower unit price. Before an ARM image is introduced,
+  Cloudeo validates agent CLI compatibility, Python and Node native
+  dependency compatibility, container and tooling compatibility, build and
+  test behavior, wall-clock performance, and cost per verified task.
+
+**Network and secrets:**
+
+- Worker instances communicate over private networking where practical. The
+  first Ubicloud implementation uses private subnets and firewalls to
+  restrict worker connectivity. The default posture is: deny unnecessary
+  inbound access, allow only required service paths, minimize public
+  exposure, and prefer private control-plane communication. Public IPv4 is
+  not mandatory for every worker. Public-facing services and worker
+  execution networks are separable.
+- Secrets are never baked into reusable machine images. Runtime credentials
+  are injected only when required, scoped to the Session or execution step
+  where possible, short-lived where the provider supports it, revocable, and
+  absent from durable images, CoordinationMessages, and Project Memory. A
+  destroyed runtime must not remain a source of reusable credentials.
+- **Credential boundary.** Provider credentials are available only to the
+  narrowest provider-specific execution boundary that requires them.
+  Ubicloud credentials are consumed only by the Ubicloud adapter under
+  `cloudeo.execution`. Credentials must never appear in
+  `cloudeo.orchestration`, `cloudeo.control`, WorkOrder state, Session
+  records, Coordination Store records, logs, or model-visible context.
+  Orchestration receives only credential-free normalized observations and
+  provider and runtime identity evidence. This states the authority
+  boundary only; it does not decide credential storage or secret
+  management.
+
+**Workspace and evidence:**
+
+- A cloud VM's root filesystem is not a Workspace Broker. Before
+  write-capable execution, the workspace is materialized from the Workspace
+  Broker's CandidateWorkspace and accepted-baseline identity into the
+  isolated runtime. The materialization mechanism may evolve. The invariant
+  is that Cloudeo knows which accepted baseline and candidate identity the
+  runtime corresponds to. Runtime-local files never become accepted state
+  because an agent finished successfully.
+- **Evidence before destruction.** Before an ephemeral VM is destroyed,
+  Cloudeo persists every governed output the surrounding workflow requires:
+  execution result, test and audit evidence, structured runtime
+  observations, artifact references, logs required by policy, usage and cost
+  observations, runtime provenance, and workspace or checkpoint identity.
+  Failure to retrieve required evidence is never silently normalized as
+  success. If positive evidence is required but unavailable, the workflow
+  fails closed.
+- **Provenance.** Every governed cloud Session records, where available:
+  `fabric_provider`, `fabric_region`, `runtime_class`,
+  `runtime_instance_id`; `runtime_environment`,
+  `runtime_environment_version`, `runtime_environment_fingerprint`;
+  requested and actual architecture; creation time, termination time, and
+  observed runtime duration; usage and runtime cost. This extends ADR-031's
+  Session provenance. Unknown fields stay explicitly `unknown` or
+  `unavailable`; a requested value is never substituted for an observed one.
+- **Cost observability.** The fabric exposes or derives enough to attribute
+  infrastructure cost to a governed execution where practical: at minimum
+  the runtime class, start and stop time, billable duration if available,
+  provider-reported cost if available, and the provider pricing identity or
+  version when known. Infrastructure cost is evidence. The fabric must not
+  alter WorkOrder policy to reduce cost.
+
+**Failure, cleanup, and reconciliation:**
+
+- The cloud adapter distinguishes at least: provisioning rejected;
+  provisioning failed; instance running; instance unreachable; instance
+  stopped; instance terminated; instance lost or final state unknown;
+  environment bootstrap failed; workspace materialization failed; evidence
+  extraction failed; destruction confirmed; destruction unconfirmed. These
+  are runtime observations. They do not map directly to WorkOrder success.
+  Unknown final infrastructure state stays explicit.
+- **Cleanup is part of correctness.** Orchestration attempts bounded cleanup
+  after normal completion, execution failure, bootstrap failure, timeout,
+  cancellation, and orchestration restart or recovery. Cleanup is
+  idempotent. An orphaned VM must be visible as operational debt and cost
+  leakage; a periodic reconciliation may later detect orphans.
+- **Reconciliation.** The Coordination Store keeps enough (provider instance
+  id, expected lifecycle state, last observation) to reconcile provider
+  state after an orchestration restart. Provider state is established by
+  inspecting the provider, never inferred solely from stale local records. A
+  divergence is reconciled or escalated.
+
+**Adjacent concerns kept separate:**
+
+- **CI.** Ubicloud's ephemeral GitHub Actions runners may be evaluated as
+  part of infrastructure economics, but runner selection is not Cloud
+  Execution Fabric authority. Cheaper runners never substitute for
+  eliminating duplicate triggers, cancelling stale PR runs, batching agent
+  pushes, failing fast, and building once (ADR-033).
+- **Evaluation.** Evaluation tooling may use the same fabric, for example a
+  pinned `cloudeo-eval` image. Evaluation traffic, model routing, and
+  comparison policy are not defined here. The fabric only guarantees a
+  known, reproducible environment, so an evaluation system such as
+  Ori/OpenRouter can be added later without becoming a production
+  infrastructure dependency.
+
+**Security posture:** the first cloud implementation preserves least
+authority: ephemeral workers by default; no long-lived credentials in images;
+narrow network access; provider API credentials available only to the
+provider-specific execution adapter that requires them;
+workspace access appropriate to role; runtime identity and immutable image
+identity recorded durably; cleanup and revocation after execution; and no
+provider runtime claim becoming verification authority. A compromised worker
+must not be able to mutate Cloudeo control state merely because it can reach
+the orchestration network.
+
+**First deployment profile (operational configuration, not architecture):**
+
+| Aspect | Initial choice |
+| --- | --- |
+| Provider and location | Ubicloud managed service, `eu-central-h1` |
+| Control plane | small persistent VM(s), sized from measured load |
+| Workers | disposable VMs, explicit approved runtime classes, no large permanent pool |
+| Environment | versioned UMI, initial image `cloudeo-worker`, immutable version pinned for governed execution |
+| Network | private subnet where practical, restrictive firewall, public exposure only when required |
+| Secrets | runtime injection only, never baked into the UMI |
+| Persistence | the existing Cloudeo store abstraction; managed PostgreSQL optional later |
+| Provider API | called only by the `UbicloudFabric` adapter under `cloudeo.execution`, which alone consumes the Ubicloud credentials |
+| Kubernetes | not required initially |
+
+Exact VM sizes and prices are operational configuration, not architectural
+constants.
+
+**Architecture checks:** enforced mechanically where practical.
+
+| Check | Rule |
+| --- | --- |
+| CF-01 provider neutrality | No Ubicloud-specific infrastructure type may appear in `cloudeo.control`, `cloudeo.orchestration`, WorkOrder state-machine contracts, or trust-kernel contracts. The Ubicloud implementation exists only under `cloudeo.execution`. |
+| CF-02 immutable environment identity | Every governed cloud Session records an immutable environment version or fingerprint, or explicitly records that it was unavailable. |
+| CF-03 no secrets in image definitions | Reusable runtime images must not contain project, provider, or user credentials. |
+| CF-04 runtime is not canonical state | A cloud VM filesystem must never be treated as accepted workspace state. |
+| CF-05 evidence before destruction | Required governed evidence is persisted before runtime destruction is considered complete. |
+| CF-06 idempotent lifecycle | Create, inspect, terminate, and reconcile operations have idempotency or equivalent duplicate-safe semantics where retries can occur. |
+| CF-07 unknown remains unknown | An unreachable or ambiguously terminated VM must not be normalized to successful completion. |
+| CF-08 cost observability | The fabric records enough runtime identity and duration or cost evidence for later attribution where the provider exposes it. |
+| CF-09 no economic policy in the fabric | The fabric may report runtime economics but may not independently select a cheaper model, provider, or runtime class outside approved orchestration policy. |
+| CF-10 no moving alias as provenance | A mutable alias such as `latest` must not be the sole environment identity recorded for governed execution. |
+| CF-11 physical-host opacity | Managed-provider physical host placement must not become a Cloudeo control dependency. |
+| CF-12 cleanup visibility | Instances that should have been destroyed but remain observable are detectable as orphaned runtime resources. |
+
+These checks are not yet traced in `14_V2C_TRACEABILITY.md`.
+
+**Non-goals:** this ADR does not define model selection; autonomous provider
+switching; COST optimization policy; Ori/OpenRouter evaluation policy;
+Project Execution Profile changes; multi-writer workspaces; general fleet or
+GPU scheduling; Kubernetes orchestration; a mandatory PostgreSQL migration;
+CI trigger policy; human-approval or promotion semantics; or a replacement
+for Session Fabric or the Workspace Broker.
+
+**Relationship to other ADRs:** this ADR extends and does not supersede
+ADR-015, ADR-022, ADR-023, ADR-027, ADR-029, ADR-030, and ADR-031. ADR-035
+governs package placement and import directions. ADR-031 defines what a
+governed Session is. This ADR defines how a cloud-hosted Session receives an
+isolated, reproducible runtime environment. ADR-033 decides how to choose
+economically among already-permitted execution options.
+
+**Implementation sequence:** after acceptance, in bounded slices, none of
+which may weaken the ADR-030 or ADR-031 boundaries:
+
+1. **Generic contracts, in `cloudeo.execution`:** `CloudExecutionFabric`,
+   runtime and environment specification, runtime instance identity,
+   normalized lifecycle, provenance and cost observations.
+2. **Fake fabric:** deterministic lifecycle tests, idempotency, failure
+   semantics, orphan reconciliation, no real cloud calls.
+3. **Ubicloud adapter, under `cloudeo.execution`:** VM create, inspect, and
+   terminate; region and runtime-class mapping; provider instance identity;
+   no Session integration yet.
+4. **Runtime image path:** a reproducible `cloudeo-worker` build,
+   sanitization, version capture, immutable identity recording, bootstrap
+   test.
+5. **Networking and security:** private subnet and firewall, runtime secret
+   injection, least-access bootstrap.
+6. **Session Fabric integration:** provision a VM for an approved Session,
+   materialize the workspace, execute, extract evidence, destroy, persist
+   provenance.
+7. **Operational reconciliation:** detect stale and orphaned VMs, recover
+   after an orchestration restart, report usage and cost.
+
+**Consequences:** Cloudeo gains a concrete path from abstract agent Sessions
+to reproducible, isolated cloud execution without binding the product
+architecture to one cloud provider. Cloud providers supply isolated compute;
+Cloudeo owns execution semantics. Runtime environments are versioned and
+reproducible, workers are disposable, and accepted state stays outside the
+runtime VM. Ubicloud is the first managed implementation, not a permanent
+architectural dependency.
+
+---
+
+## ADR-033 — COST: total-cost optimization policy
+
+**Status:** Accepted (2026-10-01); policy architecture only, not yet
+implemented. Amended 2026-10-01 before acceptance: COST never selects,
+switches, or reorders execution profiles for an active WorkOrder (see
+"Profile selection"). ADR-027 and ADR-029 are not amended.
+
+**Supporting document:** `18_COST_TOTAL_COST_OPTIMIZATION_POLICY.md` holds
+the rationale, worked examples, and formulas. This entry is the decision
+record and is normative on its own. Where the two differ, this entry governs.
+
+**Context:** a coding-agent system can waste money in many places even when
+its model choice looks cheap. The true cost of one WorkOrder includes model
+inference, subscription allocation, Session and cloud VM runtime, CI, build
+and deploy resources, external APIs, storage and network, retries, model
+evaluations, context reconstruction, and human intervention. Optimizing only
+the token price or the VM price per minute can make the whole system more
+expensive.
+
+**Decision:** Cloudeo introduces **COST** as the policy layer responsible for
+economic optimization of already-permitted execution choices. Its objective
+is:
+
+> Minimize expected total cost per successfully verified WorkOrder, subject
+> to approved quality, safety, independence, latency, budget, and policy
+> constraints.
+
+- COST is not a model router, not a cloud scheduler, and not an authority
+  over WorkOrder state.
+- It evaluates the economics of allowed choices using observed evidence from
+  model and runtime execution, Session Fabric, Cloud Execution Fabric, CI,
+  provider and API usage, retries, evaluation systems, human intervention,
+  and historical Performance Memory.
+- It may recommend, or select among, choices that the approved envelope and
+  execution policy already permit. It never selects, switches, or reorders
+  execution profiles for an active WorkOrder (see "Profile selection").
+- It may not weaken safety or verification requirements, bypass independence
+  rules, alter a Project Execution Profile, introduce an unapproved
+  provider, model, or runtime, mutate WorkOrder state directly, grant human
+  approval, bypass the trust kernel, or trade away required correctness for
+  a lower nominal price.
+
+**Authority boundary:** COST is subordinate to control. Approved policy →
+`cloudeo.control` → the eligible execution set → COST → an economic choice
+or recommendation → `cloudeo.orchestration` → execution. COST chooses only
+from the eligible set supplied by policy. An option that violates a quality
+threshold, the risk class, auditor independence, an approved role binding, a
+latency requirement, a budget rule, a security rule, or provider policy is
+not eligible, however cheap.
+
+**Objective hierarchy:** a lower-priority objective never overrides a higher
+one.
+
+1. Obey hard policy, security, and safety constraints.
+2. Preserve required verification and independence.
+3. Satisfy mandatory latency and SLA requirements.
+4. Stay within the approved budget.
+5. Minimize expected total cost per verified WorkOrder.
+6. Where cost is materially tied, prefer lower operational complexity.
+
+**Hard constraints and optimization criteria:**
+
+- **Hard constraints**, never traded for savings: the approved envelope;
+  security policy and credential boundaries; required tests and verification
+  requirements; promotion rules; auditor independence and risk-class
+  requirements; provider restrictions; data residency where required;
+  explicit user decisions; and maximum latency or SLA when mandatory.
+- **Optimization criteria**, compared only once the hard constraints hold:
+  expected cost, latency, throughput, context-reuse benefit, VM utilization,
+  CI usage, provider usage, retry probability, and human-attention
+  probability.
+
+COST never converts a hard constraint into a weighted preference.
+
+**Cost model:** for an eligible strategy, the explanatory model is expected
+total cost divided by the probability of verified success. It explains the
+target and does not mandate one literal formula. A cheaper option with a much
+lower verified-success probability may be worse than a dearer one that
+succeeds reliably.
+
+- Total WorkOrder cost is the sum of inference, allocated subscription,
+  Session runtime, cloud runtime, CI, external API, storage, network, retry,
+  evaluation, context-reconstruction, human-attention, and other observed
+  direct cost.
+- Not every term has to be available initially. Unknown components stay
+  unknown. COST must not replace a missing actual cost with an invented
+  value, and must not treat it as zero.
+- **Inference.** For metered inference COST records, where available, the
+  provider, model, input, output, cached and reasoning tokens,
+  provider-reported cost, list-price estimate, and billing route. Evidence
+  is preferred in this order: the provider-reported charge; the router's
+  reported charge; a calculation from the current provider price; unknown.
+  An estimate from list price is labeled as an estimate.
+- **Subscriptions.** COST distinguishes marginal API cost, fixed
+  subscription cost, and capacity or rate-limit scarcity. A subscription
+  route may carry its fixed monthly cost, included or practical capacity,
+  current usage pressure, rate-limit pressure, and allocation method. A
+  near-zero marginal cost does not make a route free if it consumes scarce
+  quota needed for higher-value work. Subscription routes are never compared
+  to metered APIs through list token prices alone.
+- **Allocation is accounting.** Cloudeo may allocate a subscription's fixed
+  cost across successful WorkOrders (per active hour, per successful
+  WorkOrder, per weighted token-equivalent, or per role-specific usage). The
+  method is explicit and versioned. Allocated cost is an internal accounting
+  view and is never presented as a provider invoice.
+- **Model and billing route are different things.** The same model may be
+  reached directly, through a router, or through a router with the user's
+  own key, differing in price, latency, availability, provider identity,
+  fallback behavior, and observability. COST compares routes only when
+  policy allows all of them. A billing or routing path is profile data
+  (ADR-035), so moving an active WorkOrder to a different route is a profile
+  change and follows "Profile selection". Evaluation may use a router
+  without production using the same route.
+- **Provenance.** Every material cost observation states its source where
+  practical (provider invoice or usage API, router-reported charge, cloud
+  runtime record, CI runtime, list-price calculation, subscription
+  allocation, human estimate), so actual charges and estimates are never
+  mixed.
+- **Uncertainty and freshness.** Evidence keeps its sample size, variance or
+  spread where available, time window, and environment and profile
+  fingerprints. A small apparent advantage from few observations is not
+  treated as certain. Evidence is discounted or invalidated when its
+  fingerprint no longer matches (model updates, price changes, runtime image
+  changes, CI changes, repository growth, toolchain versions, provider
+  performance, subscription-plan changes). Old evidence may stay for history
+  but must not silently represent current economics.
+- **Verified labels only.** Performance Memory and COST never learn success
+  from an agent saying it is done, a runtime completing, partially passing
+  tests, a created PR, or a provider returning 200. The positive label is a
+  verified outcome appropriate to the workflow, ultimately a promoted or
+  accepted outcome where relevant.
+
+**Roles, profiles, and evidence:**
+
+- There is no globally cheapest best model. COST evaluates within a role and
+  task context, with evidence keyed by at least role, task class, profile
+  fingerprint, model and provider, runtime-environment fingerprint, and risk
+  class, where available.
+- **The Project Execution Profile stays authoritative (ADR-027).** COST does
+  not replace a role's primary profile with a cheaper model. Normal
+  execution stays: the approved primary, then an approved ordered fallback
+  only under an approved fallback condition. COST may not add a model,
+  provider, or profile.
+- **Performance Memory** keeps verified economic observations keyed by
+  context (role, task class, profile and runtime-environment fingerprints,
+  fabric provider, runtime class, verified outcome, latency, retries,
+  inference, VM and CI cost, human intervention). COST prefers observed
+  project-specific evidence over generic benchmark assumptions when the
+  sample is sufficient.
+
+**Profile selection (ADR-027 and ADR-029 govern):** COST is bound exactly as
+Performance Memory is. It may never select, switch, or reorder execution
+profiles for an active WorkOrder, including among approved fallbacks,
+because it predicts lower cost or better performance.
+
+- COST may calculate costs, compare alternatives, rank them analytically,
+  recommend a revised primary or fallback ordering, and provide evidence for
+  `change_agent`, always showing sample size and uncertainty.
+- An active WorkOrder keeps using the immutable primary and fallback
+  ordering of its snapshotted Project Execution Profile. A fallback is used
+  only under its approved fallback condition and only in that order. COST's
+  analysis neither triggers a fallback nor changes which one is next.
+- A COST recommendation affects execution only through one of two paths:
+  1. a user-approved Project Execution Profile revision, which reaches an
+     active WorkOrder only through `change_agent` and a user-approved
+     envelope amendment (ADR-028);
+  2. an explicit, pre-approved, deterministic policy in the approved profile
+     or envelope. Its trigger is an observed, classified condition, and it
+     makes no runtime performance-based profile-selection decision.
+- The choices COST may make automatically are never execution profiles.
+  They are resources such as an approved runtime class, reuse of an eligible
+  Session, or an approved equivalent CI runtime.
+
+**Two modes:**
+
+| Mode | When | Examples |
+| --- | --- | --- |
+| Automatic selection | every candidate is already policy-eligible, the decision does not amend the approved envelope, the choice stays within approved role, profile, and fallback semantics, and it is not a choice between execution profiles or a change to their order | approved VM class A or B; reusing an eligible Session or creating a fresh one; an approved equivalent CI runtime |
+| Recommendation | the cheaper or better choice would need a new model, a new provider, a Project Execution Profile change, a different primary or fallback ordering, a risk-policy change, a budget change, an independence change, or a new production routing path | the recommendation enters the existing human and control decision path |
+
+- **Decision record.** A non-trivial automatic selection records the
+  `decision_id`, `workorder_id`, role and task class, the eligible choices,
+  the chosen one, the hard constraints applied, expected cost, expected
+  verified-success evidence, expected latency, evidence references,
+  uncertainty, the reason, a timestamp, and the COST policy version.
+- **COST cannot self-amend.** It may not rewrite its own hard constraints or
+  policy weights, a Project Execution Profile, approved budgets, the risk
+  class, or independence requirements because its data suggests it. Such
+  changes go through the normal decision process.
+
+**Budget, latency, and human attention:**
+
+- The approved envelope may define a hard maximum cost, a soft target cost,
+  a per-attempt budget, a total WorkOrder budget, and an evaluation budget.
+  COST distinguishes hard caps from targets. Approaching a hard cap
+  triggers, as policy permits, a cheaper eligible choice that is not a
+  profile change, an approved fallback under its approved fallback
+  condition, or stop and escalate. Exceeding a hard cap without explicit
+  authority is forbidden.
+- Latency may be a constraint (lowest expected cost subject to an SLA) or a
+  penalty only where project policy defines the requirement. It is never
+  converted into money by an undocumented formula.
+- Human intervention is a cost signal: manual approval, debugging, conflict
+  repair, provider recovery, reruns, environment repair, and review beyond
+  normal policy are counted or estimated, initially as a count, duration
+  estimate, or severity class. Monetization is optional.
+- Mandatory human decisions (plan approval, material-deviation approval,
+  `change_agent`, `change_budget`, a risk waiver, a promotion-related
+  decision where required) are governance boundaries. COST may reduce
+  avoidable friction. It may never bypass a required human decision because
+  it is expensive.
+
+**Runtime and session economics:**
+
+- **Right-sizing.** COST may compare approved runtime classes. The metric is
+  expected infrastructure cost per successfully verified task, not the
+  cheapest VM per minute. A dearer VM may be cheaper overall if it reduces
+  build time, test time, agent idle time, timeout risk, or retry rate.
+- **Idle time is leakage.** With ADR-032's create, execute, destroy default,
+  unnecessary idle VM lifetime is cost leakage. The system measures
+  provisioning, active execution, idle, handover, and cleanup time.
+- **Warm pools need evidence.** COST may recommend a warm pool only when the
+  saved startup latency or value exceeds the idle capacity cost plus
+  operational complexity. Warm pools are not the default, and any warm-pool
+  policy preserves isolation, secret handling, and workspace authority.
+- **Session reuse.** COST may compare reusing an eligible Session with
+  starting a new one. Savings (less context reconstruction, fewer tokens,
+  no VM startup or tool bootstrap, cheaper handover) are weighed against
+  risks (stale context, role contamination, independence violation,
+  workspace mismatch, security-scope mismatch). Policy eligibility is
+  checked before economics; reuse is allowed only if those constraints
+  hold.
+- **Context reconstruction is a real cost.** Avoidable rediscovery of
+  architecture, decisions, WorkOrder state, repository structure, and
+  earlier findings is waste, mitigated by the Coordination Store, structured
+  handover, Project Memory, short overlapping Sessions, and reusable runtime
+  environments. Preserving stale or unsafe context is not automatically
+  cheaper.
+- **Overlapping handover** may be compared against the reconstruction and
+  retry cost it avoids. It never transfers write authority in violation of
+  ADR-031.
+- **Parallelism is not automatically cheaper.** It is compared on total
+  inference, total VM runtime, coordination overhead, duplicate work, merge
+  and reconciliation work, verified outcome, and the value of latency.
+- **The single mutable writer** of ADR-031 is also an economic safeguard.
+  COST must not override it to gain parallelism.
+
+**Retries:**
+
+- Blind retry is expensive. COST consumes failure classification from
+  orchestration and control (provider transient failure, deterministic
+  validation failure, audit failure, baseline drift, unknown runtime state,
+  budget exhaustion, environment bootstrap failure). The options are: retry
+  the same route, use an approved fallback, change the runtime class, or
+  stop and escalate. A retry happens only where policy permits it and its
+  expected value is positive. A fallback is used only under its approved
+  fallback condition and in the snapshotted order.
+- Where evidence shows a deterministic failure will recur unchanged (invalid
+  input, a missing credential, a policy prohibition, a failed deterministic
+  test, an unsupported architecture, a known environment incompatibility),
+  COST does not recommend an identical retry. The action is to fix the
+  prerequisite, replan, use an approved alternative, or raise
+  `USER_ATTENTION_REQUIRED`.
+
+**CI economics:** CI is part of total WorkOrder cost. COST tracks workflow
+runs attributable to a WorkOrder or PR, job runtime, runner class, duplicate
+and stale runs, cache hits and misses, and build repetition.
+
+- **Push discipline.** Local validation is the inner loop. Remote CI is a
+  validation gate, not the agent's debugger. Agents may commit locally as
+  often as useful; remote pushes happen at meaningful validation points.
+- **No duplicate triggers.** Where the repository topology allows, the same
+  expensive validation does not run twice through overlapping triggers.
+  Required-check behavior stays correct; optimization never removes a
+  required validation signal.
+- **Cancel stale PR runs, preserve main.** Superseded PR runs are normally
+  cancelled. Main and release validation is not blindly cancelled by the
+  next push.
+- **Fail fast and cheap.** Cheap, high-signal checks run before expensive
+  ones (format, lint, static analysis, unit, integration, E2E, large build,
+  deploy, adjusted per project).
+- **Build once, reuse artifacts**, provided the artifact stays trustworthy
+  for every consumer. COST does not encourage unsafe reuse across
+  incompatible contexts.
+- **Cache only stable things**, keyed by explicit stable inputs (lockfile
+  fingerprint, toolchain version, runtime-environment fingerprint,
+  architecture). Correct caching ranks above cache hit rate.
+- **Job fragmentation has a cost** (minimum billing unit, startup overhead,
+  artifact transfer, runner provisioning). The goal is neither one giant job
+  nor maximal fragmentation.
+- **Runner selection** is compared on cost per green authoritative
+  validation, using price, duration, cache performance, queue delay, failure
+  rate, architecture compatibility, and operational dependency risk.
+  Changing runner provider never weakens required checks.
+- **ARM requires measurement** of build and test duration, native dependency
+  compatibility, emulation overhead, cache behavior, verified success, and
+  total cost before it is preferred.
+- **Self-hosting is not automatically cheaper.** Patching, runner lifecycle,
+  disk cleanup, security, isolation, capacity planning, and human operations
+  are included where material.
+
+**Evaluation economics:**
+
+- Ori Eval over OpenRouter may be used as one model-evaluation backend:
+  controlled experiment → candidate-model evidence → Performance Memory →
+  COST analysis → recommendation. It is evidence infrastructure, not
+  production authority, and is not required for production execution. A
+  model evaluated through a router may later run directly through its
+  provider if policy and economics favor it.
+- **Positive expected value.** COST does not benchmark every new model.
+  Before a significant evaluation it weighs expected future workload times
+  expected improvement per task against evaluation, migration, and
+  operational-risk cost. If the value is too low, the current approved
+  profile stays. This is a policy heuristic, not a monetary forecast.
+- **Cadence.** No full model bake-off on every code push. A small regression
+  evaluation runs only when relevant agent behavior, prompt, tool, or
+  harness logic changes. A model comparison is triggered by an important
+  new model, a scheduled review, a material cost shift, a quality
+  regression, a provider availability change, or an explicit human request,
+  and screens a small candidate set before a larger confirmation run. The
+  exact cadence is configuration.
+- **Reproducibility.** Comparisons pin, as far as practical, the task set,
+  repository commit, harness, prompts, tools, effort and budget,
+  runtime-environment image and version, runtime class, and network
+  assumptions, and vary only the intended variable. ADR-032 provenance
+  supports this.
+- Before a large evaluation COST requires the question to answer, the
+  candidate set, the task set, the expected evaluation cost, the expected
+  future workload, and the decision threshold. Afterwards it stores the
+  actual cost, candidate performance and cost, confidence and sample size,
+  and the recommended action.
+
+**Initial implementation scope:** deliberately conservative, with no
+sophisticated learning system.
+
+- Inputs: model and provider usage, Session duration, cloud runtime duration
+  and class, provider-reported or estimated inference cost, VM cost, retry
+  count, verified outcome, and basic CI attribution where available.
+- Actions: report economics, compare eligible runtime classes, compare reuse
+  against a new Session, and recommend, but never autonomously change,
+  model or profile bindings.
+- It may expose cost per attempt, per successful attempt, and per verified
+  WorkOrder, retry cost, the inference, runtime, CI, and evaluation shares,
+  and a human-attention count. Unknown components are listed separately
+  (a known total plus the unknown components), never coerced to zero.
+- CI economics first surface waste as a recommendation or
+  repository-specific proposal. They do not rewrite workflows automatically.
+
+**Architecture checks:** enforced mechanically where practical.
+
+| Check | Rule |
+| --- | --- |
+| COST-01 no control mutation | COST must not mutate WorkOrder state directly. |
+| COST-02 eligible-set discipline | Automatic choices are drawn only from options already permitted by control and policy. |
+| COST-03 no profile mutation | COST must not directly change Project Execution Profile bindings, and must not select, switch, or reorder profiles or fallbacks for an active WorkOrder. |
+| COST-04 no independence weakening | Economic optimization must not weaken ADR-027 independence requirements. |
+| COST-05 no verification weakening | COST must not remove or downgrade required verification to save resources. |
+| COST-06 actual versus estimated cost | Actual provider charges and estimated or list-price costs remain distinguishable. |
+| COST-07 unknown is not zero | Missing cost evidence must not be silently treated as zero. |
+| COST-08 subscription-aware accounting | Subscription routes must not be compared to metered APIs solely through list token prices. |
+| COST-09 evidence fingerprinting | Economic evidence retains enough context and fingerprints to detect when it is no longer comparable. |
+| COST-10 no unverified training labels | COST and Performance Memory must not learn positive outcome quality solely from runtime completion or agent self-report. |
+| COST-11 explainability | Non-trivial automated selections produce a durable decision record. |
+| COST-12 hard constraints dominate | No economic score may override a hard policy constraint. |
+
+These checks are not yet traced in `14_V2C_TRACEABILITY.md`.
+
+**Non-goals:** this ADR does not define a universal cheapest model;
+unrestricted autonomous model routing; autonomous Project Execution Profile,
+risk-policy, or budget changes; removal of verification or of required human
+approvals to reduce cost; a universal monetary value for human attention; one
+mandatory cloud provider, evaluation backend, or CI provider; a requirement
+to use OpenRouter in production, Ori Eval, or subscription-authenticated
+execution; or speculative financial forecasting.
+
+**Relationship to prior ADRs:** COST extends and does not supersede ADR-022
+(control is the workflow authority), ADR-025 (the approved envelope
+constrains execution), ADR-026 (WorkOrder and block state are
+control-owned), ADR-027 (role bindings, fallbacks, and independence),
+ADR-028 (policy exhaustion escalates to `USER_ATTENTION_REQUIRED`), ADR-029
+(Performance Memory is advisory and evidence-based, and its bound on
+selecting or switching profiles applies to COST), ADR-030 (orchestration
+gathers evidence but does not own WorkOrder state), ADR-031 (Session Fabric
+exposes runtime and cost observations), and ADR-032 (the Cloud Execution
+Fabric exposes runtime class, duration, provenance, and infrastructure-cost
+evidence). COST consumes evidence from those layers. It does not replace
+them.
+
+**Implementation sequence:** after acceptance, in bounded slices, each
+preserving the authority boundaries above:
+
+1. **Economics schema:** cost observation types, source and provenance,
+   known versus estimated versus allocated cost, verified outcome linkage.
+2. **Aggregation:** attempt cost, WorkOrder cost, role and task statistics,
+   runtime, inference, and CI attribution.
+3. **Reporting only:** Mission Control economics, no automatic choices.
+4. **Approved runtime-class optimization:** compare already-eligible classes.
+5. **Session reuse economics:** reuse versus a fresh Session where ADR-031
+   allows both.
+6. **CI waste detection:** duplicate runs, stale runs, repeated builds, agent
+   push multiplication.
+7. **Evaluation economics:** the expected-value gate for model comparisons.
+8. **Policy-bounded automatic selection:** among non-profile choices only,
+   and only after evidence quality and the architecture checks are mature.
+9. **Performance Memory integration:** uncertainty, freshness, and
+   fingerprint-aware historical evidence.
+
+**Consequences:** Cloudeo gains one economic policy that reasons across
+model, infrastructure, Session, CI, and evaluation cost without letting
+economics become workflow authority. COST minimizes expected total cost per
+successfully verified WorkOrder, never the cheapest isolated resource.
+Economics may optimize within approved policy; economics may not redefine
+the policy.
+
+---
+
+## ADR-034 — Agent Data Interchange and MCP boundary
+
+**Status:** Accepted (2026-10-01); not yet implemented.
+
+**Supporting document:** `19_AGENT_DATA_INTERCHANGE_AND_MCP_BOUNDARY.md`
+holds the rationale, diagrams, and candidate resource and tool names. This
+entry is the decision record and is normative on its own. Where the two
+differ, this entry governs.
+
+**Scope:** the Cloudeo control plane, agent interoperability, structured data
+exchange, and MCP. Related: ADR-030, ADR-031, ADR-032, ADR-033.
+
+**Context:** Cloudeo orchestrates heterogeneous coding and agent runtimes
+without making any model provider, harness, or agent protocol an
+architectural dependency. Agents increasingly need structured operational
+state, not only documents: WorkOrders, Runs, execution events, artifacts,
+evidence, verification outcomes, cost records, workspace state,
+capabilities, and approved decisions. The Model Context Protocol (MCP) is a
+useful way to expose such information and selected operations. Exposing
+Cloudeo through MCP must not create a second control plane, let clients
+mutate canonical state directly, or couple the domain model to MCP. The
+requirement is therefore an Agent Data Interchange boundary in which MCP is
+one adapter.
+
+**Decision:** Cloudeo introduces a provider-neutral **Agent Data Interchange
+(ADI)** boundary between external agent clients and Cloudeo's canonical
+application and control services. MCP is supported as the first standardized
+agent-facing protocol adapter over this boundary.
+
+MCP must not become:
+
+- the canonical data model;
+- the system of record;
+- an alternative orchestration engine;
+- an alternative state machine;
+- a direct database-access mechanism;
+- a path around authorization, policy, verification, budget, or promotion
+  gates.
+
+Every state-changing MCP operation must invoke the same Cloudeo application
+and control services used by other interfaces. The governing rule:
+
+> MCP may expose state and request actions; it may never independently
+> determine or mutate canonical control state.
+
+The layering is agents → MCP or a future protocol → ADI (resources, tools,
+schemas) → Cloudeo application services (orchestration and query layer) →
+`cloudeo.control` (policy, state machine, gates) → control store, execution
+fabric, and evidence and artifacts.
+
+**Principles:**
+
+- **Canonical models are protocol-independent.** Core domain objects exist
+  independently of MCP schemas, for example `WorkOrder`, `Run`,
+  `AgentExecution`, `RunEvent`, `Artifact`, `Evidence`,
+  `VerificationResult`, `CostRecord`, `WorkspaceState`, `PromotionDecision`,
+  `ProviderCapability`, `ExecutionRequest`, and `ExecutionOutcome`. MCP
+  representations are projections or serialized views of them. A future
+  REST, CLI, event-stream, A2A, or other adapter must be able to expose the
+  same semantics without translating through MCP.
+- **One control plane.** There is exactly one authoritative transition path
+  for controlled Cloudeo state. A client may request `create_run`,
+  `submit_artifact`, `submit_evidence`, `request_verification`, or
+  `request_transition`; each translates into a command handled by the
+  existing application and control boundary. An MCP server must not perform
+  direct SQL mutations of control-state tables.
+- **Read broadly, write narrowly.** The initial implementation should favor
+  rich read access to approved information and deliberately constrained
+  command access. A state-changing operation is introduced only where its
+  authorization, idempotency, audit, policy, and state-transition semantics
+  are explicit.
+- **Requests are not decisions.** A client's request does not imply the
+  transition occurs. Control decides from policy, evidence, state, and
+  budget, and accepts or rejects. The response should make the resulting
+  state and reason machine-readable.
+- **Provenance survives interchange.** Evidence and derived data exposed to
+  agents must keep enough provenance to tell where the information came from
+  and how it was produced. Where applicable a response should carry a stable
+  object ID, object and schema version, creation or observation timestamp,
+  producing run or execution, source or parent references, verification
+  state, a content hash or immutable artifact reference, and the relevant
+  policy or decision reference. MCP formatting must not strip provenance
+  that later verification needs.
+- **Unknown is preferable to invention.** Missing or unavailable data stays
+  explicitly unknown, null, or unavailable according to the canonical
+  schema. An adapter must not synthesize plausible values to satisfy a
+  response schema.
+
+**MCP surface:**
+
+- **Resources** are used for addressable, mostly read-oriented state: work
+  orders, runs, run events, run artifacts, evidence, verification, workspace
+  state, and provider capabilities. The exact URI structure is an
+  implementation detail and may evolve without changing this decision.
+- **Tools** are explicit operations, never hidden side effects of resource
+  reads. Initial tools may be read and query tools. Controlled command tools
+  may come later. Every mutating tool must delegate to an authorized Cloudeo
+  command or application service.
+- **Prompts** may be offered for convenience but must not contain
+  authoritative business logic or policy. Acceptance criteria, transition
+  rules, budget controls, and verification requirements stay in Cloudeo.
+
+**Capability negotiation:** Cloudeo should expose machine-readable
+capabilities (for example filesystem, shell, structured output, MCP, resume,
+artifact submission, and constraints such as context size or interactive
+authentication) so clients do not have to infer them. Capability
+declarations are descriptive inputs to orchestration and grant no
+authorization. Provider-specific capabilities stay behind the provider and
+runtime abstraction and must not leak into the canonical WorkOrder contract
+unless the work genuinely requires them.
+
+**Authentication, authorization, and isolation:**
+
+- MCP transport authentication and Cloudeo authorization are separate
+  concerns. An authenticated MCP client is not thereby authorized to access
+  every workspace or invoke every tool.
+- Authorization should be scoped by identity, organization or tenant,
+  workspace or project, resource, operation, role, and execution context
+  where relevant.
+- Credentials should be short-lived or revocable where practical.
+- Secrets must not be returned through general-purpose MCP resources or
+  tools merely because they exist in an execution environment.
+- The MCP server must respect the same least-privilege principles as other
+  Cloudeo interfaces.
+- **Multi-tenant isolation.** Every externally reachable query and command
+  must enforce tenant and workspace boundaries before returning data or
+  dispatching an action. An identifier alone never constitutes
+  authorization. Cross-workspace retrieval should be impossible unless an
+  explicit privileged capability exists and is independently authorized.
+  Tests must cover attempted cross-tenant and cross-resource access.
+
+**Auditability:** every state-changing request received through MCP must
+leave enough audit information to reconstruct the authenticated caller, the
+requested operation, the target object, the request time, the relevant input
+or an immutable input reference, Cloudeo's decision, the resulting state,
+and the execution or run correlation where applicable. The audit record
+belongs to Cloudeo, not to the MCP client. Read access to particularly
+sensitive operational information may also be audited.
+
+**Idempotency and retries:** agent protocols and remote runtimes retry.
+Mutating MCP operations must therefore have explicit retry semantics. Where
+duplicate execution would be harmful, a command should accept or derive an
+idempotency key. A transport retry must not create duplicate Runs, duplicate
+evidence, repeated promotion, or duplicate paid execution.
+
+**Failure semantics:** errors must distinguish at least invalid request,
+unauthenticated, unauthorized, object not found, invalid state transition,
+policy rejection, budget rejection, capability unavailable, conflict or
+idempotency collision, and temporary execution or service failure. Adapters
+should preserve structured Cloudeo error codes even if the external protocol
+also needs a generic error representation. An agent must be able to tell
+"retry later" from "this operation is forbidden or invalid".
+
+**Interaction with other boundaries:**
+
+- **COST (ADR-033).** MCP is an ingress mechanism, not an exemption from
+  COST policy. Any MCP request that can cause paid execution must flow
+  through the same budget checks, provider-selection policy, reuse and cache
+  logic, cost ceilings, fallback rules, scheduling policy, and verification
+  requirements. An external agent must not be able to force a specific
+  expensive provider or bypass a cost ceiling unless its authorization
+  explicitly permits that override. Cost metadata may be exposed to
+  authorized clients.
+- **Execution (ADR-032).** MCP does not execute arbitrary workloads itself.
+  When a command results in execution, the path is MCP request → ADI →
+  orchestration → `ExecutionRequest` → cloud or local execution fabric →
+  `ExecutionOutcome` → control. Runtime provisioning, isolation, suspend and
+  resume, spot or preemptible execution, and reproducibility stay concerns
+  of the execution fabric.
+- **Session Fabric (ADR-031).** MCP may expose selected session and
+  coordination information but must not become the Coordination Store.
+  Ephemeral agent communication, leases, session state, ownership, and
+  coordination stay governed by ADR-031. Where a client needs session
+  information, ADI presents an authorized projection.
+
+**Versioning:** canonical schemas and MCP projections must be versionable
+independently. Cloudeo should prefer additive evolution and explicit
+capability and schema discovery. A breaking protocol change should arrive
+through a versioned resource or tool contract, not a silent change of
+semantics. A response should make its schema version discoverable when
+ambiguity could affect interpretation.
+
+**Deployment and exposure:**
+
+- The MCP adapter should be deployable independently from core Cloudeo
+  services, over stable application interfaces, so the MCP surface can be
+  disabled, upgraded, rate-limited, or isolated without replacing the core
+  orchestration system. The first implementation may run in-process if
+  operational simplicity warrants it, provided the logical boundary stays
+  enforced.
+- Cloudeo should distinguish at least an **internal, privileged ADI**
+  (operational data and commands for trusted coding agents, harnesses, and
+  Cloudeo components) from an **external, restricted ADI** (deliberately
+  exposed capabilities for third-party agents and integrations). The public
+  surface must not automatically mirror every internal resource or tool.
+  Exposure is an explicit product and security decision.
+
+**HumanoidOnline applicability:** the ADI pattern is intentionally reusable
+outside Cloudeo. HumanoidOnline is a strong candidate for a separate,
+read-oriented MCP service over its canonical robot catalogue. That service
+should expose the same canonical, provenance-aware catalogue used by its web
+and API surfaces, not an MCP-specific database, and its initial public MCP
+should be read-only. The discovery and update pipeline (external sources →
+observations → entity matching → evidence and validation → promotion →
+canonical catalogue) stays the controlled ingestion path, so an external MCP
+client cannot directly update a robot, price, availability status,
+specification, or evidence record in the published catalogue.
+
+**Not decided here:** a specific MCP SDK or implementation language; HTTP
+versus another MCP transport; exact resource URI naming; every tool name; the
+public pricing or business model for MCP access; whether an API gateway
+fronts the adapter; the detailed HumanoidOnline MCP schema; and the detailed
+catalogue-discovery promotion policy. These can evolve without changing the
+boundary.
+
+**Rejected alternatives:**
+
+- **Make MCP the Cloudeo control plane.** It would bind core orchestration
+  semantics to an external interchange protocol and make non-MCP interfaces
+  second-class.
+- **Give agents direct database access.** It bypasses domain invariants,
+  authorization, audit, state-machine enforcement, and future schema
+  abstraction.
+- **Build provider-specific integration paths.** Separate data interfaces
+  per provider would undermine provider neutrality and multiply maintenance.
+- **Expose only unstructured documents.** Documents stay useful, but agents
+  need typed operational objects, provenance, state, and explicit actions.
+- **Permit MCP clients to promote state directly.** Promotion and controlled
+  transitions are Cloudeo decisions and stay behind the control boundary.
+
+**Implementation sequence:**
+
+1. Define canonical ADI DTOs and projections from existing Cloudeo domain
+   models.
+2. Implement read-only MCP access to a narrow set of WorkOrder, Run,
+   artifact, and evidence data.
+3. Add authentication, workspace authorization, audit tests, and schema and
+   version metadata.
+4. Add capability discovery.
+5. Validate interoperability with at least two independent agent or provider
+   environments.
+6. Introduce narrowly scoped command tools only after idempotency and policy
+   enforcement are demonstrated.
+7. Keep promotion and critical state transitions behind `cloudeo.control`.
+8. Reuse the pattern for a separate read-only HumanoidOnline MCP when its
+   continuous catalogue update path is mature enough.
+
+**Acceptance criteria:** this ADR is implemented when all of the following
+hold:
+
+- at least two materially independent agent environments can consume the
+  same Cloudeo structured data through MCP;
+- no MCP handler directly mutates canonical control state;
+- state-changing MCP requests traverse the normal Cloudeo command and
+  control path;
+- workspace and tenant authorization is enforced and tested;
+- provenance and stable identifiers survive serialization;
+- retried mutating requests cannot unintentionally duplicate controlled
+  operations;
+- paid execution triggered through MCP remains subject to COST controls;
+- MCP can be disabled without disabling Cloudeo's core orchestration;
+- core domain models have no required dependency on MCP-specific types;
+- another protocol can be added as a further ADI adapter without redesigning
+  the control plane.
+
+These criteria are not yet traced in `14_V2C_TRACEABILITY.md`.
+
+**Consequences:**
+
+- Positive: Cloudeo gains a standard agent-facing interface without
+  depending on one AI provider or harness. Structured operational state
+  becomes reusable by Claude Code, Codex/OpenAI, Astra, Kimi/Moonshot, and
+  future compatible agents. The same canonical data and control rules stay
+  authoritative across UI, CLI, API, MCP, and future adapters. MCP clients
+  can take part in evidence and verification workflows without being able to
+  bypass them. The boundary is a reusable pattern for HumanoidOnline and
+  other structured agent-facing products.
+- Costs and risks, accepted subject to the constraints above: another
+  externally reachable interface adds authentication, authorization,
+  versioning, rate-limiting, and security responsibilities. Poorly designed
+  tools could expose excessive privilege. MCP projections could diverge from
+  canonical models. Agent retries can duplicate work or cost unless
+  idempotency is enforced. Clients with different interpretations or feature
+  subsets need conformance testing.
+
+The boundary is intentionally asymmetric: agents may observe structured
+Cloudeo state and request permitted actions; Cloudeo alone authorizes and
+performs canonical state transitions.
+
+---
+
+## ADR-035 — Provider-neutral execution below orchestration
+
+**Status:** Accepted (2026-10-01); not yet implemented. Amends ADR-030 in one
+respect only (see "Amendment to ADR-030"). Renumbered from ADR-031 on
+2026-10-01, when ADR-031 to ADR-034 were recorded.
+
+**Supporting document:** `15_PROVIDER_NEUTRAL_EXECUTION_AND_DEVLOOP.md` is a
+draft of the target design and DevLoop. This entry is the decision record and
+is normative on its own. Where the two differ, this entry governs (see
+"Relationship to `15_PROVIDER_NEUTRAL_EXECUTION_AND_DEVLOOP.md`").
+
+**Context:** Cloudeo must be AI-provider-neutral. OpenAI/Codex,
+Anthropic/Claude, Moonshot/Kimi, and future providers are replaceable
+execution backends. `15_PROVIDER_NEUTRAL_EXECUTION_AND_DEVLOOP.md` (a draft
+under review) describes the target. This ADR fixes the architectural decisions
+that draft depends on, against the code that exists after ADR-030:
+
+- `cloudeo.control` holds roles, the V2C-18 ExecutionProfile hierarchy
+  (`AgentProfile`, `DirectToolProfile`, with computed fingerprints), the
+  profile registry in the control store, `ProjectExecutionProfile` bindings,
+  fallback conditions, and the V2C-14 independence policy.
+- `cloudeo.execution` holds the request kinds (`DirectToolExecution`,
+  `HarnessTaskExecution`), `ExecutionOutcome`, `ExecutionError`,
+  `RuntimeIdentity`, the `ExecutionDispatcher`, and the Treg and UHP backends.
+- `cloudeo.orchestration` (ADR-030) maps trusted runtime observations into
+  control inputs.
+
+**Decision:** Cloudeo is provider-neutral by contract. `cloudeo.control`
+depends only on roles, immutable execution profiles, normalized evidence, and
+verification outcomes. Provider-, model-, and CLI-specific behavior lives only
+in adapters inside `cloudeo.execution`.
+
+**Amendment to ADR-030 (the only one):** `cloudeo.orchestration` may depend on
+both `cloudeo.control` and `cloudeo.execution`. The dependency direction is:
+
+| From | To | Rule |
+| --- | --- | --- |
+| `cloudeo.orchestration` | `cloudeo.control` | allowed (ADR-030) |
+| `cloudeo.orchestration` | `cloudeo.execution` | allowed (this ADR) |
+| `cloudeo.control` | `cloudeo.execution` | forbidden |
+| `cloudeo.control` | `cloudeo.orchestration` | forbidden (ADR-030) |
+| `cloudeo.execution` | `cloudeo.control` | forbidden |
+| `cloudeo.execution` | `cloudeo.orchestration` | forbidden |
+
+Each forbidden edge gets a mechanical AST check with a negative test, in the
+style of ADR-030, when the first ADR-035 slice is implemented. Everything
+else in ADR-030 stands unchanged:
+
+- `cloudeo.control` stays pure; V2C-01 stays scoped to it.
+- Orchestration may read a WorkOrder and call `cloudeo.control.machine`, but
+  never constructs, copies with changes, or mutates WorkOrder state.
+- Direct `promote()` is permanently forbidden outside the authorized promotion
+  gate; the slice-scoped ban on `checkpoint_candidate()`, `reject()`, and
+  `cleanup()`, the ban on `subprocess` and `cloudeo.workspace.git` in
+  orchestration, and the `refs/cloudeo` string ban all remain.
+- `cloudeo.execution` code may use `subprocess` where a plane requires it;
+  orchestration still may not.
+
+**Provider-neutral rules:**
+
+- **Planes are request kinds.** The execution plane is
+  `ExecutionRequest.kind`. A new plane is a new request kind with a neutral
+  request model, never a UHP wire model reused for something else. The
+  `ExecutionDispatcher` stays the only router by kind. Within a plane, the
+  plane's backend selects an adapter by `adapter_id` from an adapter registry
+  in `cloudeo.execution`. An adapter never picks a different profile,
+  provider, or model on its own authority.
+- **Session Fabric is a separate execution service boundary.** The
+  provider-neutral Session Fabric runtime contracts and observation DTOs of
+  ADR-031, and every concrete fabric adapter (Claude Code, Codex, Kimi, or
+  any other provider), live in `cloudeo.execution`. Session Fabric lifecycle
+  operations (`create_session`, messaging, handover, `terminate_session`,
+  and the like) are not execution request kinds and are not routed through
+  `ExecutionDispatcher`, which remains the router for execution request
+  kinds only. `cloudeo.orchestration` owns Session and coordination policy
+  and lifecycle state, consumes only the neutral execution contracts, never
+  defines a provider adapter interface that execution must implement, and
+  never imports a provider-specific implementation module or type.
+- **Cloud fabric implementations live in execution.** The Cloud Execution
+  Fabric contracts of ADR-032 and the Ubicloud-specific implementation live
+  in `cloudeo.execution`. No Ubicloud-specific type appears in
+  `cloudeo.orchestration` or `cloudeo.control`.
+- **The ExecutionProfile hierarchy is not redefined.** The existing control
+  types (`_ExecutionProfileBase`, `AgentProfile`, `DirectToolProfile`), their
+  computed fingerprints, the control-store registry, and
+  `ProjectExecutionProfile` remain canonical. Any provider-neutral profile
+  data a later slice needs (for example `adapter_id`, `execution_plane`,
+  `billing_mode`, or a non-secret `auth_profile_ref`) is added to those types
+  as additive fields in its own slice. That changes every profile's
+  fingerprint once, so it happens before profiles are relied on outside
+  tests. No second profile type or profile registry is created.
+- **Permissions are not capabilities.** `Permissions` is the authority a
+  profile is granted and control evaluates it. Capabilities are facts about
+  an adapter, established by conformance tests and evaluated in
+  `cloudeo.execution`. Neither replaces the other.
+- **Billing is envelope policy.** A profile declares its billing mode as
+  immutable data; the allowed modes, whether metered use is allowed, and any
+  metered cap are project-level policy approved with the Project Execution
+  Profile, like the independence policy. No adapter may run in a billing
+  mode other than the one its profile declares. A metered fallback exists
+  only as an approved fallback binding with its condition.
+- **Errors are classified neutrally.** `ExecutionError` gains a
+  provider-neutral error class; native codes and details are kept as
+  evidence. Orchestration maps error classes to the existing
+  `FallbackCondition` values and to `AUDITOR_ERROR` routing: that mapping is
+  the producer V2C-12 and V2C-17 still lack. The existing LongHorizon
+  classification (`AuditorFailure.kind`) maps into the same classes. Control
+  semantics do not change.
+- **Auditor independence is unchanged.** `13_V2_CONTROL_ARCHITECTURE.md` §8.6
+  and V2C-14 govern exactly: the cumulative table, measurement by role
+  against the producers, runner-supplied fresh-session evidence, and
+  `INDEPENDENCE_UNAVAILABLE`. Provider neutrality may add requirements (for
+  example a different provider at a given risk class, through a stricter
+  `IndependencePolicy`) and never relaxes one.
+- **Native CLI execution requires OS isolation.** A local agent CLI (Codex
+  CLI, Claude Code, Kimi Code, or similar) runs only in an OS-isolated copy
+  of the candidate (container, sandbox, or separate user) with no access to
+  the canonical repository or its refs. A candidate Git worktree is not a
+  security boundary: it shares refs and objects with the canonical repository
+  (`cloudeo/workspace/git.py`), so a shell-capable agent in it could move
+  `refs/cloudeo` around the gate. The CLI's changes return only through the
+  existing bundle, validate, and apply path (`build_input_bundle`,
+  `validate_output_bundle`, `check_candidate_unchanged`, `apply_delta`),
+  never by writing the worktree. Until that isolation exists and is tested,
+  no native-CLI profile may be bound to a write-capable role.
+- **Loop policy belongs to control.** Bounds that decide whether work may
+  continue (repair rounds, stopping on a repeated classified failure) are
+  control policy, added as control rules. DevLoop only runs the recipe
+  (ADR-030 scope rule).
+- **Acceptance stays gate promotion.** "Accepted" means promotion of the
+  broker's accepted ref through the gate. Publishing a branch or pull
+  request, or merging it, is a separate future adapter behind a human gate.
+
+**Relationship to `15_PROVIDER_NEUTRAL_EXECUTION_AND_DEVLOOP.md`:** where that
+draft conflicts with this ADR, ADR-030, `13_V2_CONTROL_ARCHITECTURE.md`, or
+`14_V2C_TRACEABILITY.md`, those govern. In particular they supersede its §5.2
+competing `ExecutionProfile` (stored fingerprint, no model family), its §7
+adapter call that bypasses request kinds and the dispatcher, its §10.2 second
+profile registry, its §12 independence levels, its §4.3 "records nested in
+one" wording (the rule is: records only the state machine creates), and its
+§8.3 native-CLI plane without OS isolation.
+
+**Test for every new provider:** it is added by registering an adapter and a
+profile and passing the shared conformance suite, with no change to
+`cloudeo.control`. If that is impossible, the adapter is badly isolated or
+the runtime is a genuinely new execution class that needs its own
+provider-neutral contract.
+
+**Traceability:** the genuinely new invariants are traced in
+`14_V2C_TRACEABILITY.md` under a Provider-Neutral (PN) section, keeping the
+draft's numbering: PN-01, PN-03, PN-04, PN-05, PN-07, and PN-10, plus PN-12
+(the dependency direction above) and PN-13 (native-CLI isolation) from this
+ADR. All are DEFERRED until implemented. Rules that only refine an existing
+V2C invariant are listed there against that invariant, not duplicated.
+
+**Consequences:** Codex CLI, Claude Code, and Kimi Code can be added without
+changing control semantics, after two one-time, provider-neutral control
+additions (the profile fields and the billing policy). A coding executor on
+the LongHorizon path also needs its own LongHorizon adapter and an entry in
+`cloudeo/longhorizon/roles.py`, outside control. The first implementation
+slice stays inside `cloudeo.execution`: a neutral error class and runtime
+identity fields, additive and behavior-preserving, plus the dependency
+checks above.
