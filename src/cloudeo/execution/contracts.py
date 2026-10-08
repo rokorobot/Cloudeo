@@ -70,7 +70,29 @@ class ExecutionCost(BaseModel):
     harness_usage: dict[str, Any] | None = None
 
 
+# Provider-neutral classification of a failure (ADR-035). Native codes and
+# details stay on ExecutionError as evidence; this class is what fallback and
+# routing policy consume. "unknown" means the failure was not classified.
+ErrorClass = Literal[
+    "authentication",
+    "authorization",
+    "quota_exhausted",
+    "rate_limited",
+    "runtime_unavailable",
+    "model_unavailable",
+    "transport",
+    "protocol",
+    "timeout",
+    "cancelled",
+    "invalid_request",
+    "workspace_violation",
+    "tool_failure",
+    "unknown",
+]
+
+
 class ExecutionError(BaseModel):
+    error_class: ErrorClass = "unknown"
     source: Literal["treg", "uhp_task", "uhp_http", "uhp_protocol", "uhp_transport"]
     message: str
     code: str | None = None
@@ -86,6 +108,12 @@ class RuntimeIdentity(BaseModel):
     """Requested and observed identity; observed fields stay None unless returned."""
 
     backend: Literal["treg", "uhp"]
+    # Additive, provider-neutral identity (ADR-035). Set only from what Cloudeo
+    # knows by construction or what the runtime reported; never inferred.
+    execution_plane: str | None = None
+    adapter_id: str | None = None
+    provider: str | None = None
+    inference_provider: str | None = None
     requested_tool: str | None = None
     requested_harness: str | None = None
     actual_harness: str | None = None
