@@ -42,12 +42,12 @@ The meta-tests check that:
 | V2C-09 | DEFERRED | Supporting: curation only after `CODE_APPROVED`, only by `memory_curator`, checked against `memory_paths`; Memory Audit before the checkpoint | The curator's writes are restricted to `memory_paths` at execution time |
 | V2C-10 | DEFERRED | — | Context Intake runs read-only and classifies memory claims with evidence |
 | V2C-11 | ENFORCED | The profile snapshot changes only through an approved `change_agent` amendment; it must be a stored, approved version | — |
-| V2C-12 | DEFERRED | Supporting: bound primary, or an approved fallback with a defined condition and evidence; every attempt recorded | Fallbacks are triggered only by classified runtime or provider failures, or by discovery |
+| V2C-12 | DEFERRED | Supporting: bound primary, or an approved fallback with a defined condition and evidence; every attempt recorded. Execution failures are classified (`cloudeo.orchestration.execution_failure`, ADR-035 slice 2) but never establish a condition, so no execution failure triggers a fallback yet (`tests/test_orchestration_execution_failure.py`) | Fallbacks are triggered only by classified runtime or provider failures, or by discovery |
 | V2C-13 | DEFERRED | — | Performance Memory and Jev can only recommend, never select profiles |
 | V2C-14 | ENFORCED | An `IndependencePolicy` in the approved envelope, never weaker than the §8.6 table. Independence is measured by role against the producers, and checked at plan approval, before every write-capable step, and before any approving audit is recorded; a gap raises `INDEPENDENCE_UNAVAILABLE`. A fresh session needs both the profile's declaration and the runner's per-audit `SessionEvidence`; without that evidence the check fails closed. Only an explicit, recorded user waiver accepts a gap. Stored approvals are re-checked on every reload against the risk class they were judged by. | — |
 | V2C-15 | DEFERRED | Supporting: a recorded material deviation always raises attention | Deviations are detected from diffs, audit findings, and accounting |
 | V2C-16 | ENFORCED | One open request merges every reason; resume requires each blocking reason to be resolved or waived; decisions are recorded | — |
-| V2C-17 | DEFERRED | Supporting: a non-promoted kernel outcome and baseline drift always raise attention | `AUDITOR_ERROR` beyond the fallback conditions is routed to attention |
+| V2C-17 | DEFERRED | Supporting: a non-promoted kernel outcome and baseline drift always raise attention. An auditing role's failed execution is routed to `AUDITOR_ERROR` attention through `machine.raise_attention`; other roles' failures to `AGENT_UNAVAILABLE` (`tests/test_orchestration_execution_failure.py`). Not yet wired into a runner, and auditor verdicts with status `AUDITOR_ERROR` are not covered | `AUDITOR_ERROR` beyond the fallback conditions is routed to attention |
 | V2C-18 | ENFORCED | A registry of `AgentProfile` and `DirectToolProfile` versions, sequential and immutable. A reference's fingerprint is the canonical hash of its definition; a project profile binds only registered versions and carries their exact definitions. Every attempt and audit names a version the WorkOrder recorded in `used_profiles`, which is append-only and survives `change_agent`. | — |
 | V2C-19 | DEFERRED | Supporting: `BLOCK_DONE` cannot be constructed without a proof of the authoritative block state; `prove_block_checkpoint` is the only setter, with no generic `mark_block_done()`; a mismatch escalates | The checkpoint subsystem supplies the proof from immutable Git objects |
 | V2C-20 | DEFERRED | Supporting: no write-capable step outside `EXECUTING`; the final audit must come from `final_verifier` | The final verification runner creates a fresh, read-only auditing session and supplies its `SessionEvidence`, which the V2C-14 check requires |
@@ -112,8 +112,48 @@ code and an offline negative test.
 - Provider diversity in audits: V2C-14, unchanged; it may only be made
   stricter through `IndependencePolicy`.
 - The neutral error class mapped to fallback conditions and `AUDITOR_ERROR`:
-  the missing producers of V2C-12 and V2C-17. `ExecutionError.error_class`
-  now exists (PN-03); the orchestration mapping does not.
+  the missing producers of V2C-12 and V2C-17. See "Execution failure
+  mapping" below.
+
+**Execution failure mapping (ADR-035 slice 2).**
+`cloudeo.orchestration.execution_failure` maps one failed `ExecutionOutcome`
+to an attention reason. It reports, for each error class, only the fallback
+condition the class could support once its establishing evidence exists, and
+never authorizes one; control remains the only gate (`begin_attempt`).
+
+| Error class | Condition if established | Established by (13 §8.4) |
+| --- | --- | --- |
+| `runtime_unavailable` | `runtime_unavailable` | discovery or health evidence |
+| `model_unavailable` | `model_unavailable` | discovery or health evidence |
+| `authentication`, `quota_exhausted`, `rate_limited`, `transport` | `provider_failure_persistent` | persistence after the primary's allowed retries |
+| `authorization`, `timeout`, `protocol`, `invalid_request`, `workspace_violation`, `tool_failure`, `cancelled`, `unknown` | none (fail closed) | — |
+
+Every assessed failure raises attention: `AUDITOR_ERROR` for
+`code_auditor`, `memory_auditor`, and `final_verifier`; `AGENT_UNAVAILABLE`
+for any other role. Only `failed` and `cancelled` are marked safe for a
+second execution; `unknown` and `incomplete` never are. The original
+`ExecutionError`, `RuntimeIdentity`, and `ProfileRef` are kept, and the
+reason's evidence is a tagged digest of them.
+
+Gaps recorded, not closed (each needs a control decision):
+
+- No producer of discovery or health evidence exists, so
+  `runtime_unavailable` and `model_unavailable` are never established.
+  Today every UHP 5xx, 408, transport, and protocol failure has status
+  `unknown`, so it is also unsafe to re-execute.
+- Control defines no "allowed retries" for a primary, so
+  `provider_failure_persistent` cannot be established without orchestration
+  inventing loop policy (ADR-035 assigns that to control).
+- `AttentionCode` has no code for "the run failed" distinct from
+  unavailability; `invalid_request`, `tool_failure`, and
+  `workspace_violation` use `AGENT_UNAVAILABLE`, with the class in the
+  summary and evidence.
+- Whether an execution failure should count against the block's attempt
+  budget (`fail_attempt`) instead of raising attention is loop policy and
+  undecided.
+- The traceability meta-tests index only control test modules, so these
+  orchestration tests are supporting evidence and V2C-12 and V2C-17 stay
+  DEFERRED.
 
 PN-09 (peer runtimes) and PN-11 (traceability) are principles, not testable
 invariants, and have no row.
