@@ -3602,8 +3602,15 @@ state, verification, or acceptance.
   `ExecutionOutcome.kind` gain `workflow_run`; `RuntimeIdentity.backend` and
   `ExecutionError.source` gain `gh_aw`, the backend name, alongside `treg`
   and `uhp`. The slice-1 identity fields carry the rest:
-  `execution_plane = "workflow_run"`, `adapter_id = "gh-aw"`,
-  `provider = "github-actions"`, and `inference_provider` as observed. Native
+  `execution_plane = "workflow_run"` and `adapter_id = "gh-aw"`, both set by
+  construction. `provider` and `inference_provider` keep their ADR-035 meaning
+  (PN-03): the commercial identity of the model and inference, for example
+  `anthropic`. They are set only from what the run reported and stay `None`
+  otherwise. GitHub Actions is the **execution host**, not a provider. It is
+  recorded as run provenance (`execution_host = "github-actions"` with the
+  run and runner identity, see "Pinning and provenance"), not in `provider`.
+  A `RuntimeIdentity` host field, if one is wanted, is a separate additive
+  contract change. Native
   GitHub and gh-aw codes stay evidence; failures map to the slice-1
   `ErrorClass` (a digest mismatch, a write by a read-only role, or a foreign
   attempt is `workspace_violation`).
@@ -3714,14 +3721,26 @@ state, verification, or acceptance.
   Execution Profile policy allows metered use and sets a cap in currency. A
   metered gh-aw profile serves as a fallback only through an approved
   fallback binding with its condition.
-- **The cap must be enforceable before the run.** AWF AI credits are gh-aw's
-  own operating unit, not money. A run is dispatched only if the adapter can
-  show that its worst-case spend fits the remaining cap. That requires a
-  conservative bound derived from the hard stops (`max-turns`,
-  `max-ai-credits`, `timeout-minutes`) and the maximum list price of the
-  declared model. The adapter records both the conversion and the price
-  identity it used. If no such bound can be computed or enforced, the run is
-  refused with `quota_exhausted`, never dispatched optimistically.
+- **The cap must be enforceable before the run.** A run is dispatched only
+  if the adapter can show that its worst-case inference spend fits the
+  remaining cap. Turn and time limits (`max-turns`, `timeout-minutes`) never
+  make such a bound on their own, because the tokens per turn are not
+  bounded. AWF AI credits are gh-aw's own operating unit, not money, and do
+  not count as a bound unless a documented, fixed conversion to tokens is
+  established. An acceptable bound comes from one of two sources:
+  - a provider-enforced hard spend limit on a dedicated inference workspace,
+    verified before dispatch to be no higher than the remaining cap;
+  - a total-token ceiling that the runtime enforces, multiplied by the maximum
+    list price of the declared model.
+
+  The adapter records the bound, its source, and the price identity it used.
+- **Unprovable bound means policy refusal.** If no such bound can be shown,
+  the run is not dispatched, and Cloudeo records an explicit policy refusal
+  with its evidence: the cap, the missing or unenforceable bound, and the
+  price identity consulted. Nothing ran, so this is not an `ExecutionError`
+  and gets no `ErrorClass`. It is mapped to no `FallbackCondition`, so no
+  fallback profile is tried. A dedicated refusal type in the contracts would
+  be a separate, approved contract change; this ADR adds none.
 - **Hard stops are not policy.** The gh-aw stops and a provider-side spend
   limit on a dedicated inference workspace are mechanisms that make the bound
   hold, plus defense in depth. None of them replaces the Cloudeo cap check.
@@ -3746,7 +3765,8 @@ state, verification, or acceptance.
   the compiled `.lock.yml`, and its sha256. A branch name is never the
   identity. `engine.version` is pinned in the workflow, and the gh-aw compiler
   version is recorded (v0.93.5 at drafting).
-- Runtime provenance records `github_run_id`, `run_attempt`, runner image
+- Runtime provenance records `execution_host = "github-actions"`,
+  `github_run_id`, `run_attempt`, runner image
   identity (`ImageOS`, `ImageVersion`, never the `ubuntu-*` label alone,
   ADR-032 CF-10), requested and actual engine, CLI version, and model, the
   input and output bundle digests, and start, end, and billable duration where
@@ -3762,7 +3782,8 @@ state, verification, or acceptance.
   and `post-steps:` each check the candidate tree against the input manifest
   (paths, modes, sha256). A difference, or a non-empty delta, makes the audit
   invalid (`workspace_violation`). If a read-only mount cannot be configured,
-  no gh-aw profile may be bound to an auditor role: the integrity check alone
+  or its enforcement against the agent is unverified, no gh-aw profile may be
+  bound to an auditor role: the integrity check alone
   detects a violation but does not prevent one. Fresh-session
   evidence is the new `github_run_id`/`run_attempt` on a fresh runner, under
   V2C-14 and `13_V2_CONTROL_ARCHITECTURE.md` §8.6. A different engine or
@@ -3789,7 +3810,7 @@ state, verification, or acceptance.
 | WR-04 pinned identity | A governed run records the `.lock.yml` commit sha and sha256; a branch or tag alone is refused. |
 | WR-05 at-most-once apply | A delta for a `bridge_run_id` is applied at most once; foreign attempts are not applied. |
 | WR-06 evidence or fail closed | A run without a downloaded, hashed output artifact is `incomplete`, never `completed`. |
-| WR-07 enforceable currency cap | The adapter refuses a profile whose billing mode it cannot honor, and dispatches only when a recorded conservative worst-case spend fits the remaining currency cap. |
+| WR-07 enforceable currency cap | The adapter refuses a profile whose billing mode it cannot honor. It dispatches only when a recorded worst-case spend bound, from a provider hard limit or an enforced token ceiling (never turns or time alone), fits the remaining currency cap. Otherwise it records a policy refusal with no fallback. |
 | WR-08 no second lifecycle authority | The gh-aw Work Queue is disabled in every governed workflow. |
 | WR-09 auditor read-only by construction | An auditor run mounts the candidate read-only and checks its integrity before and after; without a read-only mount the profile is not bindable to an auditor role. |
 | WR-10 asset lifecycle | An input asset is digest-verified before dispatch, bound to one `bridge_run_id`, created and deleted only with a credential no job can see, and deleted at terminal observation or TTL. |
@@ -3822,11 +3843,19 @@ ADR-033 cost accounting. ADR-030 boundaries are unchanged.
       token stays `contents: read`.
    3. Dispatch with `return_run_details: true` returns `workflow_run_id`, or
       else `run-name` correlation works.
-   4. The materialized directory is visible to the sandboxed agent and its
-      writes are visible to `post-steps:`. A deterministic stub stands in for
-      the agent.
+   4. The materialized directory is reachable from the job's agent step, and
+      files written there are visible to `post-steps:`. A deterministic stub
+      stands in for the agent. That shows the runner-level file path only. It
+      does not show what an agent inside the AWF sandbox can read or write.
    5. A read-only mount of the candidate can be configured, and the
-      before/after integrity check detects a deliberate write.
+      before/after integrity check detects a deliberate write made by the stub.
+
+   Results are judged separately for **transport** (1–3, 6, 9), **isolation**
+   (2, 7), **integrity** (5, the integrity check), and **agent-sandbox
+   behavior**. Agent-sandbox behavior covers the agent's actual read and write
+   access inside AWF, and whether the read-only mount holds against the agent
+   itself. It stays UNVERIFIED until a test runs inside the real sandbox. A
+   property is never marked verified just because transport works.
    6. The delta artifact downloads and hashes, whether or not the artifact API
       exposes a digest; if it does not, the adapter's own sha256 governs.
    7. `checkout: false` removes the agent-job checkout. The docs say the
@@ -3835,9 +3864,11 @@ ADR-033 cost accounting. ADR-030 boundaries are unchanged.
    8. Cancellation reaches a terminal conclusion.
    9. The release and its tag are deleted after the run.
 
-   Engine-dependent facts (the `usage` artifact token data, the actual model
-   identity) stay UNVERIFIED until a paid run is approved separately. Any
-   failed criterion reopens this ADR before slice 3.
+   Engine-dependent facts also stay UNVERIFIED until a paid run is approved
+   separately: the `usage` artifact token data, the actual model identity, and
+   agent-sandbox behavior if no engine-free sandbox test exists. A failed
+   criterion reopens this ADR before slice 3. So does an UNVERIFIED
+   agent-sandbox result before any role is bound.
 1. **ADR-035 slice 1 and profile fields** (prerequisite, not this ADR). Slice
    1 already holds the neutral error class, the runtime identity fields, and
    the dependency AST checks (`feat/v2-execution-neutral-errors` at 55ed4b3,
