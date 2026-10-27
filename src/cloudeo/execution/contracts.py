@@ -89,6 +89,15 @@ ErrorClass = Literal[
     "tool_failure",
     "unknown",
 ]
+# Billing modes a runtime may report (ADR-035). The same vocabulary as
+# cloudeo.control.model.BillingMode, which execution must not import.
+BillingMode = Literal[
+    "subscription_included",
+    "prepaid_credit",
+    "metered_api",
+    "self_hosted",
+    "unknown",
+]
 
 
 class ExecutionError(BaseModel):
@@ -114,6 +123,9 @@ class RuntimeIdentity(BaseModel):
     adapter_id: str | None = None
     provider: str | None = None
     inference_provider: str | None = None
+    # Observed billing mode, as reported by the runtime. Running a CLI never
+    # implies a subscription; None means not reported.
+    billing_mode: BillingMode | None = None
     requested_tool: str | None = None
     requested_harness: str | None = None
     actual_harness: str | None = None

@@ -9,6 +9,8 @@ from cloudeo.control.model import (
     AgentProfile,
     AgentRuntime,
     AuditRecord,
+    BillingMode,
+    BillingPolicy,
     BlockSpec,
     Budget,
     Candidate,
@@ -32,6 +34,8 @@ NOW = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
 BASE = "a" * 40
 MOVED = "b" * 40
 MEMORY_PATHS = ("docs/architecture", "docs/components", "docs/decisions")
+# Every helper profile runs on a subscription; metered use is not approved.
+SUBSCRIPTION_ONLY = BillingPolicy(allowed_modes=frozenset({BillingMode.SUBSCRIPTION_INCLUDED}))
 
 
 def ref(kind="evidence", value="ev-1"):
@@ -46,12 +50,14 @@ def agent(
     workspace="read_only",
     session="fresh",
     version=1,
+    billing_mode=BillingMode.SUBSCRIPTION_INCLUDED,
 ):
     return AgentProfile(
         profile_id=name,
         version=version,
         permissions=Permissions(workspace=workspace),
         eligible_roles=roles,
+        billing_mode=billing_mode,
         runtime=AgentRuntime(harness_id="uhp"),
         model=AgentModel(
             provider=provider,
@@ -154,6 +160,7 @@ def project_profile(
         bindings=bindings,
         profiles=tuple(PROFILES[r] for r in bound),
         independence_policy=policy or IndependencePolicy(),
+        billing_policy=SUBSCRIPTION_ONLY,
         approved_by="robert",
         approved_at=NOW,
     )

@@ -595,6 +595,7 @@ def test_v2c_14_requirements_accumulate_by_risk_class():
         permissions=Permissions(workspace="read_only"),
         eligible_roles=(Role.CODE_AUDITOR,),
         capability="lint",
+        billing_mode="self_hosted",
         provider="treg",
     )
     # Only an agent can show a fresh session or a model family.

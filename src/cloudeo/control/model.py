@@ -205,6 +205,21 @@ class UserAction(StrEnum):
     ABORT = "abort"
 
 
+class BillingMode(StrEnum):
+    """How executing a profile is paid for (ADR-035). Declared, never inferred."""
+
+    SUBSCRIPTION_INCLUDED = "subscription_included"
+    PREPAID_CREDIT = "prepaid_credit"
+    METERED_API = "metered_api"
+    SELF_HOSTED = "self_hosted"
+    UNKNOWN = "unknown"
+
+
+# A non-secret name for credentials held outside Cloudeo. Lower case and short,
+# so a pasted API key or token is refused rather than stored in a profile.
+AuthProfileRef = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")]
+
+
 # --- Profiles (§8.3, §8.4) ---
 
 
@@ -240,6 +255,12 @@ class _ExecutionProfileBase(_Frozen):
     permissions: Permissions
     limits: Limits = Limits()
     eligible_roles: tuple[Role, ...] = Field(min_length=1)
+    # Provider-neutral execution data (ADR-035). Part of the fingerprint, so a
+    # registered version can never change its billing mode or routing.
+    billing_mode: BillingMode
+    execution_plane: Identifier | None = None
+    adapter_id: Identifier | None = None
+    auth_profile_ref: AuthProfileRef | None = None
 
     @model_validator(mode="after")
     def _unique_roles(self):
@@ -290,6 +311,12 @@ class DirectToolProfile(_ExecutionProfileBase):
     capability: Text
     provider: Text
 
+    @model_validator(mode="after")
+    def _direct_tool_plane(self):
+        if self.execution_plane not in (None, "direct_tool"):
+            raise ValueError("a direct tool executes only on the direct_tool plane")
+        return self
+
 
 ExecutionProfile = Annotated[
     AgentProfile | DirectToolProfile, Field(discriminator="execution_class")
@@ -318,6 +345,51 @@ def independence_gaps(
         and all(p.model.inference_provider != auditor.model.inference_provider for p in agents),
     }
     return tuple(f"{role}:{r}" for r in required if not met[r])
+
+
+def observed_billing(
+    profile: AgentProfile | DirectToolProfile, observed: BillingMode | None
+) -> Literal["conforms", "unverified", "refused"]:
+    """Judge the billing mode a runtime reported against the profile's declaration.
+
+    A run in any other mode than the declared one is refused; there is no
+    silent move from a subscription to metered use (ADR-035). A mode that was
+    not reported, or reported as unknown, is unverified, never a pass.
+    """
+    if observed is None or observed == BillingMode.UNKNOWN:
+        return "unverified"
+    return "conforms" if observed == profile.billing_mode else "refused"
+
+
+class BillingPolicy(_Frozen):
+    """The billing modes a project approved, and whether metered use is allowed (ADR-035).
+
+    Approved with the Project Execution Profile, like the independence policy.
+    """
+
+    allowed_modes: frozenset[BillingMode] = Field(min_length=1)
+    # A metered fallback bound to a primary that is not metered.
+    allow_metered_fallback: bool = False
+    # No bound metered profile may set a higher cost limit than this.
+    max_metered_cost_usd: float | None = Field(default=None, gt=0)
+
+    @field_serializer("allowed_modes")
+    def _sorted_modes(self, modes: frozenset[BillingMode]) -> list[str]:
+        # Hash-seed independent, as for RoleBinding.fallback_conditions.
+        return sorted(str(mode) for mode in modes)
+
+    @model_validator(mode="after")
+    def _coherent(self):
+        if BillingMode.UNKNOWN in self.allowed_modes:
+            raise ValueError("an unknown billing mode is never approved")
+        metered = BillingMode.METERED_API in self.allowed_modes
+        if self.allow_metered_fallback and not metered:
+            raise ValueError("a metered fallback needs metered_api among the allowed modes")
+        if metered and self.max_metered_cost_usd is None:
+            raise ValueError("allowing metered_api needs a metered cost cap")
+        if not metered and self.max_metered_cost_usd is not None:
+            raise ValueError("a metered cost cap is set but metered_api is not allowed")
+        return self
 
 
 class IndependencePolicy(_Frozen):
@@ -375,6 +447,8 @@ class ProjectExecutionProfile(_Frozen):
     # self-contained and its hash covers them (V2C-18).
     profiles: tuple[ExecutionProfile, ...]
     independence_policy: IndependencePolicy = IndependencePolicy()
+    # No default: the billing modes are approved explicitly with each version.
+    billing_policy: BillingPolicy
     approved_by: Text
     approved_at: datetime
 
@@ -401,6 +475,37 @@ class ProjectExecutionProfile(_Frozen):
                     "read_write"
                 ):
                     raise ValueError(f"{binding.role} needs a read_write profile")
+        return self
+
+    @model_validator(mode="after")
+    def _within_billing_policy(self):
+        policy = self.billing_policy
+        for p in self.profiles:
+            if p.billing_mode not in policy.allowed_modes:
+                raise ValueError(
+                    f"{p.profile_id} v{p.version}: billing mode {p.billing_mode} is not approved"
+                )
+            if p.billing_mode == BillingMode.METERED_API and (
+                p.limits.max_cost_usd is None or p.limits.max_cost_usd > policy.max_metered_cost_usd
+            ):
+                raise ValueError(
+                    f"{p.profile_id} v{p.version}: a metered profile needs a cost limit "
+                    "within the metered cost cap"
+                )
+        defined = {p.ref: p for p in self.profiles}
+        for binding in self.bindings:
+            if defined[binding.primary].billing_mode == BillingMode.METERED_API:
+                continue
+            metered = [
+                ref
+                for ref in binding.fallbacks
+                if defined[ref].billing_mode == BillingMode.METERED_API
+            ]
+            if metered and not policy.allow_metered_fallback:
+                raise ValueError(
+                    f"{binding.role}: a metered fallback for a primary that is not metered "
+                    "needs allow_metered_fallback"
+                )
         return self
 
     def binding(self, role: Role) -> RoleBinding | None:
