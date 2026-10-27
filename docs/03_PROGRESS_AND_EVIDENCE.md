@@ -1707,3 +1707,42 @@ Validation (offline, with the `longhorizon` extra):
   entries: 83 `pass`, 13 `xfail`), and the gate passes.
 - Each new guard was disabled in turn (12 guards); its negative test failed
   every time.
+
+## Test-count discrepancy: 684 vs 432 passed (resolved, 2026-10-27)
+
+PR #1 reported **684 passed, 13 xfailed**. The ADR-035 reconciliation run
+reported **432 passed, 8 skipped, 13 xfailed** at the same commit. Both are
+correct. They differ only in whether the optional `longhorizon` extra is
+installed.
+
+- The reconciliation worktree was synced with `uv run --extra dev` only.
+  Without `lh_harness`, eight modules skip at import, and each counts as one
+  skip: `test_longhorizon_adapter`, `test_longhorizon_audit_result`,
+  `test_longhorizon_manager_integration`, `test_longhorizon_promotion_gate`,
+  `test_longhorizon_workspace_auditor`, `test_longhorizon_workspace_executor`,
+  `test_orchestration_kernel_outcome` (`pytest.importorskip`), and
+  `test_uhp_workspace_bridge` (from line 1561). Together they hold 252 tests.
+- Reproduced at `030f0c1` in a clean detached worktree:
+  `uv run --extra dev --extra longhorizon pytest -q` gives 684 passed,
+  13 xfailed (697 collected). Without the extra the count is 432 passed,
+  8 skipped, 13 xfailed (453 collected).
+- `uv run` syncs inexactly, so once the extra is installed a later
+  `uv run --extra dev` keeps it. The count then depends on the environment's
+  history as well as on the command.
+- There is no CI configuration in the repository. No test was removed and no
+  expectation changed. The project's validation convention (earlier entries
+  in this file) is offline, with the `longhorizon` extra.
+- `scripts/v2c_gate.py` passes in both environments. Its manifest covers only
+  the control suite, and module-level skips elsewhere do not fail it.
+
+Counts with the extra, per commit:
+
+| Commit | Collected | Passed | Strict xfail |
+| --- | --- | --- | --- |
+| `030f0c1` (PR #1 head before reconciliation; `879f06d` is doc-only) | 697 | 684 | 13 |
+| `55ed4b3` (ADR-035 slice 1) | 734 | 721 | 13 |
+| `ca33bcf` (ADR-035 slice 2) | 782 | 769 | 13 |
+
+Follow-up, not done: report results only from an environment synced with
+`uv sync --extra dev --extra longhorizon`, or make the gate fail on
+module-level skips. That is an owner decision.
