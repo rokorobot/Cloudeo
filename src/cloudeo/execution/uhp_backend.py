@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from cloudeo.execution.contracts import (
+    ErrorClass,
     ExecutionCost,
     ExecutionError,
     ExecutionOutcome,
@@ -32,9 +33,27 @@ def _output_text(items: list[dict[str, Any]]) -> str | None:
 def _requested(request: HarnessTaskExecution) -> dict[str, Any]:
     return {
         "backend": "uhp",
+        "execution_plane": "uhp_harness",
+        "adapter_id": "uhp",
         "requested_harness": request.task.harness_id,
         "requested_model": request.task.model,
     }
+
+
+def _http_error_class(http_status: int | None) -> ErrorClass:
+    if http_status == 401:
+        return "authentication"
+    if http_status == 403:
+        return "authorization"
+    if http_status == 408:
+        return "timeout"
+    if http_status == 429:
+        return "rate_limited"
+    if http_status is not None and 400 <= http_status < 500:
+        return "invalid_request"
+    if http_status is not None and http_status >= 500:
+        return "runtime_unavailable"
+    return "unknown"
 
 
 def outcome_from_uhp(
@@ -99,17 +118,18 @@ def outcome_from_uhp_error(
     if isinstance(exc, UHPHTTPError):
         rejected = exc.http_status is not None and 400 <= exc.http_status < 500
         status = "failed" if rejected and exc.http_status != 408 else "unknown"
-        source = "uhp_http"
+        source, error_class = "uhp_http", _http_error_class(exc.http_status)
     elif isinstance(exc, UHPProtocolError):
-        status, source = "unknown", "uhp_protocol"
+        status, source, error_class = "unknown", "uhp_protocol", "protocol"
     else:
-        status, source = "unknown", "uhp_transport"
+        status, source, error_class = "unknown", "uhp_transport", "transport"
 
     return ExecutionOutcome(
         kind="harness_task",
         status=status,
         duration_ms=duration_ms,
         error=ExecutionError(
+            error_class=error_class,
             source=source,
             message=exc.message,
             code=exc.code,

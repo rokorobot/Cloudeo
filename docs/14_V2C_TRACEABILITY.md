@@ -85,22 +85,23 @@ Where the draft conflicts with ADR-030, ADR-035, `13_V2_CONTROL_ARCHITECTURE.md`
 or this document, those govern.
 
 These rows cover only invariants that are genuinely new. They are
-architecture requirements: none is implemented yet, so every row is DEFERRED.
-Unlike the V2C table, they are not yet held by strict expected-failure tests
-or checked by the traceability meta-tests. That comes with the first slice
-that implements one of them, when its row gets named tests. A PN row is never
-ENFORCED because an adapter test passes; it needs the enforcing code and an
-offline negative test.
+architecture requirements. The first ADR-035 slice enforces PN-01, PN-03, and
+PN-12; the other rows are DEFERRED. Unlike the V2C table, PN rows are not yet
+held by strict expected-failure tests or checked by the traceability
+meta-tests: an ENFORCED PN row names its tests here and is checked only by
+those tests. Extending the meta-tests to PN rows is a separate decision. A PN
+row is never ENFORCED because an adapter test passes; it needs the enforcing
+code and an offline negative test.
 
 | Invariant | Status | Current state | Required before ENFORCED |
 | --- | --- | --- | --- |
-| PN-01 | DEFERRED | `cloudeo.control` imports no provider SDK, adapter, or `cloudeo.execution` module and has no provider-specific branches today, by inspection only; nothing checks it. | A static check that control imports no execution or adapter module and contains no provider-specific branching, with a negative test. |
-| PN-03 | DEFERRED | `RuntimeIdentity.backend` is the closed `Literal["treg", "uhp"]`; plane, adapter, provider, and inference provider are not separate recorded dimensions. | Separate, optional identity fields for plane, adapter, provider, and inference provider, never fabricated when unreported. |
+| PN-01 | ENFORCED | No provider SDK import and no comparison to a provider-name constant anywhere in `cloudeo.control`. Guard and tests: `tests/test_execution_boundary.py::test_control_imports_no_provider_sdk_and_has_no_provider_branching`; negative: `test_provider_blindness_check_catches_sdk_imports_and_provider_branches`. The check is syntactic (a fixed SDK and provider-name list); it does not prove the absence of every provider-specific branch. | — |
+| PN-03 | ENFORCED | `RuntimeIdentity` gains optional `execution_plane`, `adapter_id`, `provider`, and `inference_provider` alongside the unchanged `backend`. Treg and UHP set plane and adapter by construction; provider fields stay `None` unless a runtime reports them (`tests/test_execution_contracts.py::test_uhp_identity_records_plane_and_adapter_but_never_invents_provider`). `ExecutionError` gains a closed neutral `error_class` (`test_error_class_defaults_to_unknown_and_rejects_unlisted_values` is the negative test). | Provider and inference provider populated from reported metadata once a provider adapter exists. |
 | PN-04 | DEFERRED | No adapter descriptor, capability set, or conformance suite exists. `Permissions` (granted authority) is enforced by control. | Adapter capabilities established by a shared conformance suite and kept distinct from `Permissions`. |
 | PN-05 | DEFERRED | Profiles carry no billing mode, and projects no billing policy. Fallbacks already run only as approved bindings with a defined condition (V2C-12 supporting). | Billing mode on profiles, billing policy in the approved envelope, and a runtime refusal when the observed billing mode differs from the declared one. |
 | PN-07 | DEFERRED | `Budget.max_attempts_per_block` bounds attempts, and a failed audit counts against it through `fail_attempt`. There is no separate repair budget and no stop on a repeated classified failure. | Those bounds as control rules (ADR-035), with negative tests. |
 | PN-10 | DEFERRED | No provider adapter exists yet, so provider replacement is untested. | The draft's PI-01 and PI-03 acceptance tests: the same role step on three providers, and removing one adapter, with no `cloudeo.control` change. |
-| PN-12 | DEFERRED | Supporting: `cloudeo.control` never imports `cloudeo.orchestration` (`tests/test_orchestration_boundary.py::test_control_never_imports_orchestration`, ADR-030). The other ADR-035 edges (control ↛ execution, execution ↛ control, execution ↛ orchestration) are not checked. | An AST check with a negative test for every forbidden edge in ADR-035. |
+| PN-12 | ENFORCED | All four forbidden edges (control ↛ execution, control ↛ orchestration, execution ↛ control, execution ↛ orchestration) are checked by AST in `tests/test_execution_boundary.py::test_forbidden_dependency_edges_are_absent`, with negative tests `test_edge_check_catches_each_forbidden_edge` and `test_edge_check_catches_a_relative_import_of_the_target`. The ADR-030 edge is also covered by `tests/test_orchestration_boundary.py`. | — |
 | PN-13 | DEFERRED | No native-CLI plane exists. Candidate worktrees share refs with the canonical repository and are not a security boundary (`cloudeo/workspace/git.py`). The bridge's bundle, validate, and apply path exists for UHP. | OS-isolated execution with no access to the canonical repository, changes returned only through bundle, validate, and apply, and tests proving both. Until then no native-CLI profile may hold a write-capable role. |
 
 **Refinements traced against existing invariants, not duplicated:**
@@ -111,7 +112,8 @@ offline negative test.
 - Provider diversity in audits: V2C-14, unchanged; it may only be made
   stricter through `IndependencePolicy`.
 - The neutral error class mapped to fallback conditions and `AUDITOR_ERROR`:
-  the missing producers of V2C-12 and V2C-17.
+  the missing producers of V2C-12 and V2C-17. `ExecutionError.error_class`
+  now exists (PN-03); the orchestration mapping does not.
 
 PN-09 (peer runtimes) and PN-11 (traceability) are principles, not testable
 invariants, and have no row.

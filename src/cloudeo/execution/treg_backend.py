@@ -56,7 +56,9 @@ def outcome_from_treg(
     elif result.output.startswith(TREG_ERROR_PREFIX):
         status = "failed"
         message = result.output[len(TREG_ERROR_PREFIX) :]
-        error = ExecutionError(source="treg", message=message.removeprefix(" "))
+        error = ExecutionError(
+            error_class="tool_failure", source="treg", message=message.removeprefix(" ")
+        )
     else:
         status = "completed"
 
@@ -70,7 +72,12 @@ def outcome_from_treg(
         cost=ExecutionCost(direct_tool_economics=result.economics),
         duration_ms=duration_ms,
         error=error,
-        runtime=RuntimeIdentity(backend="treg", requested_tool=request.candidate.treg_tool_id),
+        runtime=RuntimeIdentity(
+            backend="treg",
+            execution_plane="direct_tool",
+            adapter_id="treg",
+            requested_tool=request.candidate.treg_tool_id,
+        ),
         native_result=result,
     )
 
