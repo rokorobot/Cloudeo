@@ -3559,3 +3559,302 @@ the LongHorizon path also needs its own LongHorizon adapter and an entry in
 slice stays inside `cloudeo.execution`: a neutral error class and runtime
 identity fields, additive and behavior-preserving, plus the dependency
 checks above.
+
+---
+
+## ADR-036 — Workflow-run execution plane and the gh-aw adapter
+
+**Status:** Proposed (2026-10-27); not implemented. Extends ADR-035; amends no
+accepted ADR. Depends on ADR-035 implementation slice 1 (on
+`feat/v2-execution-neutral-errors` at 55ed4b3, not yet merged) and the ADR-035
+profile fields (see "Implementation sequence"). Acceptance waits for the P0
+spike result.
+
+**Context:** GitHub Agentic Workflows (gh-aw, `github/gh-aw`) compiles a
+Markdown workflow into a pinned GitHub Actions workflow (`.lock.yml`) that runs
+a coding agent (Claude Code, Codex, Copilot CLI, Gemini, Pi) in an ephemeral
+runner, behind an egress firewall, with a read-only agent job and privileged
+GitHub writes deferred to separate "safe output" jobs. It also offers a
+Git-backed Work Queue with its own transaction log. That gives Cloudeo a
+ready, isolated, remotely hosted execution substrate it does not have to
+provision. It also brings a second potential lifecycle authority, metered-only
+Claude authentication (`ANTHROPIC_API_KEY` or Anthropic WIF; subscription OAuth
+tokens such as `CLAUDE_CODE_OAUTH_TOKEN` are not supported), and GitHub Actions
+compute cost. ADR-035 requires such a runtime to enter Cloudeo as an adapter in
+`cloudeo.execution`, without changing `cloudeo.control`.
+
+**Decision:** Cloudeo adds a **workflow-run execution plane**: a bounded,
+non-interactive run of a remotely hosted, pinned workflow that receives a
+Cloudeo input bundle and returns an output bundle plus evidence. gh-aw is its
+first adapter. gh-aw is an execution backend only. It never decides WorkOrder
+state, verification, or acceptance.
+
+**Plane and contracts (in `cloudeo.execution`):**
+
+- **New request kind.** `WorkflowRunExecution` (`kind: "workflow_run"`) is a
+  neutral request model: `adapter_id`, workflow identity (see "Pinning"),
+  requested engine and model, `bridge_run_id`, the input bundle reference and
+  sha256, the task prompt reference, and bounds (timeout, turn limit). It is
+  not a GitHub or gh-aw wire model. `ExecutionDispatcher` stays the only router
+  by kind; the plane's backend selects the adapter by `adapter_id` from the
+  execution adapter registry.
+- **Closed literals widen additively.** `ExecutionRequest` and
+  `ExecutionOutcome.kind` gain `workflow_run`; `RuntimeIdentity.backend` and
+  `ExecutionError.source` gain `gh_aw`, the backend name, alongside `treg`
+  and `uhp`. The slice-1 identity fields carry the rest:
+  `execution_plane = "workflow_run"`, `adapter_id = "gh-aw"`,
+  `provider = "github-actions"`, and `inference_provider` as observed. Native
+  GitHub and gh-aw codes stay evidence; failures map to the slice-1
+  `ErrorClass` (a digest mismatch, a write by a read-only role, or a foreign
+  attempt is `workspace_violation`).
+- **First populated `artifacts`.** `ExecutionOutcome.artifacts` is empty today
+  ("never inferred"). This adapter is the first to fill it, and only with
+  artifacts it downloaded and hashed: name, provider artifact id, size,
+  sha256. A listed but undownloaded artifact is not an artifact.
+- **Neither Session Fabric nor Cloud Execution Fabric.** A workflow run has no
+  interactive lifecycle, messaging, or handover (ADR-031), and Cloudeo neither
+  provisions nor destroys its compute (ADR-032; runner selection is not fabric
+  authority). No `CloudExecutionFabric` implementation is created for GitHub
+  Actions. ADR-032's provenance discipline applies anyway: immutable
+  environment identity, evidence before the run counts, unknown stays unknown.
+
+**Runner isolation:**
+
+- **Dedicated runner repository.** gh-aw workflows live in a private runner
+  repository that contains no project source and whose tokens have no access
+  to the project repository. The project repository is never the workflow
+  host.
+- **Trigger and permissions.** `workflow_dispatch` only; no issue, PR,
+  comment, schedule, or push triggers, so untrusted content enters only
+  through the WorkOrder task. Agent job `permissions: contents: read`;
+  `checkout:` disabled.
+- **No GitHub writes from the run.** No write-capable safe outputs (no
+  `create-pull-request`, `push-to-pull-request-branch`, comments, issues, or
+  labels). Publishing a branch or PR stays a separate future adapter behind a
+  human gate (ADR-035 "Acceptance stays gate promotion").
+- **Work Queue off.** The gh-aw Work Queue is not used. WorkOrder lifecycle
+  and scheduling have one authority, Cloudeo. A later ADR may admit it as a
+  subordinate scheduler only.
+- **Network.** The firewall allowlist is the inference provider endpoint plus
+  what the approved profile names (for example package registries). The
+  network policy is part of the pinned workflow identity.
+
+**Candidate transport:**
+
+- **One return path.** The candidate reaches the runner only as a Cloudeo
+  input bundle (`build_input_bundle`, existing bridge format) and changes
+  return only as an output bundle through `validate_output_bundle` →
+  `check_candidate_unchanged` → `apply_delta`. This satisfies PN-13: the
+  runner is OS-isolated and never sees the canonical repository or its refs.
+- **Inbound.** The input bundle reaches the runner as a release asset of the
+  runner repository. Only `bridge_run_id`, the asset id, and the bundle sha256
+  are passed as workflow inputs. A `pre-agent-steps:` step (outside the agent
+  firewall) downloads the asset, refuses it on a digest mismatch, and
+  materializes it into an empty directory.
+- **Asset lifecycle.** One asset belongs to exactly one `bridge_run_id`:
+  1. *Create.* The adapter creates a release tagged and named by
+     `bridge_run_id` and uploads the asset. It then reads the asset back
+     through the API and compares its sha256 with the bundle before it
+     dispatches. If any step fails, the adapter deletes what it created and
+     does not dispatch.
+  2. *Upload credential.* Creating and deleting releases needs a
+     runner-repository `contents: write` credential. Only the adapter holds
+     it, and only outside the run. It is never a workflow secret, an input, or
+     visible to any job. Inside the run, tokens stay `contents: read`.
+  3. *Single use.* The pre-agent step accepts the asset only if its release tag
+     equals the dispatched `bridge_run_id`. Cloudeo records the first run that
+     consumed it, and any other run or attempt naming the same
+     `bridge_run_id` is foreign: its output is never applied.
+  4. *Expiry and cleanup.* The adapter deletes the release and its tag after
+     the terminal observation. It also deletes them at a TTL equal to the
+     agent-job timeout plus a margin, whichever comes first. Deletion is
+     idempotent.
+  5. *Reconciliation.* After an orchestration restart, reconciliation lists
+     releases whose `bridge_run_id` has no live run and deletes them. They are
+     reported as orphaned runtime resources, as in ADR-032 CF-12.
+- **Outbound.** A `post-steps:` step runs the bridge remote helper, pinned by
+  sha256 to a recorded `cloudeo/bridge/remote_helper.py` version, which builds
+  the delta bundle with `bridge_run_id` in its manifest, and uploads it as an
+  Actions artifact. The adapter downloads it by run and artifact id, hashes it,
+  and hands it to the existing validator. A manifest whose `bridge_run_id`
+  differs from the request is rejected.
+- **Rejected alternatives.** Pushing the candidate to any project-repository
+  ref (a ref outside the broker, reachable around the gate); gh-aw `aw.patch`
+  or PR safe outputs (an unvalidated Git patch, a write path we do not own);
+  inline workflow inputs (strings only, size-bounded); an external object
+  store (new infrastructure and credentials). If the release-asset path fails
+  P0, the named fallback is an orphan transport branch in the runner
+  repository.
+
+**Correlation, retries, and cancellation:**
+
+- `bridge_run_id` is the primary correlation id and the idempotency key. The
+  adapter dispatches with `return_run_details: true`. GitHub REST documents
+  that it then returns `workflow_run_id`, and P0 confirms it. That run id is
+  recorded, but it never replaces `bridge_run_id`. If it is not returned, the
+  run is found by a `run-name` that contains `bridge_run_id`. In both cases
+  the delta manifest's `bridge_run_id` must match.
+- Every `run_attempt` is explicit and Cloudeo-initiated. A re-run started
+  outside Cloudeo is observed as foreign and its output is not applied. A
+  delta for a given `bridge_run_id` is applied at most once.
+- Cancellation calls the provider cancel API and then observes. Until a
+  terminal conclusion is observed, the status is `in_progress` or `unknown`,
+  never `cancelled`.
+- A completed run whose output artifact cannot be downloaded and hashed is
+  `incomplete` and fails closed (ADR-032 CF-05, CF-07). `completed` never
+  implies verified.
+
+**Billing and cost:**
+
+- **Declared mode.** A gh-aw profile declares `billing_mode` per ADR-035. With
+  the Claude engine, the only valid mode is metered API (key or WIF). The
+  adapter refuses to run a profile that declares a subscription mode, and it
+  never runs in a mode other than the declared one.
+- **Envelope.** A gh-aw profile is usable only where the project's approved
+  Execution Profile policy allows metered use and sets a cap in currency. A
+  metered gh-aw profile serves as a fallback only through an approved
+  fallback binding with its condition.
+- **The cap must be enforceable before the run.** AWF AI credits are gh-aw's
+  own operating unit, not money. A run is dispatched only if the adapter can
+  show that its worst-case spend fits the remaining cap. That requires a
+  conservative bound derived from the hard stops (`max-turns`,
+  `max-ai-credits`, `timeout-minutes`) and the maximum list price of the
+  declared model. The adapter records both the conversion and the price
+  identity it used. If no such bound can be computed or enforced, the run is
+  refused with `quota_exhausted`, never dispatched optimistically.
+- **Hard stops are not policy.** The gh-aw stops and a provider-side spend
+  limit on a dedicated inference workspace are mechanisms that make the bound
+  hold, plus defense in depth. None of them replaces the Cloudeo cap check.
+  No paid run happens before this rule is implemented and tested.
+- **Observed cost.** Token usage comes from the run's `usage` artifact where
+  present and stays tokens (`ExecutionCost` never converts tokens to money).
+  AWF AI credits are gh-aw's own unit and are never recorded as observed
+  cost. Actions minutes and runner class are infrastructure cost evidence
+  under ADR-033. Unreported values stay `unknown`.
+- **Credential boundary.** The inference credential is a runner-repository
+  secret that Cloudeo never holds. Cloudeo's GitHub credential (dispatch,
+  asset upload and delete, run observation, artifact download) is consumed
+  only by the gh-aw adapter. ADR-032's credential-boundary rule applies
+  unchanged.
+- **Data egress.** Candidate content leaves to GitHub and to the inference
+  provider. A project may bind a gh-aw profile only if its policy permits
+  that data class to leave.
+
+**Pinning and provenance:**
+
+- Workflow identity is the runner repository, workflow path, the commit sha of
+  the compiled `.lock.yml`, and its sha256. A branch name is never the
+  identity. `engine.version` is pinned in the workflow, and the gh-aw compiler
+  version is recorded (v0.93.5 at drafting).
+- Runtime provenance records `github_run_id`, `run_attempt`, runner image
+  identity (`ImageOS`, `ImageVersion`, never the `ubuntu-*` label alone,
+  ADR-032 CF-10), requested and actual engine, CLI version, and model, the
+  input and output bundle digests, and start, end, and billable duration where
+  reported.
+
+**Roles:**
+
+- **Auditor first, read-only by construction.** The first permitted role is a
+  read-only auditor. Read-only is enforced, not inferred from the output. The
+  AWF sandbox makes the runner workspace writable by default. For an auditor
+  run, the materialized candidate is therefore mounted read-only for the
+  agent, and any scratch output goes to a separate directory. `pre-agent-steps:`
+  and `post-steps:` each check the candidate tree against the input manifest
+  (paths, modes, sha256). A difference, or a non-empty delta, makes the audit
+  invalid (`workspace_violation`). If a read-only mount cannot be configured,
+  no gh-aw profile may be bound to an auditor role: the integrity check alone
+  detects a violation but does not prevent one. Fresh-session
+  evidence is the new `github_run_id`/`run_attempt` on a fresh runner, under
+  V2C-14 and `13_V2_CONTROL_ARCHITECTURE.md` §8.6. A different engine or
+  provider can only tighten independence. On the LongHorizon path the gh-aw
+  auditor needs its own LongHorizon adapter and an explicit row in
+  `cloudeo/longhorizon/roles.py`, which is keyed by exact adapter type, outside
+  control.
+- **Writer later.** A write-capable role is bound only after the PN-13
+  isolation and return-path conformance tests exist for this adapter. SF-08
+  holds: at most one active write-capable run per CandidateWorkspace;
+  `check_candidate_unchanged` rejects local drift. Parallel runs use separate
+  candidates.
+- **Subagents.** gh-aw subagents inside one run share its engine, privileges,
+  and environment. They are never counted as independent auditors.
+
+**Architecture checks:** DEFERRED until implemented; traced in
+`14_V2C_TRACEABILITY.md` when the first slice lands.
+
+| Check | Rule |
+| --- | --- |
+| WR-01 neutral request | `WorkflowRunExecution` contains no GitHub or gh-aw type; such types appear only in the gh-aw adapter module. |
+| WR-02 single return path | Workflow-run changes reach a candidate only through `validate_output_bundle`, `check_candidate_unchanged`, and `apply_delta`. |
+| WR-03 no project-repo writes | The runner workflow has no trigger, token, or safe output that can write to the project repository. |
+| WR-04 pinned identity | A governed run records the `.lock.yml` commit sha and sha256; a branch or tag alone is refused. |
+| WR-05 at-most-once apply | A delta for a `bridge_run_id` is applied at most once; foreign attempts are not applied. |
+| WR-06 evidence or fail closed | A run without a downloaded, hashed output artifact is `incomplete`, never `completed`. |
+| WR-07 enforceable currency cap | The adapter refuses a profile whose billing mode it cannot honor, and dispatches only when a recorded conservative worst-case spend fits the remaining currency cap. |
+| WR-08 no second lifecycle authority | The gh-aw Work Queue is disabled in every governed workflow. |
+| WR-09 auditor read-only by construction | An auditor run mounts the candidate read-only and checks its integrity before and after; without a read-only mount the profile is not bindable to an auditor role. |
+| WR-10 asset lifecycle | An input asset is digest-verified before dispatch, bound to one `bridge_run_id`, created and deleted only with a credential no job can see, and deleted at terminal observation or TTL. |
+
+**Test for this adapter:** it is added by registering the adapter and a
+profile and passing the shared conformance suite, with no change to
+`cloudeo.control`. A fake workflow-run backend covers dispatch, observe,
+cancel, retry, missing-artifact, and drift cases without network.
+
+**Non-goals:** the gh-aw Work Queue; issue or PR triggers; publishing branches
+or PRs; Copilot or other engines' billing modes (each gets its own profile
+decision); interactive Sessions on GitHub Actions; a GitHub Actions
+`CloudExecutionFabric`; COST policy changes; forking or patching gh-aw.
+
+**Relationship to other ADRs:** extends ADR-035 (new plane, adapter
+placement, billing envelope, PN-13). Uses the bridge of ADR-017 and its bundle
+API. Applies ADR-032 provenance, evidence, and credential rules by reference
+without making GitHub Actions a fabric. Respects ADR-031 SF-08 and SF-14, and
+ADR-033 cost accounting. ADR-030 boundaries are unchanged.
+
+**Implementation sequence:**
+
+0. **P0 transport spike, unpaid, outside Cloudeo code.** The spike uses a
+   synthetic candidate with no AI engine call and no inference credential. It
+   runs in a runner repository with no project access. It proves the whole
+   chain:
+   1. The asset is created, read back, and digest-verified through the API
+      before dispatch, using a credential no job sees.
+   2. `pre-agent-steps:` can fetch it under the network policy while the job
+      token stays `contents: read`.
+   3. Dispatch with `return_run_details: true` returns `workflow_run_id`, or
+      else `run-name` correlation works.
+   4. The materialized directory is visible to the sandboxed agent and its
+      writes are visible to `post-steps:`. A deterministic stub stands in for
+      the agent.
+   5. A read-only mount of the candidate can be configured, and the
+      before/after integrity check detects a deliberate write.
+   6. The delta artifact downloads and hashes, whether or not the artifact API
+      exposes a digest; if it does not, the adapter's own sha256 governs.
+   7. `checkout: false` removes the agent-job checkout. The docs say the
+      separate activation checkout stays, which is acceptable because the
+      runner repository holds no project source.
+   8. Cancellation reaches a terminal conclusion.
+   9. The release and its tag are deleted after the run.
+
+   Engine-dependent facts (the `usage` artifact token data, the actual model
+   identity) stay UNVERIFIED until a paid run is approved separately. Any
+   failed criterion reopens this ADR before slice 3.
+1. **ADR-035 slice 1 and profile fields** (prerequisite, not this ADR). Slice
+   1 already holds the neutral error class, the runtime identity fields, and
+   the dependency AST checks (`feat/v2-execution-neutral-errors` at 55ed4b3,
+   PR #2). Still open: the additive profile fields (`adapter_id`,
+   `execution_plane`, `billing_mode`, `auth_profile_ref`) and the billing
+   envelope policy, including the currency cap of WR-07.
+2. **Contracts and fake backend:** `WorkflowRunExecution`, the widened
+   literals, dispatcher routing, and the conformance suite against a fake.
+3. **gh-aw adapter, auditor role only:** dispatch, observe, cancel, bundle
+   transport, provenance, cost evidence, WR-01 to WR-10 checks, and, for the
+   LongHorizon path, the auditor adapter and its `roles.py` row.
+4. **Writer role:** only after the PN-13 conformance tests pass for this
+   adapter.
+
+**Consequences:** Cloudeo gains a hosted, isolated, provider-diverse execution
+backend, useful first for independent audits with a different engine,
+without a second lifecycle authority and without any path around the
+promotion gate. The costs are metered inference, Actions minutes, a dedicated
+runner repository to operate, and a GitHub dependency limited to this one
+adapter.
