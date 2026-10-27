@@ -3737,21 +3737,34 @@ state, verification, or acceptance.
   post-agent custom jobs. The job:
   - runs on a fresh runner on which no agent code has run, with
     `permissions: contents: read`;
-  - takes the bridge remote helper from the pinned runner-repository commit,
-    checks it against its recorded sha256 (`cloudeo/bridge/remote_helper.py`
-    at a recorded version), and calls every binary by absolute path;
-  - downloads the agent's raw output artifact as untrusted input;
+  - takes the bridge remote helper (`cloudeo/bridge/remote_helper.py` at a
+    recorded version) only from the pinned runner-repository commit, and its
+    dependencies only from the runner image and that commit. Today the
+    helper's dependencies are the interpreter and its standard library. Any
+    other dependency is pinned by digest in that commit;
+  - downloads the agent's raw output artifact into a data-only directory, as
+    untrusted input. Nothing from it is executed, sourced, or placed on
+    `PATH`, `PYTHONPATH`, or any other search path. The interpreter runs
+    isolated (`python3 -I`), and every binary is called by absolute path;
   - builds the delta bundle with `bridge_run_id` in its manifest, and uploads
     it as the governed output artifact.
 
-  The adapter downloads that artifact by run and artifact id, hashes the
-  inner bundle itself (the artifact API `digest` covers the zip only, P0),
-  and hands it to the existing validator. A manifest whose `bridge_run_id`
-  differs from the request is rejected. *Replaces* the earlier draft rule
-  that `post-steps:` in the agent job run a re-hashed helper. Re-hashing
-  inside an agent-writable environment is not a security boundary. P0 tested
-  only the earlier `post-steps:` path, so this job is UNVERIFIED until the
-  conformance test covers it.
+  **The boundary is the separate runner, not the hash.** No agent process
+  ever runs on the trusted job's runner, so nothing can change the helper or
+  its dependencies between check and use. The sha256 check of the helper
+  catches a wrong pin, nothing more. A check-then-run sequence in any
+  environment an agent can write is never accepted: that is the
+  time-of-check/time-of-use gap.
+
+  **The adapter always validates on its own.** The adapter downloads the
+  governed artifact by run and artifact id and hashes the inner bundle itself.
+  The artifact API `digest` covers the zip only (P0). The adapter then runs
+  the existing validator, whatever the trusted job reported. A manifest whose
+  `bridge_run_id` differs from the request is rejected.
+
+  *Replaces* the earlier draft rule that `post-steps:` in the agent job run a
+  re-hashed helper. P0 tested only that earlier path, so this job stays
+  UNVERIFIED until the conformance test covers it.
 - **Rejected alternatives.** Pushing the candidate to any project-repository
   ref (a ref outside the broker, reachable around the gate); gh-aw `aw.patch`
   or PR safe outputs (an unvalidated Git patch, a write path we do not own);
@@ -3914,7 +3927,7 @@ state, verification, or acceptance.
 | WR-08 no second lifecycle authority | The gh-aw Work Queue is disabled in every governed workflow. |
 | WR-09 auditor read-only by construction | An auditor run mounts the candidate read-only from outside agent-writable paths. The in-job manifest check is a diagnostic only. Without a read-only mount verified against the agent, the profile cannot be bound to an auditor role. |
 | WR-10 single transport and asset lifecycle | The input asset is published (not draft), digest-verified before dispatch, bound to one `bridge_run_id`, and created and deleted only with a credential no job can see. It is deleted at the terminal observation or at the TTL. A transport failure stops the dispatch, with no fallback transport. |
-| WR-11 trusted post-processing | The governed delta is built only in a separate post-agent job: a fresh runner, `contents: read`, a sha256-checked helper from the pinned commit, and absolute binaries. Nothing the agent job computes or prints is recorded as evidence. |
+| WR-11 trusted post-processing | The governed delta is built only in a separate post-agent job on a fresh runner where no agent process runs, with `contents: read`. The helper and its dependencies come only from the pinned commit and the runner image. The downloaded agent output is data only: never executed and never on a search path. Binaries are absolute and the interpreter runs isolated. No check-then-run in an agent-writable environment counts. The adapter independently hashes and validates every governed artifact. Nothing the agent job computes or prints is recorded as evidence. |
 
 **Test for this adapter:** it is added by registering the adapter and a
 profile and passing the shared conformance suite, with no change to
@@ -3964,7 +3977,9 @@ ADR-033 cost accounting. ADR-030 boundaries are unchanged.
    - that the `:ro` candidate mount holds against the agent itself;
    - that `$GITHUB_PATH`, `$GITHUB_ENV`, and `PATH` changes made by the agent
      cannot reach the trusted post-processing job;
-   - that the trusted post-processing job builds the governed delta.
+   - that the trusted post-processing job builds the governed delta from the
+     pinned helper alone, and that a planted executable or path entry in the
+     agent's output artifact is never run.
 
    One possible engine-free route is recorded as a future test, not as an
    approved run: `engine.command` runs an arbitrary process under gh-aw's
