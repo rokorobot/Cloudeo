@@ -324,6 +324,7 @@ def test_v2c_18_registered_profile_versions_are_immutable_and_sequential(store):
         permissions=Permissions(workspace="read_only"),
         eligible_roles=(Role.CODE_AUDITOR,),
         capability="lint",
+        billing_mode="self_hosted",
         provider="treg",
     )
     store.register_profile(tool)
