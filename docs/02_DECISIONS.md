@@ -3567,8 +3567,11 @@ checks above.
 **Status:** Proposed (2026-10-27); not implemented. Extends ADR-035; amends no
 accepted ADR. Depends on ADR-035 implementation slice 1 (on
 `feat/v2-execution-neutral-errors` at 55ed4b3, not yet merged) and the ADR-035
-profile fields (see "Implementation sequence"). Acceptance waits for the P0
-spike result.
+profile fields (see "Implementation sequence"). The unpaid P0 transport spike
+ran on 2026-10-27 against a stub engine. Transport, isolation, integrity, and
+cancellation passed. Agent-sandbox behavior and the engine-dependent facts
+remain UNVERIFIED. The spike's seven findings are folded into this entry,
+each marked "(P0)".
 
 **Context:** GitHub Agentic Workflows (gh-aw, `github/gh-aw`) compiles a
 Markdown workflow into a pinned GitHub Actions workflow (`.lock.yml`) that runs
@@ -3639,6 +3642,17 @@ state, verification, or acceptance.
   `create-pull-request`, `push-to-pull-request-branch`, comments, issues, or
   labels). Publishing a branch or PR stays a separate future adapter behind a
   human gate (ADR-035 "Acceptance stays gate promotion").
+- **Disable gh-aw's write defaults explicitly (P0).** By default gh-aw turns
+  on issue creation and failure, no-op, incomplete, and missing-tool reporting
+  as issues, and it starts a GitHub MCP server. Every governed workflow must
+  set all of the following, and compilation must leave no job with a `write`
+  permission:
+  - `create-issue: false`;
+  - `report-failure-as-issue: false`, `report-failed-jobs: false`,
+    `report-missing-tool: false`, `report-missing-data: false`, and
+    `report-incomplete: false`;
+  - `noop.report-as-issue: false`;
+  - `tools.github: false`.
 - **Work Queue off.** The gh-aw Work Queue is not used. WorkOrder lifecycle
   and scheduling have one authority, Cloudeo. A later ADR may admit it as a
   subordinate scheduler only.
@@ -3660,7 +3674,9 @@ state, verification, or acceptance.
   materializes it into an empty directory.
 - **Asset lifecycle.** One asset belongs to exactly one `bridge_run_id`:
   1. *Create.* The adapter creates a release tagged and named by
-     `bridge_run_id` and uploads the asset. It then reads the asset back
+     `bridge_run_id` and uploads the asset. The release must be published
+     before dispatch, never left as a draft, because the job's `contents: read`
+     token cannot see draft releases (P0). The adapter then reads the asset back
      through the API and compares its sha256 with the bundle before it
      dispatches. If any step fails, the adapter deletes what it created and
      does not dispatch.
@@ -3684,29 +3700,47 @@ state, verification, or acceptance.
   the delta bundle with `bridge_run_id` in its manifest, and uploads it as an
   Actions artifact. The adapter downloads it by run and artifact id, hashes it,
   and hands it to the existing validator. A manifest whose `bridge_run_id`
-  differs from the request is rejected.
+  differs from the request is rejected. The artifact API `digest` covers the
+  zip only. The adapter's own sha256 of the inner bundle governs (P0).
+- **Post-steps are not trusted (P0).** `post-steps:` run under the agent's uid,
+  on paths the agent can write. They also run after a step that can write the
+  job's `$GITHUB_PATH` and `$GITHUB_ENV`. Therefore:
+  - post-steps call binaries by absolute path from read-only locations;
+  - the pinned helper is taken from outside agent-writable paths, or
+    re-hashed against its recorded sha256 immediately before it runs;
+  - any hash or verdict a step prints is transport only, never evidence;
+  - evidence is what the adapter computes after download.
 - **Rejected alternatives.** Pushing the candidate to any project-repository
   ref (a ref outside the broker, reachable around the gate); gh-aw `aw.patch`
   or PR safe outputs (an unvalidated Git patch, a write path we do not own);
   inline workflow inputs (strings only, size-bounded); an external object
-  store (new infrastructure and credentials). If the release-asset path fails
-  P0, the named fallback is an orphan transport branch in the runner
-  repository.
+  store (new infrastructure and credentials). P0 showed the release-asset path
+  works, so the orphan transport branch fallback is not needed.
 
 **Correlation, retries, and cancellation:**
 
 - `bridge_run_id` is the primary correlation id and the idempotency key. The
-  adapter dispatches with `return_run_details: true`. GitHub REST documents
-  that it then returns `workflow_run_id`, and P0 confirms it. That run id is
-  recorded, but it never replaces `bridge_run_id`. If it is not returned, the
-  run is found by a `run-name` that contains `bridge_run_id`. In both cases
-  the delta manifest's `bridge_run_id` must match.
+  adapter dispatches with `return_run_details: true` and an explicit
+  `X-GitHub-Api-Version` header (P0: the default REST version carries a
+  deprecation notice). The `workflow_run_id` in the dispatch response is the
+  run id. P0 saw it on every dispatch. That run id is recorded, but it never
+  replaces `bridge_run_id`. Only if it is missing is the run found by a
+  `run-name` that contains `bridge_run_id`. That search tolerates the short
+  window in which a queued run's title still shows the workflow name. In both
+  cases the delta manifest's `bridge_run_id` must match.
 - Every `run_attempt` is explicit and Cloudeo-initiated. A re-run started
   outside Cloudeo is observed as foreign and its output is not applied. A
   delta for a given `bridge_run_id` is applied at most once.
 - Cancellation calls the provider cancel API and then observes. Until a
   terminal conclusion is observed, the status is `in_progress` or `unknown`,
-  never `cancelled`.
+  never `cancelled`. A cancel on a queued run can return `409 Conflict`; the
+  adapter retries it, bounded. Reaching a terminal state took about 100 s in
+  P0, and the observation timeout allows for that.
+- **Apply only a successful attempt (P0).** A cancelled run still uploads its
+  output artifact, because `always()` post-steps run on cancellation. A delta
+  is applied only when the observed run `conclusion` is `success` and the
+  artifact's `run_attempt` equals the Cloudeo-initiated attempt. An artifact
+  from any other conclusion is evidence only and is never applied.
 - A completed run whose output artifact cannot be downloaded and hashed is
   `incomplete` and fails closed (ADR-032 CF-05, CF-07). `completed` never
   implies verified.
@@ -3763,8 +3797,11 @@ state, verification, or acceptance.
 
 - Workflow identity is the runner repository, workflow path, the commit sha of
   the compiled `.lock.yml`, and its sha256. A branch name is never the
-  identity. `engine.version` is pinned in the workflow, and the gh-aw compiler
-  version is recorded (v0.93.5 at drafting).
+  identity. `engine.version` and `engine.model` are pinned in the workflow.
+  Without `engine.model` the harness falls back to a moving model alias (P0).
+  The workflow identity also records the gh-aw compiler version (v0.93.5 at
+  drafting), the AWF version, and the container image digests from the lock
+  manifest (P0).
 - Runtime provenance records `execution_host = "github-actions"`,
   `github_run_id`, `run_attempt`, runner image
   identity (`ImageOS`, `ImageVersion`, never the `ubuntu-*` label alone,
@@ -3776,12 +3813,15 @@ state, verification, or acceptance.
 
 - **Auditor first, read-only by construction.** The first permitted role is a
   read-only auditor. Read-only is enforced, not inferred from the output. The
-  AWF sandbox makes the runner workspace writable by default. For an auditor
-  run, the materialized candidate is therefore mounted read-only for the
-  agent, and any scratch output goes to a separate directory. `pre-agent-steps:`
-  and `post-steps:` each check the candidate tree against the input manifest
-  (paths, modes, sha256). A difference, or a non-empty delta, makes the audit
-  invalid (`workspace_violation`). If a read-only mount cannot be configured,
+  AWF sandbox makes the runner workspace, `/tmp`, and `$HOME` writable by
+  default. For an auditor run, the candidate is therefore materialized outside
+  every agent-writable path. It is mounted read-only into the agent container
+  through `sandbox.agent.mounts` (`<path>:<path>:ro`), and scratch output goes
+  to a separate read-write directory (P0). The raw downloaded bundle is not
+  left on an agent-visible path. As defense in depth, `pre-agent-steps:` and
+  `post-steps:` each check the candidate tree against the input manifest
+  (paths, types, modes, sizes, sha256). A difference, or a non-empty delta,
+  makes the audit invalid (`workspace_violation`). If a read-only mount cannot be configured,
   or its enforcement against the agent is unverified, no gh-aw profile may be
   bound to an auditor role: the integrity check alone
   detects a violation but does not prevent one. Fresh-session
@@ -3806,14 +3846,15 @@ state, verification, or acceptance.
 | --- | --- |
 | WR-01 neutral request | `WorkflowRunExecution` contains no GitHub or gh-aw type; such types appear only in the gh-aw adapter module. |
 | WR-02 single return path | Workflow-run changes reach a candidate only through `validate_output_bundle`, `check_candidate_unchanged`, and `apply_delta`. |
-| WR-03 no project-repo writes | The runner workflow has no trigger, token, or safe output that can write to the project repository. |
-| WR-04 pinned identity | A governed run records the `.lock.yml` commit sha and sha256; a branch or tag alone is refused. |
-| WR-05 at-most-once apply | A delta for a `bridge_run_id` is applied at most once; foreign attempts are not applied. |
+| WR-03 no GitHub writes | The runner workflow has no trigger, token, or safe output that can write to the project repository. Every gh-aw issue-reporting default is disabled and `tools.github` is false. No job in the compiled `.lock.yml` holds a `write` permission. |
+| WR-04 pinned identity | A governed run records the `.lock.yml` commit sha and sha256, `engine.version`, `engine.model`, the AWF version, and the container digests. A branch, a tag, or a moving model alias alone is refused. |
+| WR-05 at-most-once apply | A delta for a `bridge_run_id` is applied at most once. It is applied only when the run conclusion is `success` and the `run_attempt` matches the Cloudeo-initiated one. Foreign attempts and artifacts from cancelled or failed runs are never applied. |
 | WR-06 evidence or fail closed | A run without a downloaded, hashed output artifact is `incomplete`, never `completed`. |
 | WR-07 enforceable currency cap | The adapter refuses a profile whose billing mode it cannot honor. It dispatches only when a recorded worst-case spend bound, from a provider hard limit or an enforced token ceiling (never turns or time alone), fits the remaining currency cap. Otherwise it records a policy refusal with no fallback. |
 | WR-08 no second lifecycle authority | The gh-aw Work Queue is disabled in every governed workflow. |
 | WR-09 auditor read-only by construction | An auditor run mounts the candidate read-only and checks its integrity before and after; without a read-only mount the profile is not bindable to an auditor role. |
-| WR-10 asset lifecycle | An input asset is digest-verified before dispatch, bound to one `bridge_run_id`, created and deleted only with a credential no job can see, and deleted at terminal observation or TTL. |
+| WR-10 asset lifecycle | An input asset is published (not draft) and digest-verified before dispatch. It is bound to one `bridge_run_id`, created and deleted only with a credential no job can see, and deleted at terminal observation or TTL. |
+| WR-11 untrusted post-steps | Post-steps use absolute binaries from read-only paths and a helper re-verified against its pinned sha256. Values printed inside the run are never recorded as evidence. |
 
 **Test for this adapter:** it is added by registering the adapter and a
 profile and passing the shared conformance suite, with no change to
@@ -3833,10 +3874,10 @@ ADR-033 cost accounting. ADR-030 boundaries are unchanged.
 
 **Implementation sequence:**
 
-0. **P0 transport spike, unpaid, outside Cloudeo code.** The spike uses a
-   synthetic candidate with no AI engine call and no inference credential. It
-   runs in a runner repository with no project access. It proves the whole
-   chain:
+0. **P0 transport spike, unpaid, outside Cloudeo code. Done 2026-10-27.** The
+   spike used a synthetic candidate, a stub engine through `engine.command`,
+   and no inference credential. It ran in a dedicated runner repository with no
+   project access. Its criteria were:
    1. The asset is created, read back, and digest-verified through the API
       before dispatch, using a credential no job sees.
    2. `pre-agent-steps:` can fetch it under the network policy while the job
@@ -3849,13 +3890,6 @@ ADR-033 cost accounting. ADR-030 boundaries are unchanged.
       does not show what an agent inside the AWF sandbox can read or write.
    5. A read-only mount of the candidate can be configured, and the
       before/after integrity check detects a deliberate write made by the stub.
-
-   Results are judged separately for **transport** (1–3, 6, 9), **isolation**
-   (2, 7), **integrity** (5, the integrity check), and **agent-sandbox
-   behavior**. Agent-sandbox behavior covers the agent's actual read and write
-   access inside AWF, and whether the read-only mount holds against the agent
-   itself. It stays UNVERIFIED until a test runs inside the real sandbox. A
-   property is never marked verified just because transport works.
    6. The delta artifact downloads and hashes, whether or not the artifact API
       exposes a digest; if it does not, the adapter's own sha256 governs.
    7. `checkout: false` removes the agent-job checkout. The docs say the
@@ -3864,11 +3898,26 @@ ADR-033 cost accounting. ADR-030 boundaries are unchanged.
    8. Cancellation reaches a terminal conclusion.
    9. The release and its tag are deleted after the run.
 
-   Engine-dependent facts also stay UNVERIFIED until a paid run is approved
-   separately: the `usage` artifact token data, the actual model identity, and
-   agent-sandbox behavior if no engine-free sandbox test exists. A failed
-   criterion reopens this ADR before slice 3. So does an UNVERIFIED
-   agent-sandbox result before any role is bound.
+   Results are judged separately for **transport** (1, 3, 6, 9),
+   **isolation** (2, 7), **integrity** (5 and the integrity check),
+   cancellation (8), and **agent-sandbox behavior**. Agent-sandbox behavior
+   covers the agent's actual read and write access inside AWF, and whether the
+   read-only mount holds against the agent itself. It stays UNVERIFIED until a
+   test runs inside the real sandbox. A property is never marked verified just
+   because transport works.
+
+   **Outcome:**
+   - Transport, isolation, integrity, and cancellation: PASS.
+   - The tamper run was detected and failed closed.
+   - The `:ro` mount refused writes from a process in the AWF container
+     (runner level).
+   - Agent-sandbox behavior: UNVERIFIED.
+   - Engine-dependent facts (the `usage` token data, the actual model
+     identity): UNVERIFIED. They wait for a separately approved paid run, or an
+     engine-free sandbox probe if the owner accepts one.
+   - The seven findings marked "(P0)" above are part of this entry.
+
+   An UNVERIFIED agent-sandbox result still blocks binding any role.
 1. **ADR-035 slice 1 and profile fields** (prerequisite, not this ADR). Slice
    1 already holds the neutral error class, the runtime identity fields, and
    the dependency AST checks (`feat/v2-execution-neutral-errors` at 55ed4b3,
@@ -3878,7 +3927,7 @@ ADR-033 cost accounting. ADR-030 boundaries are unchanged.
 2. **Contracts and fake backend:** `WorkflowRunExecution`, the widened
    literals, dispatcher routing, and the conformance suite against a fake.
 3. **gh-aw adapter, auditor role only:** dispatch, observe, cancel, bundle
-   transport, provenance, cost evidence, WR-01 to WR-10 checks, and, for the
+   transport, provenance, cost evidence, WR-01 to WR-11 checks, and, for the
    LongHorizon path, the auditor adapter and its `roles.py` row.
 4. **Writer role:** only after the PN-13 conformance tests pass for this
    adapter.
