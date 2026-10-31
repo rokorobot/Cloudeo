@@ -1511,3 +1511,28 @@ With these, the contract and ADR-022 to ADR-029 are **Accepted**.
 No code, test, dependency, or kernel change. Nothing described in the
 contract is implemented. Invariants V2C-01 to V2C-23 become test obligations
 for the milestones that implement them.
+
+---
+
+## 2026-10-31 — EVAL-01 PR 1: baseline record and deterministic CI
+
+Plan: `docs/EVAL-01_PLAN.md`. Record: `docs/EVAL-01_BASELINE.md`.
+
+Added `.github/workflows/ci.yml` with `core` and `longhorizon` jobs (no
+secrets), an expected-skip inventory, a JUnit checker, an environment
+manifest, and `xfail_strict = true`. No runtime code change.
+
+Observed in a clean clone (Python 3.12, `uv sync --locked`):
+
+```text
+main + PR 1   core          319 passed, 7 skipped (inventory)
+main + PR 1   longhorizon   566 passed
+7f88855       core          548 passed, 8 skipped, 13 xfailed
+7f88855       longhorizon   800 passed, 13 xfailed
+```
+
+Negative controls: a core report checked as `longhorizon` fails (7 unexpected
+skips); a seeded passing xfail fails; the V2 tip fails the `core` inventory on
+`test_orchestration_kernel_outcome` until that entry is added at integration.
+
+Pending decision: canonical EVAL-01 baseline commit (recommended `7f88855`).
