@@ -196,16 +196,13 @@ async def uhp_dispatch(fixture, workdir, record):
     dispatcher = ExecutionDispatcher(harness_task=UHPHarnessTaskBackend(client))
     task = UHPTaskRequest.model_validate(fixture["task"])
     record("cloudeo", "dispatch_requested", harness_id=task.harness_id)
-    try:
-        async with client:
-            outcome = await dispatcher.execute(HarnessTaskExecution(task=task))
-    except Exception as exc:  # noqa: BLE001 - a refusal to dispatch is an observed outcome
-        record("cloudeo", "dispatch_refused", error=type(exc).__name__)
-        return {"dispatch.refused": True, "uhp.task_posts": len(posts)}, "complete"
+    # Raw dispatch has no authorization step; any exception here is an
+    # infrastructure error, never mistaken for a policy refusal.
+    async with client:
+        outcome = await dispatcher.execute(HarnessTaskExecution(task=task))
     runtime = outcome.runtime
     fallback = fixture.get("approved_fallback_harness")
     observations = {
-        "dispatch.refused": False,
         "outcome.status": outcome.status,
         "outcome.error_class": outcome.error.error_class if outcome.error else None,
         "outcome.runtime.actual_model": runtime.actual_model,
@@ -217,8 +214,10 @@ async def uhp_dispatch(fixture, workdir, record):
         # A retry must resend exactly the same task (harness, model, input).
         "uhp.repeats_identical": all(p == posts[0] for p in posts),
     }
-    # No Cloudeo component yet decides whether a completed run with a different
-    # identity is acceptable, so "identity.decision" is not observed (unknown).
+    # Control-owned decisions (identity acceptance, dispatch authorization,
+    # fallback, retry) have no Cloudeo entry point yet, so "identity.decision"
+    # and "control.*" keys are never observed here. Capability cases that need
+    # them cannot pass until revised to the real entry point.
     if "synthetic_secret" in fixture:
         observations["output.contains_secret"] = fixture["synthetic_secret"] in (
             outcome.output_text or ""

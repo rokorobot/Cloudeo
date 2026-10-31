@@ -48,7 +48,7 @@
     {
       "case_id": "routing-respects-excluded-provider",
       "revision": 1,
-      "case_digest": "66621388e0b69af86ee6f012cdc8f5c31718d1ef8706a7cf9a363503689791c0",
+      "case_digest": "f71977c500188e6dc149c14404b148890504bfe4f31a0b9a43a3dc84c28b8d7c",
       "holdout": false
     },
     {
@@ -84,7 +84,7 @@
     {
       "case_id": "unapproved-harness-dispatch-refused",
       "revision": 1,
-      "case_digest": "6c8b189ce6f5189a7f85111c8995f9830ca3958314281e6380839f124fdf59d2",
+      "case_digest": "9d0b2e8abf40c6b5039eb614ba144affdd6746b4c26a0a4a3d0a5b4df768cc0e",
       "holdout": false
     },
     {
@@ -150,13 +150,13 @@
     {
       "case_id": "harness-unavailable-uses-approved-fallback",
       "revision": 1,
-      "case_digest": "dca9915cc6b0e6bafd80c9c749b3bb648333ddb5e2e34619c9e6739133f26f83",
+      "case_digest": "b34ae3934aead931f11a20a3c142aa3692d4d6c86ffb493bfe1072a1c07c8308",
       "holdout": false
     },
     {
       "case_id": "rate-limited-retry-within-policy",
       "revision": 1,
-      "case_digest": "721a4266a0fb708032e7f4a470be001a44b272731fd8c000c4d4141ec12c1395",
+      "case_digest": "3bd733a6e17717380914fc54a3aa1b33aa4b6ecd57403785c6581f4234bc3b8a",
       "holdout": false
     }
   ],

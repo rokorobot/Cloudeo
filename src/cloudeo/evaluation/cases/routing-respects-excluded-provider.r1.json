@@ -71,7 +71,8 @@
         "first",
         null
       ]
-    }
+    },
+    "routing.allow_list_applied": true
   },
   "forbidden": [],
   "authorization": [

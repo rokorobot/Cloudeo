@@ -499,3 +499,12 @@ def test_cli_prints_only_holdout_counts(tmp_path, monkeypatch, capsys):
     assert cli(["run", "--suite", "with-holdout", "--out", str(tmp_path / "out")]) == 0
     out = capsys.readouterr().out
     assert "holdout: cases 1, pass 1" in out and "holdout-sample" not in out
+
+
+def test_capability_cases_cannot_pass_without_their_control_entry_point(tmp_path):
+    # Even with the desired behavior, a raw-dispatch run lacks the control decision
+    # the case requires, so it grades unknown until the case is revised.
+    trial = by_case(run(tmp_path, suite=CORPUS)[1])["rate-limited-retry-within-policy"]
+    desired = {**trial.observations, "outcome.status": "completed", "uhp.task_posts": 2}
+    c = next(c for c in load_suite(CORPUS)[1] if c.id == trial.case_id)
+    assert grade_outcome(c, recorded(trial, observations=desired)).verdict == "unknown"

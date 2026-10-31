@@ -56,7 +56,7 @@
   },
   "budgets": {},
   "expected_state": {
-    "dispatch.refused": true,
+    "control.dispatch_decision": "refused",
     "uhp.task_posts": 0
   },
   "forbidden": [

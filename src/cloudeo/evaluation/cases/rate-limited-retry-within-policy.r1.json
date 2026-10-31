@@ -78,7 +78,8 @@
   "expected_state": {
     "outcome.status": "completed",
     "uhp.task_posts": 2,
-    "uhp.repeats_identical": true
+    "uhp.repeats_identical": true,
+    "control.retry_authorized_by": "rate_limited"
   },
   "forbidden": [
     {

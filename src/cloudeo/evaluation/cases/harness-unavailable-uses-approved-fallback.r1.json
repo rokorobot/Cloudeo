@@ -88,7 +88,8 @@
   "expected_state": {
     "uhp.primary_posts": 0,
     "uhp.fallback_posts": 1,
-    "outcome.status": "completed"
+    "outcome.status": "completed",
+    "control.fallback_authorized_by": "runtime_unavailable"
   },
   "forbidden": [
     {

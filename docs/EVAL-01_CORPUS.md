@@ -102,6 +102,17 @@ first revision: 9 OK, 11 WEAK, 6 WRONG. Resolutions:
 | A deleted run record hid the secret | secret-in-output | Run record must exist |
 | Required events without substance | all controller cases | `db:run_records` is emitted only when rows exist |
 
+A targeted re-review of the WRONG cases found the identity and cost-budget
+cases OK. For excluded-provider, unapproved-dispatch, harness fallback and
+rate-limited retry it found that the policy input cannot reach production: the
+control-owned routing, dispatch, fallback and retry entry points do not exist
+yet. Each of these cases therefore also requires a control-decision
+observation (`routing.allow_list_applied`, `control.dispatch_decision`,
+`control.fallback_authorized_by`, `control.retry_authorized_by`) that no current
+scenario produces. They fail today on real evidence, and they cannot pass until
+a new case revision binds them to the real entry point. The dispatch scenario
+no longer treats an exception as a refusal.
+
 ### Stated limits (not fixed in corpus v1)
 
 - `routing-discovered-typed-match` and `routing-missing-capability-escalates`
