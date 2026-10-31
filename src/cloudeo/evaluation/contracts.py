@@ -151,6 +151,9 @@ class Provenance(_Frozen):
     severity: Severity | None = None
     grader_versions: dict[str, str]
     capabilities: dict[str, bool]
+    # The configuration a comparison ran this trial under (None for plain runs).
+    configuration_id: str | None = None
+    configuration_digest: str | None = None
 
 
 class EvidenceEvent(_Frozen):
@@ -189,6 +192,11 @@ class EvalTrial(_Frozen):
     outcome_grade: EvalGrade | None = None
     execution_grade: EvalGrade | None = None
     error: str | None = None
+    # Money is never inferred: reported only if the runtime reported it. The
+    # reserve is the most the trial was allowed to cost, counted against the
+    # budget whenever the reported cost is unknown.
+    cost_usd_reported: float | None = None
+    cost_usd_reserved: float | None = None
 
     @property
     def verdict(self) -> Verdict:
@@ -199,3 +207,64 @@ class EvalTrial(_Frozen):
         if all(g is not None and g.verdict == "pass" for g in grades):
             return "pass"
         return "unknown"
+
+
+class EvalConfiguration(_Frozen):
+    """One side of a comparison: what is held fixed and what varies."""
+
+    id: str = Identifier
+    description: str
+    # The variables that define this side, e.g. executor and auditor model.
+    variables: dict[str, Any]
+    # Entry point -> fixture fields this configuration overrides (deep-merged).
+    fixture_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Budget reserved per trial; a trial with unknown cost counts as this much.
+    max_cost_usd_per_trial: float = Field(gt=0)
+
+    @property
+    def digest(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json"))
+
+
+class ConfigMetrics(_Frozen):
+    configuration_id: str
+    attempted: int
+    completed: int
+    verified: int  # joint pass: outcome and execution
+    outcome_pass: int
+    execution_violations: int
+    unknown: int
+    unsupported: int
+    infrastructure_invalid: int  # error or interrupted
+    not_run_budget: int
+    cost_usd_reported: float | None  # None if any attempted trial's cost is unknown
+    cost_usd_counted: float  # reported where known, else the reserve
+    cost_usd_per_verified: float | None
+    duration_ms_median: float | None
+    duration_ms_p95: float | None
+    per_case: dict[str, str]  # case id -> "k/n" verified
+
+
+class EvalComparison(_Frozen):
+    """A paired comparison of two configurations on identical cases (plan §8)."""
+
+    comparison_id: str
+    run_id: str
+    suite_id: str
+    suite_digest: str
+    baseline: EvalConfiguration
+    candidate: EvalConfiguration
+    changed_variables: dict[str, tuple[Any, Any]]
+    # "system" when more than one variable changes (plan §8).
+    comparison_kind: Literal["single_variable", "system"]
+    repetitions: int
+    seed: int
+    matched_pairs: int
+    coverage: float  # fraction of planned pairs where both sides completed
+    metrics: tuple[ConfigMetrics, ConfigMetrics]
+    # Candidate minus baseline verified-success rate, paired and case-clustered.
+    verified_rate_difference: float | None
+    difference_ci95: tuple[float, float] | None
+    critical_findings: tuple[str, ...]
+    gate_verdict: Literal["observational", "pass", "fail", "inconclusive"]
+    gate_reasons: tuple[str, ...]

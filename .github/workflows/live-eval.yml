@@ -1,0 +1,143 @@
+# EVAL-01 PR 5: credentialed live comparison. Manual only, main only, protected
+# environment (owner approval per run). Never runs pull-request code.
+name: live-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: "Repetitions per case and configuration"
+        default: "3"
+      baseline:
+        description: "Baseline configuration"
+        default: "opus-5-5"
+      candidate:
+        description: "Candidate configuration"
+        default: "gpt-5-6"
+
+permissions:
+  contents: read
+  actions: read  # read earlier runs' ledger artifacts for the weekly cap
+
+concurrency:
+  group: live-eval
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: live-eval
+    timeout-minutes: 90
+    env:
+      CONFIGS: src/cloudeo/evaluation/configurations
+      CLOUDEO_EVAL_UHP_URL: http://127.0.0.1:18810/api/harness
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.6"
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Restore the weekly spend ledger from earlier runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p eval-out ledger-parts
+          since=$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          gh run list --workflow live-eval.yml --repo "$GITHUB_REPOSITORY" --limit 50 \
+            --json databaseId,createdAt -q ".[] | select(.createdAt >= \"$since\") | .databaseId" |
+          while read -r id; do
+            [ "$id" = "$GITHUB_RUN_ID" ] && continue
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" -n live-eval-ledger \
+              -D "ledger-parts/$id" 2>/dev/null || true
+          done
+          cat ledger-parts/*/ledger-entry.jsonl 2>/dev/null > eval-out/ledger.jsonl || true
+          wc -l < eval-out/ledger.jsonl
+
+      - name: Check the budget before anything starts
+        run: |
+          uv run --no-sync python -m cloudeo.evaluation compare --suite live-smoke-v1 \
+            --baseline "$CONFIGS/${{ inputs.baseline }}.json" \
+            --candidate "$CONFIGS/${{ inputs.candidate }}.json" \
+            --repetitions "${{ inputs.repetitions }}" --out eval-out --estimate-only
+
+      - name: Start the pinned HarnessRouter (loopback only)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          HR_AUTH_PASSWORD=$(openssl rand -hex 24)
+          echo "::add-mask::$HR_AUTH_PASSWORD"
+          echo "HR_AUTH_PASSWORD=$HR_AUTH_PASSWORD" >> "$GITHUB_ENV"
+          export HR_AUTH_PASSWORD
+          umask 077
+          uv run --no-sync python scripts/live_eval/hr_env.py "$RUNNER_TEMP/hr.env"
+          docker run -d --name harnessrouter --env-file "$RUNNER_TEMP/hr.env" \
+            -p 127.0.0.1:18810:3000 \
+            harnessrouter/harnessrouter@sha256:d8794a4cbaaac8920548b2e1474e84d9c54e754119f700d2817765ec89837ced
+          rm -f "$RUNNER_TEMP/hr.env"
+          for i in $(seq 1 120); do
+            curl -fsS "$CLOUDEO_EVAL_UHP_URL/v1/uhp" >/dev/null 2>&1 && { echo "ready after ${i}x5s"; exit 0; }
+            sleep 5
+          done
+          echo "::error::HarnessRouter did not become ready"; docker ps -a; exit 1
+
+      - name: Sign in to the private instance
+        run: |
+          curl --fail-with-body -sS -c "$RUNNER_TEMP/hr.cookies" \
+            http://127.0.0.1:18810/api/selfhost/login -H 'content-type: application/json' \
+            -d "{\"username\":\"cloudeo\",\"password\":\"$HR_AUTH_PASSWORD\"}" >/dev/null
+          cookie=$(awk '!/^#/ && NF >= 7 {printf "%s%s=%s", sep, $6, $7; sep="; "}' "$RUNNER_TEMP/hr.cookies")
+          rm -f "$RUNNER_TEMP/hr.cookies"
+          [ -n "$cookie" ] || { echo "::error::sign-in returned no session cookie"; exit 1; }
+          echo "::add-mask::$cookie"
+          echo "CLOUDEO_EVAL_UHP_COOKIE=$cookie" >> "$GITHUB_ENV"
+
+      - name: Preflight (configured models are offered; nothing is spent)
+        run: |
+          uv run --no-sync python scripts/live_eval/preflight.py \
+            "$CONFIGS/${{ inputs.baseline }}.json" "$CONFIGS/${{ inputs.candidate }}.json"
+
+      - name: Run the paired comparison (caps USD 7 per run, USD 20 per week)
+        run: |
+          before=$(wc -l < eval-out/ledger.jsonl)
+          set +e
+          uv run --no-sync python -m cloudeo.evaluation compare --suite live-smoke-v1 \
+            --baseline "$CONFIGS/${{ inputs.baseline }}.json" \
+            --candidate "$CONFIGS/${{ inputs.candidate }}.json" \
+            --repetitions "${{ inputs.repetitions }}" --out eval-out --require-clean
+          status=$?
+          set -e
+          tail -n +$((before + 1)) eval-out/ledger.jsonl > ledger-entry.jsonl
+          cat eval-out/comparison-*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          exit $status
+
+      - name: Verify retained evidence
+        if: ${{ !cancelled() }}
+        run: uv run --no-sync python -m cloudeo.evaluation verify --out eval-out
+
+      - name: Keep this run's spend for the weekly cap
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-eval-ledger
+          path: ledger-entry.jsonl
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Keep the evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-eval-${{ github.run_id }}
+          path: eval-out/
+          retention-days: 90
+
+      - name: Stop HarnessRouter
+        if: always()
+        run: docker rm -f harnessrouter >/dev/null 2>&1 || true

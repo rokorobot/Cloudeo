@@ -189,7 +189,7 @@ async def _controller(fixture, workdir, record, *, treg_cli):
 # --- UHP dispatch + orchestration failure mapping: the UHP server is faked ---
 
 
-def _work_order(spec: dict, stage: str = "attempt_started"):
+def _work_order(spec: dict, stage: str = "attempt_started", candidate=None):
     """A WorkOrder built through control's public machine, up to `stage`:
     "plan_proposed", "executing", or "attempt_started" (b1 begun by the bound
     executor, the state in which an execution failure is routed)."""
@@ -236,7 +236,7 @@ def _work_order(spec: dict, stage: str = "attempt_started"):
         return wo
     wo = m.approve_plan(wo, plan_version=1, approved_by="eval", approved_at=now)
     wo = m.attach_candidate(
-        wo, Candidate(workspace_id="eval", candidate_id="cand-eval", base_commit=base),
+        wo, candidate or Candidate(workspace_id="eval", candidate_id="cand-eval", base_commit=base),
         accepted_baseline=base,
     )  # fmt: skip
     wo = m.start_execution(wo, accepted_baseline=base)
@@ -756,3 +756,148 @@ async def billing_approval(fixture, workdir, record):
         "billing.observed_unreported": judge(None),
         "billing.observed_unknown": judge("unknown"),
     }, "complete"
+
+
+# --- Live trials (EVAL-01 PR 5): a real HarnessRouter, real models ---
+
+# Tests may set this to an httpx transport (e.g. MockTransport over the fake
+# HarnessRouter); live runs leave it None and reach CLOUDEO_EVAL_UHP_URL.
+LIVE_TRANSPORT = None
+
+
+def live_available() -> bool:
+    return (
+        bool(os.environ.get("CLOUDEO_EVAL_UHP_URL"))
+        and bool(
+            os.environ.get("CLOUDEO_EVAL_UHP_KEY") or os.environ.get("CLOUDEO_EVAL_UHP_COOKIE")
+        )
+        or LIVE_TRANSPORT is not None
+    )
+
+
+def _live_client():
+    """A UHP client for the live HarnessRouter. Auth is an API key, or the
+    console session cookie of a private, single-job instance (never logged)."""
+    import httpx
+
+    from cloudeo.uhp.client import UHPClient
+
+    url = os.environ.get("CLOUDEO_EVAL_UHP_URL", "http://uhp.eval/api/harness")
+    cookie = os.environ.get("CLOUDEO_EVAL_UHP_COOKIE")
+
+    class Cookie(httpx.AsyncBaseTransport):
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def handle_async_request(self, request):
+            if cookie:
+                request.headers["Cookie"] = cookie
+            return await self.inner.handle_async_request(request)
+
+        async def aclose(self):
+            await self.inner.aclose()
+
+    inner = LIVE_TRANSPORT or httpx.AsyncHTTPTransport()
+    return UHPClient(url, os.environ.get("CLOUDEO_EVAL_UHP_KEY"), transport=Cookie(inner))
+
+
+def _live_identity(outcome, profile_model: str) -> dict:
+    runtime = outcome.runtime
+    usage = outcome.cost.harness_usage or {}
+    cost = usage.get("cost_usd")  # only an explicit currency figure is a reported cost
+    return {
+        "outcome.status": outcome.status,
+        "outcome.error_class": outcome.error.error_class if outcome.error else None,
+        "outcome.runtime.requested_model": runtime.requested_model,
+        "outcome.runtime.actual_model": runtime.actual_model,
+        "outcome.runtime.model_fallback": runtime.model_fallback,
+        # Unknown stays unknown: None when the runtime did not report a model.
+        "identity.actual_matches_approved": None
+        if runtime.actual_model is None
+        else runtime.actual_model == profile_model,
+        "usage": usage,
+        **({"cost.usd_reported": float(cost)} if isinstance(cost, int | float) else {}),
+    }
+
+
+@scenario("live.harness_task")
+async def live_harness_task(fixture, workdir, record):
+    """One live text task through control-owned dispatch (ADR-037)."""
+    from cloudeo.control.model import Role
+    from cloudeo.execution.uhp_backend import UHPHarnessTaskBackend
+    from cloudeo.orchestration.dispatch import dispatch_attempt
+    from cloudeo.uhp.models import UHPTaskRequest
+
+    work_order = _work_order(fixture["work_order"], "executing")
+    binding = next(
+        b for b in work_order.execution_profile.bindings if b.role == Role.PRIMARY_CODE_EXECUTOR
+    )
+    approved = work_order.execution_profile.profile(binding.primary)
+    client = _live_client()
+    record("cloudeo", "dispatch_requested", model=approved.model.model_id)
+    async with client:
+        result = await dispatch_attempt(
+            work_order, "b1", profile=binding.primary,
+            task=UHPTaskRequest.model_validate(fixture["task"]),
+            backend=UHPHarnessTaskBackend(client),
+        )  # fmt: skip
+    outcome = result.outcome
+    record("uhp", "outcome", status=outcome.status, actual_model=outcome.runtime.actual_model,
+           response_id=outcome.runtime.response_id)  # fmt: skip
+    text = (outcome.output_text or "").strip()
+    return {
+        **_live_identity(outcome, approved.model.model_id),
+        "control.dispatched": result.dispatched,
+        "uhp.task_posts": 1 if result.dispatched else 0,
+        # Judged against the case's own expected answer; whitespace-trimmed exact match.
+        "output.exact_match": text == fixture["expected_output"],
+        "output.text": text[:2000],
+    }, "partial"  # the harness's internal tool use is not visible to Cloudeo
+
+
+@scenario("live.workspace_edit")
+async def live_workspace_edit(fixture, workdir, record):
+    """One live workspace edit: real Git candidate, control authorization,
+    the real bridge to HarnessRouter, and the delta applied back."""
+    from cloudeo.bridge.bridge import UHPWorkspaceBridge
+    from cloudeo.bridge.models import WorkspaceBridgeTask
+    from cloudeo.control.model import Candidate, Role
+    from cloudeo.execution.dispatch import ExecutionDispatcher
+    from cloudeo.execution.uhp_backend import UHPHarnessTaskBackend
+    from cloudeo.orchestration.dispatch import authorize_executor_attempt
+
+    with isolated_git(workdir):
+        _, broker, candidate = _gate_project({**fixture, "executor_changes": {}}, workdir, record)
+        spec = {**fixture["work_order"], "accepted_baseline": candidate.base_commit}
+        work_order = _work_order(spec, "executing", candidate=Candidate(
+            workspace_id=candidate.workspace_id, candidate_id=candidate.candidate_id,
+            base_commit=candidate.base_commit,
+        ))  # fmt: skip
+        binding = next(
+            b for b in work_order.execution_profile.bindings
+            if b.role == Role.PRIMARY_CODE_EXECUTOR
+        )  # fmt: skip
+        approved = work_order.execution_profile.profile(binding.primary)
+        attempt = authorize_executor_attempt(work_order, "b1", profile=binding.primary)
+        record("control", "authorization", granted=attempt.authorization is not None)
+        client = _live_client()
+        dispatcher = ExecutionDispatcher(harness_task=UHPHarnessTaskBackend(client))
+        bridge = UHPWorkspaceBridge(broker, client, dispatcher, staging_root=workdir)
+        task = WorkspaceBridgeTask(
+            task=fixture["task"], harness_id=approved.runtime.harness_id,
+            model=approved.model.model_id, **fixture.get("limits", {}),
+        )  # fmt: skip
+        async with client:
+            result = await bridge.run(candidate, task, authorization=attempt.authorization)
+        outcome = result.outcome
+        record("bridge", "result", status=outcome.status, sync=str(result.workspace_sync_status))
+        target = candidate.local_path / fixture["expected_file"]["path"]
+        content = target.read_text() if target.is_file() else None
+        accepted = broker.accepted_state().accepted_commit
+    return {
+        **_live_identity(outcome, approved.model.model_id),
+        "bridge.sync_status": str(result.workspace_sync_status),
+        # Read from the candidate's files directly, not from the harness's report.
+        "workspace.expected_file_matches": content == fixture["expected_file"]["content"],
+        "accepted.unchanged": accepted == candidate.base_commit,
+    }, "partial"

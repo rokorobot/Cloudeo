@@ -92,7 +92,10 @@ def capabilities() -> dict[str, bool]:
         except ModuleNotFoundError:
             return False
 
-    return {name: available(module) for name, module in CAPABILITIES.items()}
+    found = {name: available(module) for name, module in CAPABILITIES.items()}
+    # Live trials need a reachable HarnessRouter and its credential (env only).
+    found["live_uhp"] = scenarios.live_available()
+    return found
 
 
 def _code_state() -> tuple[str | None, bool | None, str | None]:
@@ -151,33 +154,42 @@ async def run_suite(
     return run_id, store.trials(run_id), summary
 
 
-async def _run_trial(store, run_id, suite, case, repetition, label, provenance, caps) -> None:
+async def _run_trial(
+    store, run_id, suite, case, repetition, label, provenance, caps, *, fixture=None, reserve=None
+) -> EvalTrial:
+    """Run one trial and record it; returns the recorded trial.
+
+    `fixture` replaces the case fixture (a configuration's overrides applied);
+    `reserve` is the most the trial may cost, recorded for budget accounting.
+    """
     trial = EvalTrial(
         trial_id=uuid.uuid4().hex, run_id=run_id, suite_id=suite.id, case_id=case.id,
         case_revision=case.revision, repetition=repetition, label=label, status="running",
-        started_at=datetime.now(UTC), provenance=provenance,
+        started_at=datetime.now(UTC), provenance=provenance, cost_usd_reserved=reserve,
     )  # fmt: skip
     store.start(trial)
 
-    def done(**update) -> None:
-        store.finish(trial.model_copy(update={"finished_at": datetime.now(UTC), **update}))
+    def done(**update) -> EvalTrial:
+        final = trial.model_copy(update={"finished_at": datetime.now(UTC), **update})
+        store.finish(final)
+        return final
 
     missing = [c for c in case.required_capabilities if not caps.get(c)]
     if missing:
-        done(status="unsupported", error=f"missing capabilities: {', '.join(missing)}")
-        return
+        return done(status="unsupported", error=f"missing capabilities: {', '.join(missing)}")
     workdir = Path(tempfile.mkdtemp(prefix=f"cloudeo-eval-{case.id}-"))
     recorder = scenarios.Recorder()
     try:
         observations, completeness = await scenarios.SCENARIOS[case.entry_point](
-            case.fixture, workdir, recorder
+            case.fixture if fixture is None else fixture, workdir, recorder
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
         done(status="interrupted", events=tuple(recorder.events), error="interrupted")
         raise
     except Exception as exc:  # noqa: BLE001 - infrastructure-invalid; recorded, never a pass
-        done(status="error", events=tuple(recorder.events), error=f"{type(exc).__name__}: {exc}")
-        return
+        return done(
+            status="error", events=tuple(recorder.events), error=f"{type(exc).__name__}: {exc}"
+        )
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     events = tuple(recorder.events)
@@ -188,18 +200,20 @@ async def _run_trial(store, run_id, suite, case, repetition, label, provenance, 
             "events": events,
             "trace_completeness": completeness,
             "evidence_sha256": evidence_digest(observations, events),
+            # Only a cost the runtime itself reported; never inferred.
+            "cost_usd_reported": observations.get("cost.usd_reported"),
         }
     )
     # Graded from the recorded evidence, exactly as a later regrade would be.
-    store.finish(
-        recorded.model_copy(
-            update={
-                "finished_at": datetime.now(UTC),
-                "outcome_grade": grade_outcome(case, recorded),
-                "execution_grade": grade_execution(case, recorded),
-            }
-        )
+    final = recorded.model_copy(
+        update={
+            "finished_at": datetime.now(UTC),
+            "outcome_grade": grade_outcome(case, recorded),
+            "execution_grade": grade_execution(case, recorded),
+        }
     )
+    store.finish(final)
+    return final
 
 
 def verify_store(out: Path, data: Path = DATA) -> list[tuple[EvalTrial, list[str]]]:
