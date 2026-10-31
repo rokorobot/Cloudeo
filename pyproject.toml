@@ -31,6 +31,8 @@ cloudeo = "cloudeo.main:run"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
+# EVAL-01: an unexpected pass of any xfail fails the run.
+xfail_strict = true
 
 [tool.ruff]
 line-length = 100

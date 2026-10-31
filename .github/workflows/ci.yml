@@ -1,0 +1,60 @@
+# EVAL-01 PR 1: deterministic CI. No secrets, no model credentials, read-only token.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.job }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Core: no optional extras; LongHorizon tests must skip exactly per inventory.
+          - job: core
+            extras: --extra dev
+          # LongHorizon: the pinned integration must install and every test must run.
+          - job: longhorizon
+            extras: --extra dev --extra longhorizon
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.6"
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked ${{ matrix.extras }}
+      - name: Require the pinned LongHorizon integration
+        if: matrix.job == 'longhorizon'
+        run: uv run --no-sync python -c "import lh_harness"
+      - name: Record environment manifest
+        run: |
+          mkdir -p ci-artifacts
+          uv run --no-sync python scripts/ci_env_manifest.py ${{ matrix.job }} ci-artifacts/environment.json
+      - name: Run tests
+        run: uv run --no-sync pytest -q -rsx --junitxml=ci-artifacts/junit.xml
+      - name: Check results against the expected-skip inventory
+        if: ${{ !cancelled() }}
+        run: uv run --no-sync python scripts/ci_check_junit.py ${{ matrix.job }} ci-artifacts/junit.xml ci-artifacts/summary.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: ci-${{ matrix.job }}-${{ github.sha }}
+          path: ci-artifacts/
+          retention-days: 30

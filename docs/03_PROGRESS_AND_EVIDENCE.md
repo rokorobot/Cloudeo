@@ -1746,3 +1746,42 @@ Counts with the extra, per commit:
 Follow-up, not done: report results only from an environment synced with
 `uv sync --extra dev --extra longhorizon`, or make the gate fail on
 module-level skips. That is an owner decision.
+
+---
+
+## 2026-10-31 — EVAL-01 PR 1: baseline record and deterministic CI
+
+Plan: `docs/EVAL-01_PLAN.md`. Record: `docs/EVAL-01_BASELINE.md`.
+
+Added `.github/workflows/ci.yml` with `core` and `longhorizon` jobs (no
+secrets), an expected-skip inventory, a JUnit checker, an environment
+manifest, and `xfail_strict = true`. No runtime code change.
+
+Observed in a clean clone (Python 3.12, `uv sync --locked`):
+
+```text
+main + PR 1   core          319 passed, 7 skipped (inventory)
+main + PR 1   longhorizon   566 passed
+7f88855       core          548 passed, 8 skipped, 13 xfailed
+7f88855       longhorizon   800 passed, 13 xfailed
+```
+
+Negative controls: a core report checked as `longhorizon` fails (7 unexpected
+skips); a seeded passing xfail fails; the V2 tip fails the `core` inventory on
+`test_orchestration_kernel_outcome` until that entry is added at integration.
+
+Pending decision: canonical EVAL-01 baseline commit (recommended `7f88855`).
+
+---
+
+## 2026-10-31 — V2 control chain integrated into `main`; EVAL-01 baseline accepted
+
+The owner accepted the V2 chain (`647eb9a`..`7f88855`, ADR-030 to ADR-035
+slices 1–3) for integration and chose its integration commit as the EVAL-01
+canonical baseline. `main` (with EVAL-01 PR 1) was merged into the chain; the
+only conflict was this append-only log. `core` inventory gains
+`::tests.test_orchestration_kernel_outcome`.
+
+The earlier follow-up "make the gate fail on module-level skips" is closed by
+the EVAL-01 CI inventory check. The 13 V2C deferred obligations remain strict
+xfails and are tracked in `docs/EVAL-01_BASELINE.md`.
