@@ -1,0 +1,13 @@
+{
+  "_comment": "EVAL-01 PR 1 expected-skip inventory. Each CI job fails if its skipped set differs from this list (an unexpected skip or a stale entry). Entries are '<classname>::<name>' from the pytest JUnit report.",
+  "core": [
+    "::tests.test_longhorizon_adapter",
+    "::tests.test_longhorizon_audit_result",
+    "::tests.test_longhorizon_manager_integration",
+    "::tests.test_longhorizon_promotion_gate",
+    "::tests.test_longhorizon_workspace_auditor",
+    "::tests.test_longhorizon_workspace_executor",
+    "tests.test_uhp_workspace_bridge::test_base_longhorizon_adapter_still_has_no_workspace_sync"
+  ],
+  "longhorizon": []
+}
