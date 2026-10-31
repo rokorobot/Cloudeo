@@ -88,11 +88,11 @@ are assigned as cases are written (PR 2–4).
 
 ## Follow-ups (non-blocking)
 
-- `ruff check .` reports 15 pre-existing errors on `main`; lint is not a
-  required CI check until they are fixed.
+- Lint: fixed 2026-10-31; `ruff check .` now runs in the required `core` job.
 - Required-check names (`ci / core`, `ci / longhorizon`) must be set in branch
   protection for `main`; the workflow alone does not block merges.
-- The plan links `EVAL-02_SCOPE.md`, which is not in the repository yet.
+- `EVAL-02_SCOPE.md` is not in the repository yet; the plan names it without a
+  link until it is added.
 
 ## Rollback
 

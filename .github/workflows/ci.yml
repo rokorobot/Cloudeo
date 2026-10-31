@@ -30,16 +30,19 @@ jobs:
           - job: longhorizon
             extras: --extra dev --extra longhorizon
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10
         with:
           version: "0.13.6"
           python-version: "3.12"
           enable-cache: true
       - name: Install locked dependencies
         run: uv sync --locked ${{ matrix.extras }}
+      - name: Lint
+        if: matrix.job == 'core'
+        run: uv run --no-sync ruff check .
       - name: Require the pinned LongHorizon integration
         if: matrix.job == 'longhorizon'
         run: uv run --no-sync python -c "import lh_harness"
@@ -52,7 +55,7 @@ jobs:
       - name: Check results against the expected-skip inventory
         if: ${{ !cancelled() }}
         run: uv run --no-sync python scripts/ci_check_junit.py ${{ matrix.job }} ci-artifacts/junit.xml ci-artifacts/summary.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: ci-${{ matrix.job }}-${{ github.sha }}

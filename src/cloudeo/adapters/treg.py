@@ -272,7 +272,7 @@ class TregCLIClient(TregClient):
             return await self._run_json(
                 [*self.prefix, "--json", "balance", "--limit", "30"]
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - best effort by design
             # Economics enrichment must not convert a successful provider call
             # into a Cloudeo failure.
             return None
