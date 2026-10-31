@@ -98,3 +98,9 @@ are assigned as cases are written (PR 2–4).
 
 Revert this PR. It adds CI, two scripts, one inventory file, these docs, and
 `xfail_strict = true`; no runtime code changes.
+
+## Live-trial decisions (2026-10-31)
+
+Caps USD 7 per comparison run and USD 20 per rolling week; first comparison
+Claude Opus 5.5 vs GPT 5.6 as the executor; credentials in the GitHub
+`live-eval` environment. Details: [EVAL-01_LIVE.md](EVAL-01_LIVE.md).

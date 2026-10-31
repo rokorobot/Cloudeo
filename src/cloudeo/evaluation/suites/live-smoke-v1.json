@@ -1,0 +1,29 @@
+{
+  "id": "live-smoke-v1",
+  "version": 1,
+  "description": "EVAL-01 PR 5 live smoke: three cheap live cases with deterministic oracles, for paired pilot comparisons.",
+  "cases": [
+    {
+      "case_id": "live-exact-reply",
+      "revision": 1,
+      "case_digest": "7c205eefe02c3619f0c466a91cde9244b9a476979962f331f123925339be394a",
+      "holdout": false
+    },
+    {
+      "case_id": "live-arithmetic",
+      "revision": 1,
+      "case_digest": "358069f23df64634217ebf1d4bb1ebd90b7485b7116230fc588a3630a03319a8",
+      "holdout": false
+    },
+    {
+      "case_id": "live-workspace-edit",
+      "revision": 1,
+      "case_digest": "239a7e052395a2a01690bb32fb32214b44bf8af819f9ff691003e9107401b1d1",
+      "holdout": false
+    }
+  ],
+  "grader_versions": {
+    "outcome": "2",
+    "execution": "2"
+  }
+}

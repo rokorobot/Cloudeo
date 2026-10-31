@@ -1,0 +1,86 @@
+{
+  "id": "gpt-5-6",
+  "description": "GPT 5.6 through Codex (HarnessRouter built-in 'codex'); model id confirmed against the harness model list at run time",
+  "variables": {
+    "executor_harness": "codex",
+    "executor_model": "gpt-5.6",
+    "executor_provider": "openai"
+  },
+  "fixture_overrides": {
+    "live.harness_task": {
+      "work_order": {
+        "roles": {
+          "primary_code_executor": {
+            "profile_id": "gpt-5-6-executor",
+            "version": 1,
+            "permissions": {
+              "workspace": "read_write"
+            },
+            "eligible_roles": [
+              "primary_code_executor"
+            ],
+            "billing_mode": "metered_api",
+            "runtime": {
+              "harness_id": "codex"
+            },
+            "model": {
+              "provider": "openai",
+              "model_id": "gpt-5.6",
+              "family": "gpt",
+              "inference_provider": "openai"
+            },
+            "session": "persistent",
+            "limits": {
+              "max_cost_usd": 0.35
+            }
+          }
+        },
+        "billing_policy": {
+          "allowed_modes": [
+            "subscription_included",
+            "metered_api"
+          ],
+          "max_metered_cost_usd": 0.35
+        }
+      }
+    },
+    "live.workspace_edit": {
+      "work_order": {
+        "roles": {
+          "primary_code_executor": {
+            "profile_id": "gpt-5-6-executor",
+            "version": 1,
+            "permissions": {
+              "workspace": "read_write"
+            },
+            "eligible_roles": [
+              "primary_code_executor"
+            ],
+            "billing_mode": "metered_api",
+            "runtime": {
+              "harness_id": "codex"
+            },
+            "model": {
+              "provider": "openai",
+              "model_id": "gpt-5.6",
+              "family": "gpt",
+              "inference_provider": "openai"
+            },
+            "session": "persistent",
+            "limits": {
+              "max_cost_usd": 0.35
+            }
+          }
+        },
+        "billing_policy": {
+          "allowed_modes": [
+            "subscription_included",
+            "metered_api"
+          ],
+          "max_metered_cost_usd": 0.35
+        }
+      }
+    }
+  },
+  "max_cost_usd_per_trial": 0.35
+}

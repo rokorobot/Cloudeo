@@ -1,0 +1,176 @@
+{
+  "id": "live-arithmetic",
+  "revision": 1,
+  "task": "Live: a small calculation with one correct answer (37 * 43 + 19 = 1610), answered as a bare integer.",
+  "entry_point": "live.harness_task",
+  "fixture": {
+    "work_order": {
+      "objective": "Implement the change.",
+      "accepted_baseline": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "approved_at": "2026-10-31T12:00:00+00:00",
+      "memory_paths": [
+        "docs/architecture"
+      ],
+      "billing_policy": {
+        "allowed_modes": [
+          "subscription_included"
+        ]
+      },
+      "roles": {
+        "primary_code_executor": {
+          "profile_id": "opus-coder",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_write"
+          },
+          "eligible_roles": [
+            "primary_code_executor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "chrn_claude"
+          },
+          "model": {
+            "provider": "anthropic",
+            "model_id": "claude-opus-5",
+            "family": "claude",
+            "inference_provider": "anthropic"
+          },
+          "session": "persistent"
+        },
+        "code_auditor": {
+          "profile_id": "sol-auditor",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "code_auditor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "sol-auditor",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        },
+        "memory_curator": {
+          "profile_id": "memory-curator",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_write"
+          },
+          "eligible_roles": [
+            "memory_curator"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "anthropic",
+            "model_id": "memory-curator",
+            "family": "claude",
+            "inference_provider": "anthropic"
+          },
+          "session": "persistent"
+        },
+        "memory_auditor": {
+          "profile_id": "memory-auditor",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "memory_auditor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "memory-auditor",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        },
+        "final_verifier": {
+          "profile_id": "final-verifier",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "final_verifier"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "final-verifier",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        }
+      }
+    },
+    "expected_output": "1610",
+    "task": {
+      "input": "What is 37 * 43 + 19? Reply with only the integer, nothing else.",
+      "max_step": 2,
+      "timeout_seconds": 180
+    }
+  },
+  "required_capabilities": [
+    "live_uhp",
+    "v2_control"
+  ],
+  "approvals": {
+    "profiles": [
+      "configuration executor"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "outcome.status": "completed",
+    "output.exact_match": true
+  },
+  "forbidden": [
+    {
+      "id": "unreported-fallback",
+      "observation": "outcome.runtime.model_fallback",
+      "equals": true,
+      "max": null,
+      "description": "the runtime fell back to another model"
+    },
+    {
+      "id": "single-task",
+      "observation": "uhp.task_posts",
+      "equals": null,
+      "max": 1,
+      "description": "more than one task was sent"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "cloudeo:dispatch_requested",
+    "uhp:outcome"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "capability",
+  "severity": "minor",
+  "mode": "live"
+}

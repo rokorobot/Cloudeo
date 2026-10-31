@@ -26,7 +26,25 @@ def main(argv: list[str] | None = None) -> int:
     listing.add_argument("--out", type=Path, required=True)
     verify = sub.add_parser("verify", help="regrade stored trials from retained evidence")
     verify.add_argument("--out", type=Path, required=True)
+    compare = sub.add_parser("compare", help="paired comparison of two configurations")
+    compare.add_argument("--suite", required=True)
+    compare.add_argument("--baseline", type=Path, required=True, help="configuration JSON")
+    compare.add_argument("--candidate", type=Path, required=True, help="configuration JSON")
+    compare.add_argument("--out", type=Path, required=True)
+    compare.add_argument("--repetitions", type=int, default=5)
+    compare.add_argument("--seed", type=int, default=20261031)
+    # Owner-approved caps (2026-10-31): USD 7 per run, USD 20 per rolling week.
+    compare.add_argument("--run-cap-usd", type=float, default=7.0)
+    compare.add_argument("--week-cap-usd", type=float, default=20.0)
+    compare.add_argument("--ledger", type=Path, help="spend ledger (default OUT/ledger.jsonl)")
+    compare.add_argument("--require-clean", action="store_true", help="refuse a dirty tree")
+    compare.add_argument(
+        "--estimate-only", action="store_true", help="check the budget, run nothing"
+    )
     args = parser.parse_args(argv)
+
+    if args.command == "compare":
+        return _compare(args)
 
     if args.command == "verify":
         report = verify_store(args.out)
@@ -64,6 +82,49 @@ def main(argv: list[str] | None = None) -> int:
         or (t.verdict == "fail" and t.provenance.partition != "capability")
     ]  # fmt: skip
     return 1 if args.command == "run" and bad else 0
+
+
+def _compare(args) -> int:
+    from datetime import UTC, datetime
+
+    from cloudeo.evaluation.compare import (
+        BudgetExceeded,
+        DirtyCodeRefused,
+        Ledger,
+        estimate,
+        plan,
+        run_comparison,
+    )
+    from cloudeo.evaluation.contracts import EvalConfiguration
+    from cloudeo.evaluation.runner import holdout_dir, load_suite
+
+    baseline = EvalConfiguration.model_validate_json(args.baseline.read_text())
+    candidate = EvalConfiguration.model_validate_json(args.candidate.read_text())
+    ledger = Ledger(args.ledger or args.out / "ledger.jsonl")
+    _, cases = load_suite(args.suite, holdout=holdout_dir())
+    cases = [c for c in cases if c.partition != "holdout"]
+    planned = estimate(plan(cases, args.repetitions, (baseline, candidate), args.seed))
+    week = ledger.spent_this_week(datetime.now(UTC))
+    print(f"plan: {len(cases)} cases x {args.repetitions} reps x 2 configs; reserve "
+          f"${planned:.2f} (run cap ${args.run_cap_usd:.2f}; week ${week:.2f} spent of "
+          f"${args.week_cap_usd:.2f})")  # fmt: skip
+    if args.estimate_only:
+        fits = planned <= args.run_cap_usd and planned <= args.week_cap_usd - week
+        print("fits the budget" if fits else "DOES NOT fit the budget")
+        return 0 if fits else 2
+    try:
+        comparison = asyncio.run(
+            run_comparison(
+                args.suite, baseline, candidate, args.out, repetitions=args.repetitions,
+                run_cap_usd=args.run_cap_usd, week_cap_usd=args.week_cap_usd, ledger=ledger,
+                seed=args.seed, require_clean=args.require_clean,
+            )
+        )  # fmt: skip
+    except (BudgetExceeded, DirtyCodeRefused) as exc:
+        print(f"refused: {exc}")
+        return 2
+    print((args.out / f"comparison-{comparison.run_id}.md").read_text())
+    return 0
 
 
 if __name__ == "__main__":

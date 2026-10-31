@@ -1,0 +1,86 @@
+{
+  "id": "opus-5-5",
+  "description": "Claude Opus 5.5 through Claude Code (HarnessRouter built-in 'claude')",
+  "variables": {
+    "executor_harness": "claude",
+    "executor_model": "claude-opus-5-5",
+    "executor_provider": "anthropic"
+  },
+  "fixture_overrides": {
+    "live.harness_task": {
+      "work_order": {
+        "roles": {
+          "primary_code_executor": {
+            "profile_id": "opus-5-5-executor",
+            "version": 1,
+            "permissions": {
+              "workspace": "read_write"
+            },
+            "eligible_roles": [
+              "primary_code_executor"
+            ],
+            "billing_mode": "metered_api",
+            "runtime": {
+              "harness_id": "claude"
+            },
+            "model": {
+              "provider": "anthropic",
+              "model_id": "claude-opus-5-5",
+              "family": "claude",
+              "inference_provider": "anthropic"
+            },
+            "session": "persistent",
+            "limits": {
+              "max_cost_usd": 0.35
+            }
+          }
+        },
+        "billing_policy": {
+          "allowed_modes": [
+            "subscription_included",
+            "metered_api"
+          ],
+          "max_metered_cost_usd": 0.35
+        }
+      }
+    },
+    "live.workspace_edit": {
+      "work_order": {
+        "roles": {
+          "primary_code_executor": {
+            "profile_id": "opus-5-5-executor",
+            "version": 1,
+            "permissions": {
+              "workspace": "read_write"
+            },
+            "eligible_roles": [
+              "primary_code_executor"
+            ],
+            "billing_mode": "metered_api",
+            "runtime": {
+              "harness_id": "claude"
+            },
+            "model": {
+              "provider": "anthropic",
+              "model_id": "claude-opus-5-5",
+              "family": "claude",
+              "inference_provider": "anthropic"
+            },
+            "session": "persistent",
+            "limits": {
+              "max_cost_usd": 0.35
+            }
+          }
+        },
+        "billing_policy": {
+          "allowed_modes": [
+            "subscription_included",
+            "metered_api"
+          ],
+          "max_metered_cost_usd": 0.35
+        }
+      }
+    }
+  },
+  "max_cost_usd_per_trial": 0.35
+}

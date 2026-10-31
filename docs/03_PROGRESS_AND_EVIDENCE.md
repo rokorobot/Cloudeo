@@ -1994,3 +1994,31 @@ elsewhere.
 
 Existing bridge, executor, auditor and manager tests now pass an
 authorization; their behavior is unchanged.
+
+---
+
+## 2026-10-31 — EVAL-01 PR 5: paired live comparisons under hard budget caps
+
+- `cloudeo.evaluation.compare`: paired comparisons (identical cases and
+  fixtures, seeded random order within each case/repetition pair), budget
+  gate before start and before every trial, a 7-day spend ledger, and
+  `EvalComparison` reports (JSON and Markdown). Unknown cost counts as the
+  trial's full reserve; every attempted trial stays in the report; verdicts
+  are observational until thresholds are approved.
+- `EvalConfiguration`: variables plus per-entry-point fixture overrides.
+  First pair: `opus-5-5` (Claude Code) and `gpt-5-6` (Codex), metered, USD 0.35
+  reserve per trial.
+- Live scenarios `live.harness_task` (through `dispatch_attempt`) and
+  `live.workspace_edit` (through `authorize_executor_attempt` and the bridge);
+  suite `live-smoke-v1`.
+- `.github/workflows/live-eval.yml`: manual, `main` only, protected
+  `live-eval` environment, pinned HarnessRouter image, budget and preflight
+  checks before any spend. See `docs/EVAL-01_LIVE.md`.
+
+Owner decisions: caps USD 7 per run and USD 20 per week; Claude Opus 5.5 vs
+GPT 5.6; keys entered once into GitHub `live-eval` secrets.
+
+Tested offline (fake HarnessRouter): pairing and order, run and weekly caps,
+mid-run stop on overspend, unknown-cost accounting, dirty-tree refusal,
+regrading from retained evidence, both live scenarios end to end. No live run
+has happened yet.
