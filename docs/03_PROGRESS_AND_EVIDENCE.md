@@ -2022,3 +2022,34 @@ Tested offline (fake HarnessRouter): pairing and order, run and weekly caps,
 mid-run stop on overspend, unknown-cost accounting, dirty-tree refusal,
 regrading from retained evidence, both live scenarios end to end. No live run
 has happened yet.
+
+---
+
+## 2026-10-31 — Live trials run inside Cloudroom; first pilot
+
+Owner decision: run live comparisons inside the Cloudroom sandbox. The GitHub
+`live-eval` workflow is removed. Containers cannot run here (no
+`CAP_SYS_ADMIN`), so `scripts/live_eval/hr_native.sh` runs the pinned
+HarnessRouter CE v0.23.7 natively (same source commit, Claude Code 2.1.280,
+Codex 0.154.0, same three processes and environment as the image entrypoint);
+`scripts/live_eval/run_local.sh` runs one comparison with all checks before
+spend. Model ids from the running catalog: `claude-opus-5.5`, `gpt-5.6-sol`
+(owner: the best GPT 5.6 tier).
+
+Pilot (1 repetition, run `db667c2691e5…`, counted USD 2.10 at reserve; the
+runtime reported no currency cost):
+
+| Case | opus-5-5 | gpt-5-6 |
+| --- | --- | --- |
+| live-exact-reply | pass (`CLOUDEO_LIVE_OK`) | runtime failed: `Reconnecting... 1/5` |
+| live-arithmetic | pass (`1610`) | runtime failed |
+| live-workspace-edit | file correct, synced, accepted unchanged; graded unknown (bug below) | runtime failed, sync skipped |
+
+Root cause of every GPT failure: the OpenAI account has no credits
+(`credit_balance_exhausted`, confirmed with a minimal direct API call; the key
+itself is valid and lists `gpt-5.6-sol`). This is infrastructure, not model
+quality; the pilot's verified-rate difference is not a result.
+
+Bug found by the pilot and fixed: the workspace-edit scenario did not record
+`uhp.task_posts`, so a correct edit graded unknown. Both live scenarios now
+count task submissions at the transport.

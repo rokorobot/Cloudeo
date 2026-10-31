@@ -218,6 +218,7 @@ def test_live_workspace_edit_runs_the_bridge_under_control_authorization(tmp_pat
     assert observations["workspace.expected_file_matches"] is True
     assert observations["bridge.sync_status"].endswith("synced")
     assert observations["accepted.unchanged"] is True
+    assert observations["uhp.task_posts"] == 1  # counted at the transport, not assumed
     assert [e.data for e in recorder.events if e.kind == "authorization"] == [{"granted": True}]
     assert router.task_payloads[0]["model"] == "claude-opus-5.5"
 
