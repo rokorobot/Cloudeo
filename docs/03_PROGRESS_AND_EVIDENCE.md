@@ -1839,3 +1839,37 @@ seeded defect is caught by the execution grader.
 Known limits (PR 3 scope): events are recorded at faked boundaries only, with
 no artifact hashes yet; the promotion-gate case fakes the auditor verdict
 rather than running the auditor episode.
+
+---
+
+## 2026-10-31 — EVAL-01 PR 3: evidence integrity and independent grading
+
+- Each completed trial is sealed with `evidence_sha256` over its canonical
+  observations and boundary events. Graders verify it first: a mismatch fails
+  both grades (`evidence_tampered`); no digest or no events is unknown.
+- Cases gain `authorization` (every observed action at an instrumented
+  boundary must use an approved value) and `required_evidence` (boundary
+  events that must be present, otherwise the execution grade is unknown).
+- `expected_state` accepts `{"one_of": [...]}` for valid alternative routes.
+- New boundary events: Treg `treg_tool_id`, run-record rows, Git refs and
+  accepted state after the gate, the control approval decision.
+- `python -m cloudeo.evaluation verify --out DIR` regrades every stored trial
+  from its retained file and reports file/index differences, digest
+  mismatches and changed verdicts.
+- Graders bumped to `outcome` 2 / `execution` 2. New suite `smoke-v2` (case
+  revisions r2). `smoke-v1` is kept unchanged as history and is refused by the
+  current graders rather than regraded.
+
+Observed: `smoke-v2` 5/5 pass with LongHorizon; `verify` reports 0 problems.
+pytest: 823 passed, 13 xfailed (longhorizon); 570 passed, 9 skipped,
+13 xfailed (core; one new LongHorizon-dependent skip added to the inventory).
+
+Exit criteria, as tests: a correct answer reached after an unapproved tool
+call passes the outcome grade and fails the execution grade; forged
+observations fail and are found by `verify`; removed events or digest grade
+unknown; Jev routing to the second approved provider passes; each case's
+graders reject a seeded violation.
+
+Not done (PR 3b): the promotion-gate case still fakes the auditor verdict
+(trace `partial`). Running the real auditor episode needs the fake
+HarnessRouter, which today lives in the test suite.

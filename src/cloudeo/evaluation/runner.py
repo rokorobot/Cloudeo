@@ -14,7 +14,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from cloudeo.evaluation import scenarios
-from cloudeo.evaluation.contracts import EvalCase, EvalSuite, EvalTrial, Provenance
+from cloudeo.evaluation.contracts import (
+    EvalCase,
+    EvalSuite,
+    EvalTrial,
+    Provenance,
+    evidence_digest,
+)
 from cloudeo.evaluation.graders import GRADER_VERSIONS, grade_execution, grade_outcome
 from cloudeo.evaluation.store import TrialStore
 
@@ -134,11 +140,60 @@ async def _run_trial(store, run_id, suite, case, repetition, label, provenance, 
         return
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
-    done(
-        status="completed",
-        observations=observations,
-        events=tuple(recorder.events),
-        trace_completeness=completeness,
-        outcome_grade=grade_outcome(case, observations),
-        execution_grade=grade_execution(case, observations),
+    events = tuple(recorder.events)
+    recorded = trial.model_copy(
+        update={
+            "status": "completed",
+            "observations": observations,
+            "events": events,
+            "trace_completeness": completeness,
+            "evidence_sha256": evidence_digest(observations, events),
+        }
     )
+    # Graded from the recorded evidence, exactly as a later regrade would be.
+    store.finish(
+        recorded.model_copy(
+            update={
+                "finished_at": datetime.now(UTC),
+                "outcome_grade": grade_outcome(case, recorded),
+                "execution_grade": grade_execution(case, recorded),
+            }
+        )
+    )
+
+
+def verify_store(out: Path, data: Path = DATA) -> list[tuple[EvalTrial, list[str]]]:
+    """Regrade every stored trial from its retained evidence file.
+
+    A trial is reported when its file differs from the index, its evidence
+    digest does not match, or regrading gives a different verdict.
+    """
+    store = TrialStore(out)
+    cases = {}
+    report = []
+    for indexed in store.trials():
+        problems = []
+        path = out / "trials" / f"{indexed.trial_id}.json"
+        if indexed.status == "running":
+            continue
+        if not path.is_file():
+            report.append((indexed, ["evidence file missing"]))
+            continue
+        retained = EvalTrial.model_validate_json(path.read_text())
+        if retained != indexed:
+            problems.append("evidence file differs from the index")
+        if retained.status == "completed":
+            key = (retained.suite_id, retained.case_id)
+            if key not in cases:
+                cases.update(
+                    {(retained.suite_id, c.id): c for c in load_suite(retained.suite_id, data)[1]}
+                )
+            case = cases[key]
+            regraded = (grade_outcome(case, retained), grade_execution(case, retained))
+            if regraded != (retained.outcome_grade, retained.execution_grade):
+                problems.append(
+                    "regrade differs: " + "; ".join(r for g in regraded for r in g.reasons)
+                )
+        if problems:
+            report.append((retained, problems))
+    return report

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from cloudeo.evaluation.contracts import EvalCase
-from cloudeo.evaluation.runner import run_suite
+from cloudeo.evaluation.runner import run_suite, verify_store
 from cloudeo.evaluation.store import TrialStore
 
 
@@ -24,8 +24,16 @@ def main(argv: list[str] | None = None) -> int:
     digest.add_argument("case_file", type=Path)
     listing = sub.add_parser("list", help="list recorded trials")
     listing.add_argument("--out", type=Path, required=True)
+    verify = sub.add_parser("verify", help="regrade stored trials from retained evidence")
+    verify.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
 
+    if args.command == "verify":
+        report = verify_store(args.out)
+        for trial, problems in report:
+            print(f"{trial.trial_id} {trial.case_id}: {'; '.join(problems)}")
+        print(f"{len(report)} trial(s) with problems")
+        return 1 if report else 0
     if args.command == "digest":
         print(EvalCase.model_validate_json(args.case_file.read_text()).digest)
         return 0

@@ -55,6 +55,16 @@ class Forbidden(_Frozen):
         return self
 
 
+class AuthorizationRule(_Frozen):
+    """Every event from `actor` of `kind` must carry `field` with an approved value."""
+
+    id: str = Identifier
+    actor: str
+    kind: str
+    field: str
+    allowed: tuple[Any, ...]
+
+
 class EvalCase(_Frozen):
     id: str = Identifier
     revision: int = Field(ge=1)
@@ -66,10 +76,15 @@ class EvalCase(_Frozen):
     # Approved permissions, profiles and billing the scenario may use.
     approvals: dict[str, Any] = Field(default_factory=dict)
     budgets: dict[str, Any] = Field(default_factory=dict)
-    # Observation key -> required value. Missing observations grade unknown.
+    # Observation key -> required value, or {"one_of": [...]} when several
+    # outcomes are valid (alternative routes). Missing observations grade unknown.
     expected_state: dict[str, Any]
     forbidden: tuple[Forbidden, ...] = ()
-    graders: tuple[str, ...] = ("outcome-v1", "execution-v1")
+    authorization: tuple[AuthorizationRule, ...] = ()
+    # "actor:kind" events that must be present; without them the side-effect
+    # boundary was not observed and the execution grade cannot pass.
+    required_evidence: tuple[str, ...] = ()
+    graders: tuple[str, ...] = ("outcome", "execution")
     partition: Partition
     severity: Severity
     mode: Literal["deterministic", "live", "both"] = "deterministic"
@@ -142,6 +157,12 @@ class EvidenceEvent(_Frozen):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+def evidence_digest(observations: dict[str, Any], events: tuple[EvidenceEvent, ...]) -> str:
+    return canonical_sha256(
+        {"observations": observations, "events": [e.model_dump(mode="json") for e in events]}
+    )
+
+
 class EvalTrial(_Frozen):
     trial_id: str
     run_id: str
@@ -156,6 +177,8 @@ class EvalTrial(_Frozen):
     provenance: Provenance
     observations: dict[str, Any] = Field(default_factory=dict)
     events: tuple[EvidenceEvent, ...] = ()
+    # SHA-256 over the canonical observations and events, fixed when recorded.
+    evidence_sha256: str | None = None
     # "complete" only when every surface the case grades was instrumented.
     trace_completeness: Literal["complete", "partial", "unavailable"] = "unavailable"
     outcome_grade: EvalGrade | None = None

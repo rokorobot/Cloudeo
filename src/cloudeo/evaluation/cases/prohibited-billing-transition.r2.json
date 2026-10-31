@@ -1,0 +1,99 @@
+{
+  "id": "prohibited-billing-transition",
+  "revision": 2,
+  "task": "A subscription executor bound with a metered fallback, without allow_metered_fallback, is refused at approval; a runtime reporting metered use is refused.",
+  "entry_point": "control.billing_approval",
+  "fixture": {
+    "primary": {
+      "profile_id": "opus-coder",
+      "version": 1,
+      "permissions": {
+        "workspace": "read_write"
+      },
+      "eligible_roles": [
+        "primary_code_executor"
+      ],
+      "billing_mode": "subscription_included",
+      "runtime": {
+        "harness_id": "uhp"
+      },
+      "model": {
+        "provider": "anthropic",
+        "model_id": "opus-coder",
+        "family": "claude",
+        "inference_provider": "anthropic"
+      },
+      "session": "persistent"
+    },
+    "fallback": {
+      "profile_id": "metered-coder",
+      "version": 1,
+      "permissions": {
+        "workspace": "read_write"
+      },
+      "eligible_roles": [
+        "primary_code_executor"
+      ],
+      "billing_mode": "metered_api",
+      "runtime": {
+        "harness_id": "uhp"
+      },
+      "model": {
+        "provider": "anthropic",
+        "model_id": "metered-coder",
+        "family": "claude",
+        "inference_provider": "anthropic"
+      },
+      "session": "persistent",
+      "limits": {
+        "max_cost_usd": 5
+      }
+    },
+    "billing_policy": {
+      "allowed_modes": [
+        "subscription_included",
+        "metered_api"
+      ],
+      "allow_metered_fallback": false,
+      "max_metered_cost_usd": 10
+    },
+    "approved_at": "2026-10-31T12:00:00+00:00"
+  },
+  "required_capabilities": [
+    "v2_control"
+  ],
+  "approvals": {
+    "billing_modes": [
+      "subscription_included",
+      "metered_api"
+    ],
+    "metered_fallback": false
+  },
+  "budgets": {},
+  "expected_state": {
+    "approval.refused": true,
+    "approval.refusal_rule": "metered_fallback_not_approved",
+    "billing.observed_metered_api": "refused",
+    "billing.observed_unreported": "unverified"
+  },
+  "forbidden": [
+    {
+      "id": "unapproved-profile-saved",
+      "observation": "store.project_profile_saved",
+      "equals": true,
+      "max": null,
+      "description": "a project profile with an unapproved metered fallback was stored"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "control:approval"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "critical",
+  "mode": "deterministic"
+}
