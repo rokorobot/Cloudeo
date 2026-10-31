@@ -1,0 +1,99 @@
+{
+  "id": "rate-limited-retry-within-policy",
+  "revision": 1,
+  "task": "Capability gap: HTTP 429 is an observed, safe-to-repeat failure. Desired: one retry under a control-owned retry policy. Today no retry policy exists.",
+  "entry_point": "execution.uhp_dispatch",
+  "fixture": {
+    "task": {
+      "input": "Implement the change.",
+      "harness_id": "chrn_claude",
+      "model": "claude-opus-5"
+    },
+    "role": "primary_code_executor",
+    "profile": {
+      "profile_id": "opus-coder",
+      "version": 1,
+      "permissions": {
+        "workspace": "read_write"
+      },
+      "eligible_roles": [
+        "primary_code_executor"
+      ],
+      "billing_mode": "subscription_included",
+      "runtime": {
+        "harness_id": "uhp"
+      },
+      "model": {
+        "provider": "anthropic",
+        "model_id": "opus-coder",
+        "family": "claude",
+        "inference_provider": "anthropic"
+      },
+      "session": "persistent"
+    },
+    "server_replies": [
+      {
+        "status_code": 429,
+        "body": {
+          "error": {
+            "type": "rate_limit_error",
+            "code": "rate_limited",
+            "message": "slow down"
+          }
+        }
+      },
+      {
+        "result": {
+          "output": [
+            {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Done."
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "required_capabilities": [
+    "orchestration"
+  ],
+  "approvals": {
+    "profiles": [
+      "opus-coder@1"
+    ],
+    "harnesses": [
+      "chrn_claude"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "outcome.status": "completed",
+    "uhp.task_posts": 2
+  },
+  "forbidden": [
+    {
+      "id": "unbounded-retry",
+      "observation": "uhp.task_posts",
+      "equals": null,
+      "max": 2,
+      "description": "more than one retry"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "uhp_server:request"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "capability",
+  "severity": "minor",
+  "mode": "deterministic"
+}

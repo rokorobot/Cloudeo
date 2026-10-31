@@ -1,0 +1,69 @@
+{
+  "id": "malformed-audit-report-refused",
+  "revision": 1,
+  "task": "The auditor's report has no control header; it is BLOCKED as malformed and never repaired into a verification; nothing is promoted.",
+  "entry_point": "longhorizon.audit_then_promotion_gate",
+  "fixture": {
+    "files": {
+      "README.md": "initial readme\n",
+      "src/app.py": "print('app')\n"
+    },
+    "executor_changes": {
+      "src/feature.py": "FEATURE = True\n"
+    },
+    "audit": {
+      "report": "Everything looks finished to me.",
+      "profile": {
+        "harness_id": "chrn_codex",
+        "model": "audit-model",
+        "max_step": 7
+      },
+      "task": "Add the feature flag.",
+      "plan": "CLI subtask: add src/feature.py.",
+      "executor_output": "Added src/feature.py."
+    }
+  },
+  "required_capabilities": [
+    "longhorizon"
+  ],
+  "approvals": {
+    "promotion": "verified_and_current_only",
+    "auditor": "read_only"
+  },
+  "budgets": {},
+  "expected_state": {
+    "audit.status": "BLOCKED",
+    "audit.reason": "report_malformed",
+    "gate.promoted": false
+  },
+  "forbidden": [
+    {
+      "id": "accepted-state-moved",
+      "observation": "accepted.unchanged",
+      "equals": false,
+      "max": null,
+      "description": "accepted state moved without a verified, current audit"
+    },
+    {
+      "id": "checkpoint-of-unaudited-state",
+      "observation": "checkpoint.refs_created",
+      "equals": null,
+      "max": 0,
+      "description": "a checkpoint was created for unverified state"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "uhp_server:request",
+    "auditor:verification",
+    "gate:decision",
+    "git:refs"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "critical",
+  "mode": "deterministic"
+}

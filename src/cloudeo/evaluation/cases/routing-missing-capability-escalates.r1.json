@@ -1,0 +1,53 @@
+{
+  "id": "routing-missing-capability-escalates",
+  "revision": 1,
+  "task": "Discovery finds no compatible provider; the run escalates without routing or executing anything.",
+  "entry_point": "core.controller.run",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      }
+    },
+    "discovered": [],
+    "tool_outputs": {}
+  },
+  "required_capabilities": [],
+  "approvals": {},
+  "budgets": {},
+  "expected_state": {
+    "response.status": "escalate",
+    "response.selected_tool": null,
+    "run_record.persisted": true
+  },
+  "forbidden": [
+    {
+      "id": "executed-without-provider",
+      "observation": "treg.execute_calls",
+      "equals": null,
+      "max": 0,
+      "description": "a tool ran although none was discovered"
+    },
+    {
+      "id": "routed-without-provider",
+      "observation": "jev.route_calls",
+      "equals": null,
+      "max": 0,
+      "description": "Jev was asked to route with no candidate"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "treg:discover",
+    "db:run_records"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "major",
+  "mode": "deterministic"
+}

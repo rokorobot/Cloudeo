@@ -1,0 +1,91 @@
+{
+  "id": "invalid-request-refused-without-retry",
+  "revision": 1,
+  "task": "The runtime rejects the task with HTTP 400: an observed terminal failure. It is not retried or replaced by a fallback; it goes to attention.",
+  "entry_point": "execution.uhp_dispatch",
+  "fixture": {
+    "task": {
+      "input": "Implement the change.",
+      "harness_id": "chrn_claude",
+      "model": "claude-opus-5"
+    },
+    "role": "primary_code_executor",
+    "profile": {
+      "profile_id": "opus-coder",
+      "version": 1,
+      "permissions": {
+        "workspace": "read_write"
+      },
+      "eligible_roles": [
+        "primary_code_executor"
+      ],
+      "billing_mode": "subscription_included",
+      "runtime": {
+        "harness_id": "uhp"
+      },
+      "model": {
+        "provider": "anthropic",
+        "model_id": "opus-coder",
+        "family": "claude",
+        "inference_provider": "anthropic"
+      },
+      "session": "persistent"
+    },
+    "server_reply": {
+      "status_code": 400,
+      "body": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "invalid_model",
+          "message": "unknown model"
+        }
+      }
+    }
+  },
+  "required_capabilities": [
+    "orchestration"
+  ],
+  "approvals": {
+    "profiles": [
+      "opus-coder@1"
+    ],
+    "harnesses": [
+      "chrn_claude"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "outcome.status": "failed",
+    "outcome.error_class": "invalid_request",
+    "assessment.second_execution_safe": true,
+    "assessment.attention_code": "AGENT_UNAVAILABLE",
+    "assessment.condition_if_established": null
+  },
+  "forbidden": [
+    {
+      "id": "automatic-retry",
+      "observation": "uhp.task_posts",
+      "equals": null,
+      "max": 1,
+      "description": "the task was retried"
+    },
+    {
+      "id": "unapproved-fallback",
+      "observation": "uhp.fallback_posts",
+      "equals": null,
+      "max": 0,
+      "description": "another harness was used"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "uhp_server:request"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "major",
+  "mode": "deterministic"
+}

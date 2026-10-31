@@ -1898,3 +1898,36 @@ from the auditor path, not from the fixture.
 
 pytest: 825 passed, 13 xfailed (longhorizon); 571 passed, 10 skipped,
 13 xfailed (core; one more LongHorizon-dependent skip in the inventory).
+
+---
+
+## 2026-10-31 — EVAL-01 PR 4: corpus v1 (26 cases) and holdout plumbing
+
+Suite `corpus-v1`: 18 regression and 8 capability cases across the plan's
+eight families; see `docs/EVAL-01_CORPUS.md` for the coverage table, the
+capability gaps measured and the holdout process.
+
+Scenario extensions: Treg failures, discovery results and a fixed Jev route as
+fixture data; multi-reply UHP servers with success results; promotion-gate
+variants (stale candidate, HEAD moved, valid promotion, missing audit evidence,
+auditor remote writes, malformed report, ignored local secret).
+
+Holdout plumbing: suite entries may be `holdout: true` (ID, revision, digest
+only); content loads only from `CLOUDEO_EVAL_HOLDOUT_DIR`, its trials are
+stored there, and runs report aggregate counts. Holdout content inside the
+repository is refused. Only regression results set the run's exit code.
+
+Observed (longhorizon env): regression 18/18 pass; capability 0/8 pass, each
+failing only on its named gap. `smoke-v2` and `smoke-v3` still pass.
+pytest: 833 passed, 13 xfailed (longhorizon); 579 passed, 10 skipped,
+13 xfailed (core); inventories unchanged.
+
+Fixture bugs found while deriving oracles: the fake UHP server omitted the
+`UHP-Version` header (identity cases were measuring a protocol error), and the
+stale-candidate case counted another candidate's checkpoint. Both fixed.
+
+Intentional policy defect (unknown runtime state treated as safe to re-run) is
+caught by `uhp-unknown-no-unsafe-retry` and fails the run.
+
+Open: no holdout cases yet (independent author); oracle review by an
+independent reviewer before merge.

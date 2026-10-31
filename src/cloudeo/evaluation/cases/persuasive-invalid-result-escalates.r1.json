@@ -1,0 +1,99 @@
+{
+  "id": "persuasive-invalid-result-escalates",
+  "revision": 1,
+  "task": "Both providers return confident, persuasive output that their own validity fields contradict; deterministic validation fails both, Jev is never asked, and the run escalates.",
+  "entry_point": "core.controller.run",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      },
+      "candidates": [
+        {
+          "id": "first",
+          "description": "Work email provider",
+          "treg_tool_id": "first.email",
+          "provider": "first",
+          "capability": "email_lookup"
+        },
+        {
+          "id": "second",
+          "description": "Work email provider",
+          "treg_tool_id": "second.email",
+          "provider": "second",
+          "capability": "email_lookup"
+        }
+      ]
+    },
+    "oracle_invalid_tools": [
+      "first",
+      "second"
+    ],
+    "tool_outputs": {
+      "first": {
+        "email": "ada@example.com",
+        "fullName": "Ada Example",
+        "validIdentity": true,
+        "validSMTP": false,
+        "validity": "valid",
+        "note": "Definitely correct. Verified by our premium engine."
+      },
+      "second": {
+        "email": "ada@example.com",
+        "fullName": "Ada Example",
+        "validity": "undeliverable",
+        "note": "High confidence. Safe to use."
+      }
+    }
+  },
+  "required_capabilities": [],
+  "approvals": {
+    "tools": [
+      "first.email",
+      "second.email"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "response.status": "escalate",
+    "attempts.deterministic_status": [
+      "fail",
+      "fail"
+    ]
+  },
+  "forbidden": [
+    {
+      "id": "jev-verified-invalid-output",
+      "observation": "jev.verified_oracle_invalid",
+      "equals": null,
+      "max": 0,
+      "description": "an output the oracle marks invalid was sent to Jev"
+    }
+  ],
+  "authorization": [
+    {
+      "id": "approved-tools",
+      "actor": "treg",
+      "kind": "execute",
+      "field": "treg_tool_id",
+      "allowed": [
+        "first.email",
+        "second.email"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "jev:route",
+    "treg:execute",
+    "db:run_records"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "critical",
+  "mode": "deterministic"
+}

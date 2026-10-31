@@ -1,0 +1,167 @@
+{
+  "id": "corpus-v1",
+  "version": 1,
+  "description": "EVAL-01 corpus v1: 18 regression and 8 capability cases. Holdout cases are added in a later version by an independent author.",
+  "cases": [
+    {
+      "case_id": "direct-tool-verified-success",
+      "revision": 2,
+      "case_digest": "b37d775f737ac2e6a6ba171c4671386988bb3748f5dbbb623bacbad79fda5016",
+      "holdout": false
+    },
+    {
+      "case_id": "deterministic-fail-then-jev-escalation",
+      "revision": 2,
+      "case_digest": "e294ae533f873721542d4b979f871b45afe166a3dd0202c778551de85107bb11",
+      "holdout": false
+    },
+    {
+      "case_id": "uhp-unknown-no-unsafe-retry",
+      "revision": 2,
+      "case_digest": "ab72aa52b38d22ff58906f89203b36e99a11176722557db35846c153176e4d57",
+      "holdout": false
+    },
+    {
+      "case_id": "post-audit-mutation-refused",
+      "revision": 3,
+      "case_digest": "0f7fdd427b5fea50ce6e9275773858f15750a493eaaf003e8855cbd8b8f4f7a1",
+      "holdout": false
+    },
+    {
+      "case_id": "prohibited-billing-transition",
+      "revision": 2,
+      "case_digest": "0165e2f5a1a30dc3067b100099a3ca1b44034cad5e19753ac092ee474e6d1242",
+      "holdout": false
+    },
+    {
+      "case_id": "routing-discovered-typed-match",
+      "revision": 1,
+      "case_digest": "0834cf72b5af418949ba17a21ffd1ba3cf67c99d199e88abcf75bef4485b9116",
+      "holdout": false
+    },
+    {
+      "case_id": "routing-missing-capability-escalates",
+      "revision": 1,
+      "case_digest": "aa5396890d99826d48c21f9ab7f8986426aba12b3835e17bfe3b67374292d46d",
+      "holdout": false
+    },
+    {
+      "case_id": "routing-respects-excluded-provider",
+      "revision": 1,
+      "case_digest": "4b5f84d7bba35a4bea672ab74f8fc40609a7bb98f8f1a57a2c9fcee04a2cf18c",
+      "holdout": false
+    },
+    {
+      "case_id": "persuasive-invalid-result-escalates",
+      "revision": 1,
+      "case_digest": "34a5108c271a00120c1ad98b851eb9541b00f8ec83f549d84aee72f336998d61",
+      "holdout": false
+    },
+    {
+      "case_id": "identity-actual-model-mismatch",
+      "revision": 1,
+      "case_digest": "404480fc8c45685e862c92665f004ffb2310543f35f8df917ad07dd62c8f7f3b",
+      "holdout": false
+    },
+    {
+      "case_id": "identity-reported-model-fallback",
+      "revision": 1,
+      "case_digest": "c7d906631cf1122d5234d08824a0a50ddc7f27d14ff198bcba01980eb9ec5478",
+      "holdout": false
+    },
+    {
+      "case_id": "auditor-remote-write-blocks-promotion",
+      "revision": 1,
+      "case_digest": "e54ce50aa40ef1ca70cab8532a3a0b9ae67f05bd76bb3c49a2fe33b40d06b8ca",
+      "holdout": false
+    },
+    {
+      "case_id": "ignored-secret-never-uploaded",
+      "revision": 1,
+      "case_digest": "33c05117cb45cef8057ea71b31d8154bfb4fb9334e8b2f8d82eb938509627803",
+      "holdout": false
+    },
+    {
+      "case_id": "unapproved-harness-dispatch-refused",
+      "revision": 1,
+      "case_digest": "9cc52696ffb53cdeba71f48277c49dd308df8e56e77d823757bb1e498824fb74",
+      "holdout": false
+    },
+    {
+      "case_id": "secret-in-tool-output-not-persisted",
+      "revision": 1,
+      "case_digest": "d75bb3bbf1d556f06f01b45fe5e719265c4a3a302e1fda8a38b6ad914bc3929a",
+      "holdout": false
+    },
+    {
+      "case_id": "unknown-billing-mode-never-approved",
+      "revision": 1,
+      "case_digest": "cb64423814515e3295788e578f780c551c289b2f38be43097d1b09a19876b4fa",
+      "holdout": false
+    },
+    {
+      "case_id": "tool-cost-over-budget-refused",
+      "revision": 1,
+      "case_digest": "d88c33c2c91836a085a73f16019db6ca7bd239dee235b282cb1d779140585c16",
+      "holdout": false
+    },
+    {
+      "case_id": "missing-audit-evidence-refused",
+      "revision": 1,
+      "case_digest": "0fa32f027e9dd473959c0de0705c47d5139fb3400e0706bfdc592c903bf310cf",
+      "holdout": false
+    },
+    {
+      "case_id": "malformed-audit-report-refused",
+      "revision": 1,
+      "case_digest": "e4835b19c3d18ebe723a7a23ac57fc28b1783247c2e1a0d7b8239440298a93e0",
+      "holdout": false
+    },
+    {
+      "case_id": "stale-candidate-refused",
+      "revision": 1,
+      "case_digest": "b16536c3876ee8fdaa060d81c92e521967e69e735c0eef4ccf6f2df10dd8276b",
+      "holdout": false
+    },
+    {
+      "case_id": "head-changed-after-audit-refused",
+      "revision": 1,
+      "case_digest": "609b8bc94a9599971117a8e7a910ba04741e57f86d772ac07c938f717b74e943",
+      "holdout": false
+    },
+    {
+      "case_id": "verified-candidate-promoted",
+      "revision": 1,
+      "case_digest": "05b2f06db48a3ad518e6088f5ca0f4f57311012160e5d7340a5e3687683e4c12",
+      "holdout": false
+    },
+    {
+      "case_id": "tool-failures-escalate",
+      "revision": 1,
+      "case_digest": "e6e79331993577daf9ee8a7b4c984f35e2616d5b51912c9c056df03312486812",
+      "holdout": false
+    },
+    {
+      "case_id": "invalid-request-refused-without-retry",
+      "revision": 1,
+      "case_digest": "934636fb45bd3186346da00c7b201b41e0218d586dc09ea06cb15e1173dcb991",
+      "holdout": false
+    },
+    {
+      "case_id": "harness-unavailable-uses-approved-fallback",
+      "revision": 1,
+      "case_digest": "42c4216cd8e3a50c5eaf68402530a15895f70653c785d317550bdabaebfd17d9",
+      "holdout": false
+    },
+    {
+      "case_id": "rate-limited-retry-within-policy",
+      "revision": 1,
+      "case_digest": "d1b1710a3f801583b530d6a687fc88e725757aec99329a29324be82f8b5deb67",
+      "holdout": false
+    }
+  ],
+  "grader_versions": {
+    "outcome": "2",
+    "execution": "2"
+  }
+}

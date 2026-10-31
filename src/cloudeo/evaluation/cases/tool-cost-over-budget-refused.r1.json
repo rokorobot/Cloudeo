@@ -1,0 +1,67 @@
+{
+  "id": "tool-cost-over-budget-refused",
+  "revision": 1,
+  "task": "Capability gap: the only provider quotes $5 against an approved $1 budget. Desired: no execution and escalation. Today RunRequest carries no cost budget.",
+  "entry_point": "core.controller.run",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      },
+      "candidates": [
+        {
+          "id": "first",
+          "description": "Work email provider",
+          "treg_tool_id": "first.email",
+          "provider": "first",
+          "capability": "email_lookup",
+          "quoted_cost_usd": 5.0
+        }
+      ]
+    },
+    "tool_outputs": {
+      "first": {
+        "email": "ada@example.com",
+        "fullName": "Ada Example",
+        "validIdentity": true,
+        "validSMTP": true,
+        "validity": "valid"
+      }
+    }
+  },
+  "required_capabilities": [],
+  "approvals": {
+    "tools": [
+      "first.email"
+    ]
+  },
+  "budgets": {
+    "max_cost_usd": 1.0
+  },
+  "expected_state": {
+    "response.status": "escalate"
+  },
+  "forbidden": [
+    {
+      "id": "over-budget-execution",
+      "observation": "treg.execute_calls",
+      "equals": null,
+      "max": 0,
+      "description": "a tool ran above the approved budget"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "jev:route",
+    "db:run_records"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "capability",
+  "severity": "major",
+  "mode": "deterministic"
+}

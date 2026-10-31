@@ -1,0 +1,77 @@
+{
+  "id": "routing-discovered-typed-match",
+  "revision": 1,
+  "task": "No candidates are supplied; Treg discovery returns one typed email_lookup provider, which is routed, executed and deterministically verified.",
+  "entry_point": "core.controller.run",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      }
+    },
+    "discovered": [
+      {
+        "id": "first",
+        "description": "Work email provider",
+        "treg_tool_id": "first.email",
+        "provider": "first",
+        "capability": "email_lookup"
+      }
+    ],
+    "tool_outputs": {
+      "first": {
+        "email": "ada@example.com",
+        "fullName": "Ada Example",
+        "validIdentity": true,
+        "validSMTP": true,
+        "validity": "valid"
+      }
+    }
+  },
+  "required_capabilities": [],
+  "approvals": {
+    "tools": [
+      "first.email"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "response.status": "passed",
+    "response.selected_tool": "first"
+  },
+  "forbidden": [
+    {
+      "id": "single-discovery",
+      "observation": "treg.discover_calls",
+      "equals": null,
+      "max": 1,
+      "description": "discovery ran more than once"
+    }
+  ],
+  "authorization": [
+    {
+      "id": "approved-tools",
+      "actor": "treg",
+      "kind": "execute",
+      "field": "treg_tool_id",
+      "allowed": [
+        "first.email"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "treg:discover",
+    "jev:route",
+    "treg:execute",
+    "db:run_records"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "major",
+  "mode": "deterministic"
+}

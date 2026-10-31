@@ -40,16 +40,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "list":
         trials = TrialStore(args.out).trials()
     else:
-        run_id, trials = asyncio.run(
+        run_id, trials, holdout = asyncio.run(
             run_suite(args.suite, args.out, repetitions=args.repetitions, label=args.label)
         )
         print(f"run {run_id}: {len(trials)} trials -> {args.out}")
+        if holdout["cases"]:
+            # Aggregate counts only; holdout trials stay in holdout storage.
+            print("holdout: " + ", ".join(f"{k} {v}" for k, v in holdout.items()))
     for t in trials:
         reasons = [*(t.outcome_grade.reasons if t.outcome_grade else ()),
                    *(t.execution_grade.reasons if t.execution_grade else ())]  # fmt: skip
         note = t.error or "; ".join(reasons)
         print(f"{t.case_id:44} rep {t.repetition}  {t.status:11} {t.verdict:7} {note}")
-    bad = [t for t in trials if t.status in ("error", "interrupted") or t.verdict == "fail"]
+    for partition in ("regression", "capability"):
+        group = [t for t in trials if t.provenance.partition == partition]
+        if group:
+            counts = {v: sum(t.verdict == v for t in group) for v in ("pass", "fail", "unknown")}
+            print(f"{partition}: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
+    # Capability cases measure open gaps; only regression results gate the exit code.
+    bad = [
+        t for t in trials
+        if t.status in ("error", "interrupted")
+        or (t.verdict == "fail" and t.provenance.partition != "capability")
+    ]  # fmt: skip
     return 1 if args.command == "run" and bad else 0
 
 
