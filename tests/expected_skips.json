@@ -8,6 +8,7 @@
     "::tests.test_longhorizon_workspace_auditor",
     "::tests.test_longhorizon_workspace_executor",
     "::tests.test_orchestration_kernel_outcome",
+    "tests.test_evaluation::test_graders_reject_seeded_violations[post-audit-mutation-refused]",
     "tests.test_uhp_workspace_bridge::test_base_longhorizon_adapter_still_has_no_workspace_sync"
   ],
   "longhorizon": []

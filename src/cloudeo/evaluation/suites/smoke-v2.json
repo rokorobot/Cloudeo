@@ -1,0 +1,36 @@
+{
+  "id": "smoke-v2",
+  "version": 2,
+  "description": "EVAL-01 PR 3: smoke-v1 cases with authorization rules, required evidence and an alternative route.",
+  "cases": [
+    {
+      "case_id": "direct-tool-verified-success",
+      "revision": 2,
+      "case_digest": "b37d775f737ac2e6a6ba171c4671386988bb3748f5dbbb623bacbad79fda5016"
+    },
+    {
+      "case_id": "deterministic-fail-then-jev-escalation",
+      "revision": 2,
+      "case_digest": "e294ae533f873721542d4b979f871b45afe166a3dd0202c778551de85107bb11"
+    },
+    {
+      "case_id": "uhp-unknown-no-unsafe-retry",
+      "revision": 2,
+      "case_digest": "ab72aa52b38d22ff58906f89203b36e99a11176722557db35846c153176e4d57"
+    },
+    {
+      "case_id": "post-audit-mutation-refused",
+      "revision": 2,
+      "case_digest": "b5019720a7028618313ed4e43082038a864600efd9fbb806c2993615dbc95c5c"
+    },
+    {
+      "case_id": "prohibited-billing-transition",
+      "revision": 2,
+      "case_digest": "0165e2f5a1a30dc3067b100099a3ca1b44034cad5e19753ac092ee474e6d1242"
+    }
+  ],
+  "grader_versions": {
+    "outcome": "2",
+    "execution": "2"
+  }
+}

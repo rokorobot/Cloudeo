@@ -65,8 +65,9 @@ async def controller_run(fixture, workdir, record):
 
     class FakeTreg(TregClient):
         async def execute(self, candidate, dry_run=False):
-            record("treg", "execute", tool_id=candidate.id, dry_run=dry_run)
-            return outputs[candidate.id]
+            record("treg", "execute", tool_id=candidate.id, treg_tool_id=candidate.treg_tool_id,
+                   dry_run=dry_run)  # fmt: skip
+            return outputs.get(candidate.id, "TREG_ERROR: no such tool in the fixture")
 
         async def discover(self, request):
             record("treg", "discover")
@@ -90,6 +91,7 @@ async def controller_run(fixture, workdir, record):
         )
         async with database.session() as session:
             rows = (await session.exec(select(RunRecord))).all()
+        record("db", "run_records", rows=[[r.id, r.status] for r in rows])
     finally:
         await database.engine.dispose()
 
@@ -254,6 +256,8 @@ async def promotion_gate(fixture, workdir, record):
         record("gate", "decision", status=result.decision.status, stage=result.stage)
         refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/cloudeo").splitlines()
         accepted_after = broker.accepted_state().accepted_commit
+        record("git", "refs", refs=refs, accepted_before=accepted_before,
+               accepted_after=accepted_after)  # fmt: skip
 
     return {
         "gate.status": result.decision.status,
@@ -312,10 +316,10 @@ async def billing_approval(fixture, workdir, record):
             approved_at=datetime.fromisoformat(fixture["approved_at"]),
         )
         store.save_profile(project)
-        record("control", "approved")
+        record("control", "approval", outcome="approved")
     except ValidationError as exc:
         refusal = str(exc)
-        record("control", "refused", message=refusal)
+        record("control", "approval", outcome="refused", message=refusal)
 
     try:
         store.current_profile("eval")

@@ -1,0 +1,100 @@
+{
+  "id": "uhp-unknown-no-unsafe-retry",
+  "revision": 2,
+  "task": "A UHP task request gets HTTP 503; the final state is unknown, so it is never retried and is routed to attention, not fallback.",
+  "entry_point": "execution.uhp_dispatch_failure",
+  "fixture": {
+    "task": {
+      "input": "Implement the change.",
+      "harness_id": "chrn_claude",
+      "model": "claude-opus-5"
+    },
+    "server_reply": {
+      "status_code": 503,
+      "body": {
+        "error": {
+          "type": "server_error",
+          "code": "unavailable",
+          "message": "upstream unavailable"
+        }
+      }
+    },
+    "role": "primary_code_executor",
+    "profile": {
+      "profile_id": "opus-coder",
+      "version": 1,
+      "permissions": {
+        "workspace": "read_write"
+      },
+      "eligible_roles": [
+        "primary_code_executor"
+      ],
+      "billing_mode": "subscription_included",
+      "runtime": {
+        "harness_id": "uhp"
+      },
+      "model": {
+        "provider": "anthropic",
+        "model_id": "opus-coder",
+        "family": "claude",
+        "inference_provider": "anthropic"
+      },
+      "session": "persistent"
+    }
+  },
+  "required_capabilities": [
+    "orchestration"
+  ],
+  "approvals": {
+    "profiles": [
+      "opus-coder@1"
+    ]
+  },
+  "budgets": {
+    "max_task_requests": 1
+  },
+  "expected_state": {
+    "outcome.status": "unknown",
+    "outcome.error_class": "runtime_unavailable",
+    "outcome.runtime.actual_model": null,
+    "assessment.attention_code": "AGENT_UNAVAILABLE",
+    "assessment.second_execution_safe": false
+  },
+  "forbidden": [
+    {
+      "id": "unsafe-retry",
+      "observation": "uhp.task_posts",
+      "equals": null,
+      "max": 1,
+      "description": "a task with unobserved state was sent again"
+    },
+    {
+      "id": "marked-safe-to-replay",
+      "observation": "assessment.second_execution_safe",
+      "equals": true,
+      "max": null,
+      "description": "an unknown execution was marked safe to re-execute"
+    }
+  ],
+  "authorization": [
+    {
+      "id": "task-submission-only",
+      "actor": "uhp_server",
+      "kind": "request",
+      "field": "path",
+      "allowed": [
+        "/api/harness/v1/responses"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "uhp_server:request"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "critical",
+  "mode": "deterministic"
+}

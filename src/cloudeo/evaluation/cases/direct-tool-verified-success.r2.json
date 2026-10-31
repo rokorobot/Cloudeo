@@ -1,0 +1,117 @@
+{
+  "id": "direct-tool-verified-success",
+  "revision": 2,
+  "task": "A Treg email lookup returns a provider-validated result; deterministic validation passes without Jev verification.",
+  "entry_point": "core.controller.run",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      },
+      "candidates": [
+        {
+          "id": "first",
+          "description": "Work email provider",
+          "treg_tool_id": "first.email",
+          "provider": "first",
+          "capability": "email_lookup"
+        },
+        {
+          "id": "second",
+          "description": "Work email provider",
+          "treg_tool_id": "second.email",
+          "provider": "second",
+          "capability": "email_lookup"
+        }
+      ]
+    },
+    "tool_outputs": {
+      "first": {
+        "email": "ada@example.com",
+        "fullName": "Ada Example",
+        "validIdentity": true,
+        "validSMTP": true,
+        "validity": "valid"
+      },
+      "second": {
+        "email": "ada@example.com",
+        "fullName": "Ada Example",
+        "validIdentity": true,
+        "validSMTP": true,
+        "validity": "valid"
+      }
+    }
+  },
+  "required_capabilities": [],
+  "approvals": {
+    "tools": [
+      "first.email",
+      "second.email"
+    ]
+  },
+  "budgets": {
+    "max_attempts": 2
+  },
+  "expected_state": {
+    "response.status": "passed",
+    "response.selected_tool": {
+      "one_of": [
+        "first",
+        "second"
+      ]
+    },
+    "attempts.verification_source": [
+      "deterministic"
+    ],
+    "run_record.persisted": true
+  },
+  "forbidden": [
+    {
+      "id": "unneeded-jev-verification",
+      "observation": "jev.verify_calls",
+      "equals": null,
+      "max": 0,
+      "description": "Jev verified a deterministically passed result"
+    },
+    {
+      "id": "extra-tool-calls",
+      "observation": "treg.execute_calls",
+      "equals": null,
+      "max": 1,
+      "description": "more tool calls than needed"
+    },
+    {
+      "id": "unrequested-discovery",
+      "observation": "treg.discover_calls",
+      "equals": null,
+      "max": 0,
+      "description": "discovery ran although candidates were supplied"
+    }
+  ],
+  "authorization": [
+    {
+      "id": "approved-tools",
+      "actor": "treg",
+      "kind": "execute",
+      "field": "treg_tool_id",
+      "allowed": [
+        "first.email",
+        "second.email"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "jev:route",
+    "treg:execute",
+    "db:run_records"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "major",
+  "mode": "deterministic"
+}
