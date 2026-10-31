@@ -69,8 +69,10 @@ def validate_tool_output(
             return ValidationOutcome(
                 "fail",
                 (
-                    f"Email domain mismatch: expected {expected_domain}, "
-                    f"got {actual_domain}.",
+                    (
+                        f"Email domain mismatch: expected {expected_domain}, "
+                        f"got {actual_domain}."
+                    ),
                 ),
             )
 
@@ -105,8 +107,10 @@ def validate_tool_output(
             return ValidationOutcome(
                 "fail",
                 (
-                    f"Person mismatch: expected {expected_person!r}, "
-                    f"got {returned_person!r}.",
+                    (
+                        f"Person mismatch: expected {expected_person!r}, "
+                        f"got {returned_person!r}."
+                    ),
                 ),
             )
 

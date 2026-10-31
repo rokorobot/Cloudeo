@@ -13,7 +13,6 @@ from cloudeo.db.models import RunRecord
 from cloudeo.db.session import Database
 from cloudeo.models import DecisionRequest, RunRequest, RunResponse
 
-
 database = Database(settings)
 jev = build_jev_client(settings)
 treg = build_treg_client(settings)

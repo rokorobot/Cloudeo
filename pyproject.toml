@@ -36,6 +36,8 @@ xfail_strict = true
 
 [tool.ruff]
 line-length = 100
+# Tracked snapshots of earlier releases; kept as history, not maintained code.
+extend-exclude = [".cloudeo-backups"]
 
 [build-system]
 requires = ["hatchling"]

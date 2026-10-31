@@ -3,7 +3,7 @@
 Status: proposed; implementation and baseline selection are not yet approved.
 Prepared: 2026-10-31. Scope: Cloudeo only.
 
-Future milestone: [EVAL-02 — Controlled self-improvement scope](EVAL-02_SCOPE.md) covers proposed product changes and isolated experiments. Autonomous deployment is outside EVAL-01; EVAL-02 automatic promotion remains conditional and requires separate authorization.
+Future milestone: EVAL-02 — Controlled self-improvement scope (`EVAL-02_SCOPE.md`, not yet in the repository) covers proposed product changes and isolated experiments. Autonomous deployment is outside EVAL-01; EVAL-02 automatic promotion remains conditional and requires separate authorization.
 
 **1. Development objective**
 
