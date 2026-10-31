@@ -31,7 +31,9 @@ curl -fsS -m 30 -c "$RUN/cookies" -o /dev/null http://127.0.0.1:18810/api/selfho
   -H 'content-type: application/json' -d "{\"username\":\"cloudeo\",\"password\":\"$pw\"}"
 unset pw
 chmod 600 "$RUN/cookies"
-CLOUDEO_EVAL_UHP_COOKIE=$(awk '!/^#/ && NF >= 7 {printf "%s%s=%s", sep, $6, $7; sep="; "}' "$RUN/cookies")
+# curl writes HttpOnly cookies (the session cookie is one) as "#HttpOnly_<domain>" lines.
+CLOUDEO_EVAL_UHP_COOKIE=$(awk '{sub(/^#HttpOnly_/, "")} !/^#/ && NF >= 7 {printf "%s%s=%s", sep, $6, $7; sep="; "}' "$RUN/cookies")
+[ -n "$CLOUDEO_EVAL_UHP_COOKIE" ] || { echo "sign-in returned no session cookie"; exit 1; }
 export CLOUDEO_EVAL_UHP_COOKIE CLOUDEO_EVAL_UHP_URL=http://127.0.0.1:18810/api/harness
 
 uv run --no-sync python scripts/live_eval/preflight.py "$BASE" "$CAND"
