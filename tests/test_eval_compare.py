@@ -135,7 +135,7 @@ def test_the_shipped_live_configurations_fit_the_owner_caps():
     _, cases = load_suite("live-smoke-v1")
     planned = cmp.estimate(cmp.plan(cases, 3, tuple(configs), 1))
     assert planned <= 7.0  # owner cap per run, 2026-10-31
-    assert {c.variables["executor_model"] for c in configs} == {"claude-opus-5-5", "gpt-5.6"}
+    assert {c.variables["executor_model"] for c in configs} == {"claude-opus-5.5", "gpt-5.6-sol"}
     assert all(c.mode == "live" and "live_uhp" in c.required_capabilities for c in cases)
 
 
@@ -219,7 +219,7 @@ def test_live_workspace_edit_runs_the_bridge_under_control_authorization(tmp_pat
     assert observations["bridge.sync_status"].endswith("synced")
     assert observations["accepted.unchanged"] is True
     assert [e.data for e in recorder.events if e.kind == "authorization"] == [{"granted": True}]
-    assert router.task_payloads[0]["model"] == "claude-opus-5-5"
+    assert router.task_payloads[0]["model"] == "claude-opus-5.5"
 
 
 def test_live_comparison_end_to_end_with_the_fake_runtime(tmp_path, monkeypatch):
