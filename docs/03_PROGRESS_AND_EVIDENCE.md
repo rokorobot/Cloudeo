@@ -1937,3 +1937,22 @@ the first revision. All WRONG and most WEAK findings were fixed before merge;
 the rest are stated limits with follow-ups (see `docs/EVAL-01_CORPUS.md`,
 "Oracle review"). After fixes: regression 18/18 pass; capability 6 fail and
 2 unknown (identity cases: no identity policy consumer exists to observe).
+
+---
+
+## 2026-10-31 — EVAL-01 corpus v2: real Treg adapter and control routing
+
+- `src/cloudeo/evaluation/fake_treg.py`: an offline fake of the `treg` command.
+  New scenario `core.controller.run_treg_cli` runs the real `TregCLIClient`
+  over it, so discovery queries, catalog matching, input binding and call
+  construction are exercised.
+- The UHP scenario can route a failure through `route_execution_failure` on an
+  approved, executing WorkOrder built from fixture profiles.
+- Suite `corpus-v2` (27 cases, 19 regression, 8 capability): two discovery
+  cases on the real adapter, two failure cases through control, and the new
+  `rate-limited-not-retried-without-policy` regression case.
+
+Observed: regression 19/19 pass; capability 6 fail, 2 unknown (unchanged).
+Seeded defects caught: dropped enum input in binding; attention never raised.
+One fixture bug found while authoring (a routed anchor still listing the
+removed endpoint) was fixed in the fixture.

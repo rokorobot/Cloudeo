@@ -1,0 +1,221 @@
+{
+  "id": "rate-limited-not-retried-without-policy",
+  "revision": 1,
+  "task": "Counterpart to the retry capability case: with no retry policy approved, an HTTP 429 is an observed failure that is not retried; control raises attention.",
+  "entry_point": "execution.uhp_dispatch",
+  "fixture": {
+    "task": {
+      "input": "Implement the change.",
+      "harness_id": "chrn_claude",
+      "model": "claude-opus-5"
+    },
+    "role": "primary_code_executor",
+    "profile": {
+      "profile_id": "opus-coder",
+      "version": 1,
+      "permissions": {
+        "workspace": "read_write"
+      },
+      "eligible_roles": [
+        "primary_code_executor"
+      ],
+      "billing_mode": "subscription_included",
+      "runtime": {
+        "harness_id": "uhp"
+      },
+      "model": {
+        "provider": "anthropic",
+        "model_id": "opus-coder",
+        "family": "claude",
+        "inference_provider": "anthropic"
+      },
+      "session": "persistent"
+    },
+    "server_reply": {
+      "status_code": 429,
+      "body": {
+        "error": {
+          "type": "rate_limit_error",
+          "code": "rate_limited",
+          "message": "slow down"
+        }
+      }
+    },
+    "work_order": {
+      "objective": "Implement the change.",
+      "accepted_baseline": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "approved_at": "2026-10-31T12:00:00+00:00",
+      "memory_paths": [
+        "docs/architecture"
+      ],
+      "billing_policy": {
+        "allowed_modes": [
+          "subscription_included"
+        ]
+      },
+      "roles": {
+        "primary_code_executor": {
+          "profile_id": "opus-coder",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_write"
+          },
+          "eligible_roles": [
+            "primary_code_executor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "anthropic",
+            "model_id": "opus-coder",
+            "family": "claude",
+            "inference_provider": "anthropic"
+          },
+          "session": "persistent"
+        },
+        "code_auditor": {
+          "profile_id": "sol-auditor",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "code_auditor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "sol-auditor",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        },
+        "memory_curator": {
+          "profile_id": "memory-curator",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_write"
+          },
+          "eligible_roles": [
+            "memory_curator"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "anthropic",
+            "model_id": "memory-curator",
+            "family": "claude",
+            "inference_provider": "anthropic"
+          },
+          "session": "persistent"
+        },
+        "memory_auditor": {
+          "profile_id": "memory-auditor",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "memory_auditor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "memory-auditor",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        },
+        "final_verifier": {
+          "profile_id": "final-verifier",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "final_verifier"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "final-verifier",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        }
+      }
+    }
+  },
+  "required_capabilities": [
+    "orchestration",
+    "v2_control"
+  ],
+  "approvals": {
+    "profiles": [
+      "opus-coder@1"
+    ],
+    "harnesses": [
+      "chrn_claude"
+    ],
+    "retry_policy": null
+  },
+  "budgets": {},
+  "expected_state": {
+    "outcome.status": "failed",
+    "outcome.error_class": "rate_limited",
+    "assessment.second_execution_safe": true,
+    "control.work_order_status": "USER_ATTENTION_REQUIRED",
+    "control.attention_codes": [
+      "AGENT_UNAVAILABLE"
+    ],
+    "control.attempts_unchanged": true
+  },
+  "forbidden": [
+    {
+      "id": "retry-without-policy",
+      "observation": "uhp.task_posts",
+      "equals": null,
+      "max": 1,
+      "description": "the task was retried without an approved policy"
+    }
+  ],
+  "authorization": [
+    {
+      "id": "same-harness",
+      "actor": "uhp_server",
+      "kind": "request",
+      "field": "harness_id",
+      "allowed": [
+        null,
+        "chrn_claude"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "uhp_server:request",
+    "control:transition"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "major",
+  "mode": "deterministic"
+}
