@@ -270,6 +270,120 @@ async def promotion_gate(fixture, workdir, record):
     }, "partial"  # the auditor episode itself is not exercised here
 
 
+@scenario("longhorizon.audit_then_promotion_gate")
+async def audit_then_promotion_gate(fixture, workdir, record):
+    """The real read-only auditor episode, then the gate. Only the model is faked:
+    the offline HarnessRouter returns the fixture's audit report."""
+    import httpx
+    from lh_harness.role_prompts import MANAGER_NEXT_CLI, build_role_auditor_prompt
+    from lh_harness.types import EpisodeBudget
+
+    from cloudeo.bridge.audit import UHPWorkspaceAuditTransport
+    from cloudeo.evaluation.fake_harnessrouter import FakeHarnessRouter
+    from cloudeo.execution.dispatch import ExecutionDispatcher
+    from cloudeo.execution.uhp_backend import UHPHarnessTaskBackend
+    from cloudeo.longhorizon.adapter import HarnessExecutionProfile
+    from cloudeo.longhorizon.audit_result import normalize_auditor_result
+    from cloudeo.longhorizon.promotion_gate import checkpoint_and_promote_verified
+    from cloudeo.longhorizon.workspace_auditor import UHPWorkspaceAuditorAdapter
+    from cloudeo.uhp.client import UHPClient
+    from cloudeo.workspace.git import GitWorkspaceBroker
+
+    class NoEnvironment:
+        """The auditor must not execute in the LongHorizon Environment."""
+
+        async def exec(self, command, timeout=30, tee_path=None):
+            record("environment", "exec", command=command)
+            raise RuntimeError("the auditor must not execute in the Environment")
+
+        async def screenshot(self):
+            raise RuntimeError("screenshot must not be called")
+
+        async def upload(self, local_path, remote_path):
+            raise RuntimeError("upload must not be called")
+
+        async def download(self, remote_path, local_path):
+            raise RuntimeError("download must not be called")
+
+    audit = fixture["audit"]
+    reply = {"id": "resp_audit", "output": [{"type": "message", "role": "assistant", "content": [
+        {"type": "output_text", "text": audit["report"]}]}]}  # fmt: skip
+    router = FakeHarnessRouter(workdir / "harnessrouter", response_overrides=reply)
+
+    def server(request: httpx.Request) -> httpx.Response:
+        path = request.url.path.removeprefix("/api/harness")
+        record("uhp_server", "request", method=request.method, path=path)
+        return router(request)
+
+    with isolated_git(workdir):
+        repo = workdir / "canonical"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        _write(repo, fixture["files"])
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "initial")
+        broker = GitWorkspaceBroker.initialize(
+            repo, "eval", _git(repo, "rev-parse", "HEAD"), workdir / "candidates"
+        )
+        accepted_before = broker.accepted_state().accepted_commit
+        candidate = broker.create_candidate(broker.accepted_state())
+        _write(candidate.local_path, fixture["executor_changes"])
+        record("executor", "write", paths=sorted(fixture["executor_changes"]))
+
+        staging = workdir / "staging"
+        staging.mkdir()
+        client = UHPClient(
+            "http://uhp.eval/api/harness", "eval-not-a-real-key",
+            transport=httpx.MockTransport(server),
+        )  # fmt: skip
+        dispatcher = ExecutionDispatcher(harness_task=UHPHarnessTaskBackend(client))
+        transport = UHPWorkspaceAuditTransport(broker, client, dispatcher, staging_root=staging)
+        auditor = UHPWorkspaceAuditorAdapter(
+            HarnessExecutionProfile(**audit["profile"]), transport, candidate
+        )
+        prompt = build_role_auditor_prompt(
+            task=audit["task"], plan_text=audit["plan"], executor_output=audit["executor_output"],
+            next_step=MANAGER_NEXT_CLI, workspace_path="/workspace",
+        )  # fmt: skip
+        async with client:
+            episode = await auditor.run_episode(
+                prompt, NoEnvironment(), EpisodeBudget(max_duration_seconds=300)
+            )
+        verification = normalize_auditor_result(episode)
+        record("auditor", "verification", status=verification.status, reason=verification.reason,
+               mutation_detected=verification.verifier_workspace_mutation_detected)  # fmt: skip
+
+        _write(candidate.local_path, fixture["post_audit_changes"])
+        record("executor", "write", paths=sorted(fixture["post_audit_changes"]))
+
+        result = checkpoint_and_promote_verified(
+            broker, candidate, verification, message="eval promotion"
+        )
+        record("gate", "decision", status=result.decision.status, stage=result.stage)
+        refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/cloudeo").splitlines()
+        accepted_after = broker.accepted_state().accepted_commit
+        record("git", "refs", refs=refs, accepted_before=accepted_before,
+               accepted_after=accepted_after)  # fmt: skip
+
+    return {
+        "audit.status": verification.status,
+        "audit.task_posts": sum(
+            1
+            for e in record.events
+            if e.actor == "uhp_server"
+            and e.data["method"] == "POST"
+            and e.data["path"] == "/v1/responses"
+        ),
+        "gate.status": result.decision.status,
+        "gate.reason": result.decision.reason,
+        "gate.stage": result.stage,
+        "gate.promoted": result.promoted,
+        "accepted.unchanged": accepted_after == accepted_before,
+        "checkpoint.refs_created": sum("/checkpoints/" in r for r in refs),
+        "environment.exec_calls": record.count("environment", "exec"),
+    }, "complete"
+
+
 # --- Billing policy at project-profile approval and at runtime observation ---
 
 

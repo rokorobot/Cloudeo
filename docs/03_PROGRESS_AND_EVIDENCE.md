@@ -1873,3 +1873,28 @@ graders reject a seeded violation.
 Not done (PR 3b): the promotion-gate case still fakes the auditor verdict
 (trace `partial`). Running the real auditor episode needs the fake
 HarnessRouter, which today lives in the test suite.
+
+---
+
+## 2026-10-31 — EVAL-01 PR 3b: real auditor episode in the promotion-gate case
+
+- The offline fake HarnessRouter (pinned CE 0.23.7 wire behavior) moved from
+  `tests/test_uhp_workspace_bridge.py` and `tests/test_uhp_files.py` into
+  `src/cloudeo/evaluation/fake_harnessrouter.py`, shared by the tests and the
+  evaluation scenarios. No test behavior changed.
+- New scenario `longhorizon.audit_then_promotion_gate`: the real
+  `UHPWorkspaceAuditorAdapter`, audit transport, bridge helper, UHP client and
+  `normalize_auditor_result` run against the fake server; only the model's
+  report is fixture data. Then the post-audit change and the gate.
+- Case `post-audit-mutation-refused` r3 adds `audit.status = VERIFIED`, no
+  Environment use by the auditor, and one audit task. Suite `smoke-v3`
+  replaces only that case; `smoke-v2` stays loadable and unchanged.
+
+Observed: `smoke-v3` 5/5 pass; the promotion-gate trial trace is now
+`complete` (file uploads, one task, session listing, output download,
+verification, gate, refs). A fixture report of `Status: incomplete` makes the
+real auditor return NOT_VERIFIED and the gate refuse, so the verdict comes
+from the auditor path, not from the fixture.
+
+pytest: 825 passed, 13 xfailed (longhorizon); 571 passed, 10 skipped,
+13 xfailed (core; one more LongHorizon-dependent skip in the inventory).
