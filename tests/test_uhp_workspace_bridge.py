@@ -41,6 +41,7 @@ from cloudeo.evaluation.fake_harnessrouter import (  # noqa: F401 - re-exported 
     hr_agent_doc,
     hr_visible,
 )
+from cloudeo.execution.contracts import ExecutorAuthorization
 from cloudeo.execution.dispatch import ExecutionDispatcher
 from cloudeo.execution.uhp_backend import UHPHarnessTaskBackend
 from cloudeo.uhp.client import UHPClient
@@ -186,10 +187,20 @@ def make_bridge(broker, server, staging, limits=None):
     ), client
 
 
+def authorized(candidate, harness_id="chrn_claude", model="claude-opus-5"):
+    """Control's approval for one executor attempt on `candidate` (built here directly;
+    in production only cloudeo.orchestration.dispatch produces it)."""
+    return ExecutorAuthorization(
+        work_order_id="wo-1", block_id="b1", attempt=1, profile_id="opus-coder",
+        profile_version=1, profile_fingerprint="f" * 64, harness_id=harness_id, model=model,
+        workspace_id=candidate.workspace_id, candidate_id=candidate.candidate_id,
+    )  # fmt: skip
+
+
 async def run_bridge(broker, candidate, server, staging, limits=None):
     bridge, client = make_bridge(broker, server, staging, limits)
     async with client:
-        return await bridge.run(candidate, TASK)
+        return await bridge.run(candidate, TASK, authorization=authorized(candidate))
 
 
 def standard_work(ws: Path):

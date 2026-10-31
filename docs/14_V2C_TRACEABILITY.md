@@ -32,7 +32,7 @@ The meta-tests check that:
 | Invariant | Status | In this slice | Deferred obligation |
 | --- | --- | --- | --- |
 | V2C-01 | ENFORCED | The control package imports no broker mutator, bridge, LongHorizon code, or subprocess, and has no promote, checkpoint, reject, or cleanup calls and no ref strings. The checker itself is tested against violating code. | — |
-| V2C-02 | DEFERRED | Supporting: no candidate or blocks before an approved plan; `attach_candidate` and `begin_attempt` state guards. Slice 1 (ADR-037): `cloudeo.orchestration.dispatch.dispatch_attempt` dispatches an executor task only after `begin_attempt` accepts it, with exactly the bound profile's harness and model (`tests/test_orchestration_dispatch.py`). The workspace bridge and LongHorizon executor paths still dispatch without it | Executor dispatch runs only through `begin_attempt` of an approved, executing WorkOrder |
+| V2C-02 | ENFORCED | `cloudeo.orchestration.dispatch` is the only producer of `ExecutorAuthorization` (AST-checked, with a negative test of the checker). It issues one only for an attempt `begin_attempt` recorded on an approved, executing WorkOrder (ADR-037). The workspace bridge and the LongHorizon executor adapter require it and send only its harness, model and candidate; `dispatch_attempt` sends exactly the bound profile's harness and model. Trust boundary as ADR-030: a structural guarantee, not an authenticated token | — |
 | V2C-03 | ENFORCED | Sequential, immutable plan versions; approval only of the latest, newer version; append-only plan history | — |
 | V2C-04 | DEFERRED | Supporting: `PROMOTED` iff a promoted `KernelOutcome`; recording it requires an authoritative final audit | `KernelOutcome` is built from a real `GatedPromotionResult` |
 | V2C-05 | ENFORCED | All blocks `BLOCK_DONE` only permits `FINAL_VERIFICATION`; `PROMOTED` impossible without a promoted kernel outcome | — |
@@ -55,7 +55,7 @@ The meta-tests check that:
 | V2C-22 | DEFERRED | Supporting: drift checks at candidate attach, execution start, final verification, and both resumes; the planned baseline is never rebased | The accepted baseline is observed from the Workspace Broker |
 | V2C-23 | ENFORCED | `BEGIN IMMEDIATE`, an expected-version check, revalidation, `check_evolution`, and a version-conditioned `UPDATE`; conflicts are refused, never resolved by the store | — |
 
-**Totals:** 10 ENFORCED, 13 DEFERRED, 0 NOT_APPLICABLE; 13 strict expected-failure
+**Totals:** 11 ENFORCED, 12 DEFERRED, 0 NOT_APPLICABLE; 12 strict expected-failure
 obligation tests.
 
 ## Trust boundaries and open integration obligations

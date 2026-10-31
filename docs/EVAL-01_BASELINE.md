@@ -72,7 +72,7 @@ are assigned as cases are written (PR 2–4).
 
 | ID | Obligation (deferred) | Initial affected cases |
 | --- | --- | --- |
-| V2C-02 | No workspace write before an approved plan | Authorization: denied write, unapproved dispatch |
+| ~~V2C-02~~ | ENFORCED 2026-10-31 (ADR-037 slice 2); 12 obligations remain | Authorization: unapproved dispatch (regression in corpus-v3) |
 | V2C-04 | PROMOTED only from a real trust-kernel result | Checkpoints: valid promotion |
 | V2C-06 | CODE_APPROVED evidence from deterministic runners and diff checks | Auditor evidence: missing producer evidence |
 | V2C-08 | Project Memory in tracked documents, promoted with code | — |

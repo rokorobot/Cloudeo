@@ -30,7 +30,11 @@ from cloudeo.bridge.models import (
     WorkspaceBridgeResult,
     WorkspaceBridgeTask,
 )
-from cloudeo.execution.contracts import ExecutionOutcome, HarnessTaskExecution
+from cloudeo.execution.contracts import (
+    ExecutionOutcome,
+    ExecutorAuthorization,
+    HarnessTaskExecution,
+)
 from cloudeo.execution.dispatch import ExecutionDispatcher
 from cloudeo.execution.uhp_backend import UHPHarnessTaskBackend
 from cloudeo.uhp.client import UHPClient, UHPError
@@ -71,8 +75,16 @@ def bridge_instructions(run_id: str, task: str) -> str:
     )
 
 
+class BridgeAuthorizationError(ValueError):
+    """The run is not covered by its ExecutorAuthorization; nothing was sent."""
+
+
 class UHPWorkspaceBridge:
-    """Transports a candidate to one fresh UHP session and its delta back."""
+    """Transports a candidate to one fresh UHP session and its delta back.
+
+    Every run writes to the candidate, so it requires control's
+    ExecutorAuthorization for that candidate, harness and model (V2C-02).
+    """
 
     # This bridge moves files both ways. It does not change the base
     # UHPHarnessAgentAdapter, which still has supports_workspace_sync = False.
@@ -95,8 +107,19 @@ class UHPWorkspaceBridge:
         self.staging_root = staging_root
 
     async def run(
-        self, candidate: CandidateWorkspace, task: WorkspaceBridgeTask
+        self,
+        candidate: CandidateWorkspace,
+        task: WorkspaceBridgeTask,
+        *,
+        authorization: ExecutorAuthorization,
     ) -> WorkspaceBridgeResult:
+        # Before anything is uploaded or sent: only what control approved.
+        refusal = authorization.refusal(
+            harness_id=task.harness_id, model=task.model,
+            workspace_id=candidate.workspace_id, candidate_id=candidate.candidate_id,
+        )  # fmt: skip
+        if refusal is not None:
+            raise BridgeAuthorizationError(refusal)
         # Read-only identity check; the broker is never asked to change state.
         inspection = self.broker.inspect_candidate(candidate)
         run_id = new_run_id()

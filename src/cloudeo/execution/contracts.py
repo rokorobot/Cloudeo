@@ -152,3 +152,41 @@ class ExecutionOutcome(BaseModel):
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     runtime: RuntimeIdentity
     native_result: ExecutionResult | UHPTaskResult | None = None
+
+
+class ExecutorAuthorization(BaseModel):
+    """Control's approval of one primary_code_executor attempt (V2C-02, ADR-037).
+
+    Produced only by cloudeo.orchestration.dispatch after machine.begin_attempt
+    recorded the attempt (mechanically checked). Write-capable executor paths
+    (the workspace bridge and its LongHorizon executor adapter) require it and
+    send only its harness and model, to its candidate. It is a structural
+    guarantee, not an authenticated token (ADR-030 trust boundary).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    work_order_id: str = Field(min_length=1)
+    block_id: str = Field(min_length=1)
+    attempt: int = Field(ge=1)
+    profile_id: str = Field(min_length=1)
+    profile_version: int = Field(ge=1)
+    profile_fingerprint: str = Field(min_length=1)
+    harness_id: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1)
+
+    def refusal(
+        self, *, harness_id: str | None, model: str | None, workspace_id: str, candidate_id: str
+    ) -> str | None:
+        """Why this authorization does not cover the request, or None if it does."""
+        for name, requested, approved in (
+            ("harness", harness_id, self.harness_id),
+            ("model", model, self.model),
+            ("workspace", workspace_id, self.workspace_id),
+            ("candidate", candidate_id, self.candidate_id),
+        ):
+            if requested != approved:
+                return f"{name} {requested!r} is not the authorized {approved!r}"
+        return None

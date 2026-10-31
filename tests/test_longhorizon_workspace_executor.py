@@ -24,6 +24,7 @@ from lh_harness.types import EpisodeBudget, EpisodeResult
 from test_uhp_workspace_bridge import (  # noqa: F401 - fixtures are used by name
     FakeHarnessRouter,
     accepted,
+    authorized,
     broker,
     candidate,
     git,
@@ -75,7 +76,9 @@ def env():
 
 async def run_executor(broker, candidate, server, staging, **episode):
     bridge, client = make_bridge(broker, server, staging)
-    executor = UHPWorkspaceExecutorAdapter(PROFILE, bridge, candidate)
+    executor = UHPWorkspaceExecutorAdapter(
+        PROFILE, bridge, candidate, authorization=authorized(candidate)
+    )
     async with client:
         return await executor.run_episode(PROMPT, env(), episode.pop("budget", BUDGET), **episode)
 
@@ -247,7 +250,9 @@ async def test_i_profile_budget_and_fresh_session_per_episode(broker, candidate,
 
     server = FakeHarnessRouter(tmp_path, work=work)
     bridge, client = make_bridge(broker, server, staging)
-    executor = UHPWorkspaceExecutorAdapter(PROFILE, bridge, candidate)
+    executor = UHPWorkspaceExecutorAdapter(
+        PROFILE, bridge, candidate, authorization=authorized(candidate)
+    )
     async with client:
         first = await executor.run_episode(PROMPT, env(), BUDGET)
         second = await executor.run_episode(PROMPT, env(), EpisodeBudget(max_duration_seconds=60))
@@ -344,7 +349,9 @@ def test_k_capability_flags():
 
 def test_executor_conforms_to_agent_adapter(broker, candidate, staging, tmp_path):
     bridge, _ = make_bridge(broker, FakeHarnessRouter(tmp_path), staging)
-    executor = UHPWorkspaceExecutorAdapter(PROFILE, bridge, candidate)
+    executor = UHPWorkspaceExecutorAdapter(
+        PROFILE, bridge, candidate, authorization=authorized(candidate)
+    )
     assert isinstance(executor, AgentAdapter)
     ours = inspect.signature(UHPWorkspaceExecutorAdapter.run_episode).parameters
     assert list(ours) == list(inspect.signature(AgentAdapter.run_episode).parameters)
@@ -368,7 +375,9 @@ def _instances(broker, candidate, staging, tmp_path):
     )
     return {
         UHPHarnessAgentAdapter: base,
-        UHPWorkspaceExecutorAdapter: UHPWorkspaceExecutorAdapter(PROFILE, bridge, candidate),
+        UHPWorkspaceExecutorAdapter: UHPWorkspaceExecutorAdapter(
+            PROFILE, bridge, candidate, authorization=authorized(candidate)
+        ),
     }
 
 
@@ -392,7 +401,9 @@ def test_role_eligibility_fails_closed_for_unknowns(broker, candidate, staging, 
     class Subclass(UHPWorkspaceExecutorAdapter):
         pass
 
-    subclass = Subclass(executor.profile, executor.bridge, executor.candidate)
+    subclass = Subclass(
+        executor.profile, executor.bridge, executor.candidate, authorization=executor.authorization
+    )
     assert eligible_roles(subclass) == frozenset()  # exact type only, no inference
     assert eligible_roles(object()) == frozenset()
     with pytest.raises(RoleEligibilityError, match="Unknown"):
@@ -509,5 +520,22 @@ def test_executor_requires_a_workspace_capable_bridge(broker, candidate, staging
         broker = bridge.broker
 
     with pytest.raises(ValueError, match="does not synchronize"):
-        UHPWorkspaceExecutorAdapter(PROFILE, NoSync(), candidate)
+        UHPWorkspaceExecutorAdapter(
+            PROFILE, NoSync(), candidate, authorization=authorized(candidate)
+        )
     assert os.path.isdir(candidate.local_path)
+
+
+@pytest.mark.negative
+@pytest.mark.parametrize("change", [{"model": "claude-haiku-4"}, {"candidate_id": "other"}])
+def test_the_executor_refuses_an_authorization_for_anything_else(
+    broker, candidate, staging, tmp_path, change
+):
+    bridge, _ = make_bridge(broker, FakeHarnessRouter(tmp_path), staging)
+    with pytest.raises(ValueError, match="not authorized"):
+        UHPWorkspaceExecutorAdapter(
+            PROFILE,
+            bridge,
+            candidate,
+            authorization=authorized(candidate).model_copy(update=change),
+        )

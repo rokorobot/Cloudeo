@@ -3605,3 +3605,28 @@ control fails them.
 unapproved executor task or a different model than approved. Callers that
 use `ExecutionDispatcher` directly still can; slice 2 removes that path for
 executors.
+
+**Amendment (2026-10-31), slice 2 — V2C-02 ENFORCED.** Owner decision: one
+LongHorizon managed run is one control attempt (the block stays RUNNING for
+the whole run; control's block lifecycle is unchanged).
+
+- `ExecutorAuthorization` (in `cloudeo.execution.contracts`, so the bridge
+  can require it without importing orchestration) names the WorkOrder, block,
+  attempt number, exact profile version and fingerprint, harness, model,
+  workspace and candidate.
+- `orchestration.dispatch.authorize_executor_attempt` is its only producer;
+  it issues one only when `begin_attempt` recorded the attempt.
+  `dispatch_attempt` now uses it. An AST check (with a negative test of the
+  checker) fails if any other module under `src/cloudeo` constructs,
+  validates or model-constructs one.
+- The write-capable executor paths require it: `UHPWorkspaceBridge.run`
+  refuses a harness, model, workspace or candidate it does not cover before
+  uploading anything, and `UHPWorkspaceExecutorAdapter` refuses at
+  construction an authorization for another profile or candidate, then runs
+  every episode of the managed run under it.
+- Out of scope, by role: the text-only `UHPHarnessAgentAdapter` roles
+  (manager, final response, format repair) cannot write the workspace, and
+  the read-only auditor transport is covered by V2C-14/V2C-20.
+- Trust boundary unchanged (ADR-030): the guarantee is structural. Code that
+  builds an authorization by hand outside orchestration is caught by the
+  mechanical check and review, not authenticated at runtime.

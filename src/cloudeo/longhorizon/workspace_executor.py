@@ -33,6 +33,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on the install
 from cloudeo.bridge.bridge import UHPWorkspaceBridge
 from cloudeo.bridge.bundle import BridgeInputError
 from cloudeo.bridge.models import WorkspaceBridgeResult, WorkspaceBridgeTask
+from cloudeo.execution.contracts import ExecutorAuthorization
 from cloudeo.longhorizon.adapter import HarnessExecutionProfile, episode_result_from_outcome
 from cloudeo.uhp.client import UHPError
 from cloudeo.workspace.broker import WorkspaceBrokerError
@@ -58,10 +59,20 @@ class UHPWorkspaceExecutorAdapter:
         bridge: UHPWorkspaceBridge,
         candidate: CandidateWorkspace,
         *,
+        authorization: ExecutorAuthorization,
         clock: Callable[[], float] = time.monotonic,
     ):
         if not bridge.supports_workspace_sync:
             raise ValueError("The bridge does not synchronize workspaces.")
+        # One LongHorizon run is one control attempt: every episode runs under
+        # the same authorization, for this profile and candidate only (ADR-037).
+        refusal = authorization.refusal(
+            harness_id=profile.harness_id, model=profile.model,
+            workspace_id=candidate.workspace_id, candidate_id=candidate.candidate_id,
+        )  # fmt: skip
+        if refusal is not None:
+            raise ValueError(f"The executor is not authorized: {refusal}")
+        self.authorization = authorization
         self.profile = profile
         self.bridge = bridge
         self.candidate = candidate
@@ -88,7 +99,7 @@ class UHPWorkspaceExecutorAdapter:
             timeout_seconds=budget.max_duration_seconds,
         )
         try:
-            result = await self.bridge.run(self.candidate, task)
+            result = await self.bridge.run(self.candidate, task, authorization=self.authorization)
         except (WorkspaceBrokerError, BridgeInputError) as exc:
             return self._not_started(started, (CANDIDATE_UNAVAILABLE, str(exc)))
         except UHPError as exc:
