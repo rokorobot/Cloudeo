@@ -102,6 +102,9 @@ class SuiteEntry(_Frozen):
     case_id: str = Identifier
     revision: int = Field(ge=1)
     case_digest: str = Sha256
+    # Holdout content lives in restricted storage outside the repository; the
+    # manifest carries only its ID, revision and digest.
+    holdout: bool = False
 
 
 class EvalSuite(_Frozen):
@@ -144,6 +147,8 @@ class Provenance(_Frozen):
     suite_digest: str
     case_digest: str
     fixture_digest: str
+    partition: Partition | None = None
+    severity: Severity | None = None
     grader_versions: dict[str, str]
     capabilities: dict[str, bool]
 

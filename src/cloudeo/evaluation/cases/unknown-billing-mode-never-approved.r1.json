@@ -1,0 +1,70 @@
+{
+  "id": "unknown-billing-mode-never-approved",
+  "revision": 1,
+  "task": "A profile declaring an unknown billing mode cannot be bound; a runtime reporting an unknown mode is unverified, never conforming.",
+  "entry_point": "control.billing_approval",
+  "fixture": {
+    "primary": {
+      "profile_id": "opus-coder",
+      "version": 1,
+      "permissions": {
+        "workspace": "read_write"
+      },
+      "eligible_roles": [
+        "primary_code_executor"
+      ],
+      "billing_mode": "unknown",
+      "runtime": {
+        "harness_id": "uhp"
+      },
+      "model": {
+        "provider": "anthropic",
+        "model_id": "opus-coder",
+        "family": "claude",
+        "inference_provider": "anthropic"
+      },
+      "session": "persistent"
+    },
+    "billing_policy": {
+      "allowed_modes": [
+        "subscription_included"
+      ]
+    },
+    "approved_at": "2026-10-31T12:00:00+00:00"
+  },
+  "required_capabilities": [
+    "v2_control"
+  ],
+  "approvals": {
+    "billing_modes": [
+      "subscription_included"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "approval.refused": true,
+    "approval.refusal_rule": "billing_mode_not_approved",
+    "billing.observed_unknown": "unverified",
+    "billing.observed_unreported": "unverified"
+  },
+  "forbidden": [
+    {
+      "id": "unapproved-profile-saved",
+      "observation": "store.project_profile_saved",
+      "equals": true,
+      "max": null,
+      "description": "a profile with an unknown billing mode was stored"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "control:approval"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "critical",
+  "mode": "deterministic"
+}

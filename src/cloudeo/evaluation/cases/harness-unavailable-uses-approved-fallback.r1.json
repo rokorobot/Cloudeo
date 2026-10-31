@@ -1,0 +1,126 @@
+{
+  "id": "harness-unavailable-uses-approved-fallback",
+  "revision": 1,
+  "task": "Capability gap (V2C-12): runtime discovery lists only chrn_codex, so the primary chrn_claude is unavailable before any dispatch, and chrn_codex is the approved fallback. Desired: control establishes the outage from that evidence and runs exactly the approved fallback. Today the primary is dispatched and the unknown outcome only goes to attention.",
+  "entry_point": "execution.uhp_dispatch",
+  "fixture": {
+    "task": {
+      "input": "Implement the change.",
+      "harness_id": "chrn_claude",
+      "model": "claude-opus-5"
+    },
+    "role": "primary_code_executor",
+    "profile": {
+      "profile_id": "opus-coder",
+      "version": 1,
+      "permissions": {
+        "workspace": "read_write"
+      },
+      "eligible_roles": [
+        "primary_code_executor"
+      ],
+      "billing_mode": "subscription_included",
+      "runtime": {
+        "harness_id": "uhp"
+      },
+      "model": {
+        "provider": "anthropic",
+        "model_id": "opus-coder",
+        "family": "claude",
+        "inference_provider": "anthropic"
+      },
+      "session": "persistent"
+    },
+    "get_replies": {
+      "/api/harness/v1/harnesses": {
+        "harnesses": [
+          {
+            "id": "chrn_codex",
+            "name": "Codex",
+            "base": "codex"
+          }
+        ]
+      }
+    },
+    "replies_by_harness": {
+      "chrn_claude": {
+        "status_code": 503,
+        "body": {
+          "error": {
+            "type": "server_error",
+            "code": "harness_unavailable",
+            "message": "chrn_claude is not running"
+          }
+        }
+      },
+      "chrn_codex": {
+        "result": {
+          "output": [
+            {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Done."
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "approved_fallback_harness": "chrn_codex"
+  },
+  "required_capabilities": [
+    "orchestration"
+  ],
+  "approvals": {
+    "profiles": [
+      "opus-coder@1"
+    ],
+    "harnesses": [
+      "chrn_claude",
+      "chrn_codex"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "uhp.primary_posts": 0,
+    "uhp.fallback_posts": 1,
+    "outcome.status": "completed",
+    "control.fallback_authorized_by": "runtime_unavailable"
+  },
+  "forbidden": [
+    {
+      "id": "bounded-execution",
+      "observation": "uhp.task_posts",
+      "equals": null,
+      "max": 1,
+      "description": "more than one task"
+    }
+  ],
+  "authorization": [
+    {
+      "id": "approved-harnesses",
+      "actor": "uhp_server",
+      "kind": "request",
+      "field": "harness_id",
+      "allowed": [
+        null,
+        "chrn_claude",
+        "chrn_codex"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "uhp_server:request"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "capability",
+  "severity": "major",
+  "mode": "deterministic"
+}

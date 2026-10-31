@@ -1,0 +1,82 @@
+{
+  "id": "unapproved-harness-dispatch-refused",
+  "revision": 1,
+  "task": "Capability gap (V2C-02): a harness task is dispatched with no approved WorkOrder or plan. Desired: dispatch is refused and no request reaches the runtime. Today the dispatcher sends it.",
+  "entry_point": "execution.uhp_dispatch",
+  "fixture": {
+    "task": {
+      "input": "Implement the change.",
+      "harness_id": "chrn_claude",
+      "model": "claude-opus-5"
+    },
+    "role": "primary_code_executor",
+    "profile": {
+      "profile_id": "opus-coder",
+      "version": 1,
+      "permissions": {
+        "workspace": "read_write"
+      },
+      "eligible_roles": [
+        "primary_code_executor"
+      ],
+      "billing_mode": "subscription_included",
+      "runtime": {
+        "harness_id": "uhp"
+      },
+      "model": {
+        "provider": "anthropic",
+        "model_id": "opus-coder",
+        "family": "claude",
+        "inference_provider": "anthropic"
+      },
+      "session": "persistent"
+    },
+    "server_reply": {
+      "result": {
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "Done."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "required_capabilities": [
+    "orchestration"
+  ],
+  "approvals": {
+    "work_order": null
+  },
+  "budgets": {},
+  "expected_state": {
+    "control.dispatch_decision": "refused",
+    "uhp.task_posts": 0
+  },
+  "forbidden": [
+    {
+      "id": "dispatch-without-approval",
+      "observation": "uhp.task_posts",
+      "equals": null,
+      "max": 0,
+      "description": "a task was dispatched without an approved plan"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "cloudeo:dispatch_requested"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "capability",
+  "severity": "critical",
+  "mode": "deterministic"
+}

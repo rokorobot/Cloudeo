@@ -1,0 +1,99 @@
+{
+  "id": "routing-respects-excluded-provider",
+  "revision": 1,
+  "task": "Capability gap: the project approved only first.email, but the router prefers second. Desired: Cloudeo routes only among approved providers. Today nothing in routing carries a provider allow-list.",
+  "entry_point": "core.controller.run",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      },
+      "candidates": [
+        {
+          "id": "first",
+          "description": "Work email provider",
+          "treg_tool_id": "first.email",
+          "provider": "first",
+          "capability": "email_lookup"
+        },
+        {
+          "id": "second",
+          "description": "Work email provider",
+          "treg_tool_id": "second.email",
+          "provider": "second",
+          "capability": "email_lookup"
+        }
+      ]
+    },
+    "jev_route": {
+      "choice": "second",
+      "confidence": 0.9,
+      "probabilities": {
+        "second": 0.9,
+        "first": 0.1
+      }
+    },
+    "tool_outputs": {
+      "first": {
+        "email": "ada@example.com",
+        "fullName": "Ada Example",
+        "validIdentity": true,
+        "validSMTP": true,
+        "validity": "valid"
+      },
+      "second": {
+        "email": "ada@example.com",
+        "fullName": "Ada Example",
+        "validIdentity": true,
+        "validSMTP": true,
+        "validity": "valid"
+      }
+    }
+  },
+  "required_capabilities": [],
+  "approvals": {
+    "tools": [
+      "first.email"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "response.status": {
+      "one_of": [
+        "passed",
+        "escalate"
+      ]
+    },
+    "response.selected_tool": {
+      "one_of": [
+        "first",
+        null
+      ]
+    },
+    "routing.allow_list_applied": true
+  },
+  "forbidden": [],
+  "authorization": [
+    {
+      "id": "approved-tools",
+      "actor": "treg",
+      "kind": "execute",
+      "field": "treg_tool_id",
+      "allowed": [
+        "first.email"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "db:run_records"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "capability",
+  "severity": "major",
+  "mode": "deterministic"
+}

@@ -1,0 +1,96 @@
+{
+  "id": "tool-failures-escalate",
+  "revision": 1,
+  "task": "Every provider call fails in Treg; failures are deterministic fails, never sent to Jev, and the run escalates within its attempt budget.",
+  "entry_point": "core.controller.run",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      },
+      "candidates": [
+        {
+          "id": "first",
+          "description": "Work email provider",
+          "treg_tool_id": "first.email",
+          "provider": "first",
+          "capability": "email_lookup"
+        },
+        {
+          "id": "second",
+          "description": "Work email provider",
+          "treg_tool_id": "second.email",
+          "provider": "second",
+          "capability": "email_lookup"
+        }
+      ]
+    },
+    "tool_outputs": {
+      "first": {
+        "raise": "first unavailable"
+      },
+      "second": {
+        "raise": "second unavailable"
+      }
+    }
+  },
+  "required_capabilities": [],
+  "approvals": {
+    "tools": [
+      "first.email",
+      "second.email"
+    ]
+  },
+  "budgets": {
+    "max_attempts": 2
+  },
+  "expected_state": {
+    "response.status": "escalate",
+    "attempts.deterministic_status": [
+      "fail",
+      "fail"
+    ]
+  },
+  "forbidden": [
+    {
+      "id": "jev-verified-tool-error",
+      "observation": "jev.verify_calls",
+      "equals": null,
+      "max": 0,
+      "description": "a tool error was sent to Jev for verification"
+    },
+    {
+      "id": "attempt-budget",
+      "observation": "treg.execute_calls",
+      "equals": null,
+      "max": 2,
+      "description": "attempt budget exceeded"
+    }
+  ],
+  "authorization": [
+    {
+      "id": "approved-tools",
+      "actor": "treg",
+      "kind": "execute",
+      "field": "treg_tool_id",
+      "allowed": [
+        "first.email",
+        "second.email"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "jev:route",
+    "treg:execute",
+    "db:run_records"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "major",
+  "mode": "deterministic"
+}

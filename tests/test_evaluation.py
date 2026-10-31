@@ -42,8 +42,9 @@ SUITE = "smoke-v3"
 GATED = "post-audit-mutation-refused"  # needs the 'longhorizon' extra
 
 
-def run(out, **kwargs):
-    return asyncio.run(run_suite(SUITE, out, **kwargs))
+def run(out, suite=None, **kwargs):
+    """(run_id, trials); holdout counts are tested separately."""
+    return asyncio.run(run_suite(suite or SUITE, out, **kwargs))[:2]
 
 
 def by_case(trials):
@@ -376,3 +377,134 @@ def test_cli_run_and_list(tmp_path, capsys):
     path = DATA / "cases" / "direct-tool-verified-success.r2.json"
     assert cli(["digest", str(path)]) == 0
     assert capsys.readouterr().out.strip() == EvalCase.model_validate_json(path.read_text()).digest
+
+
+# --- PR 4: corpus v1 and holdout plumbing ---
+
+CORPUS = "corpus-v1"
+UNOBSERVABLE = {"identity-actual-model-mismatch", "identity-reported-model-fallback"}
+NEEDS_LH = {c.id for c in load_suite(CORPUS)[1] if "longhorizon" in c.required_capabilities}
+
+
+def test_corpus_composition():
+    suite, cases = load_suite(CORPUS)
+    partitions = [c.partition for c in cases]
+    assert len(cases) == 26 and len({c.id for c in cases}) == 26
+    assert (partitions.count("regression"), partitions.count("capability")) == (18, 8)
+    assert not any(e.holdout for e in suite.cases)  # added later by an independent author
+    # Every case has an oracle of its own; critical cases are in the regression gate.
+    assert all(c.expected_state for c in cases)
+    assert any(c.severity == "critical" and c.partition == "regression" for c in cases)
+
+
+def test_corpus_regression_passes_and_capability_gaps_stay_visible(tmp_path):
+    _, trials = run(tmp_path, suite=CORPUS)
+    has_lh = capabilities()["longhorizon"]
+    for t in trials:
+        if t.case_id in NEEDS_LH and not has_lh:
+            assert t.status == "unsupported"
+        elif t.provenance.partition == "regression":
+            assert t.verdict == "pass", (t.case_id, t.outcome_grade, t.execution_grade)
+        else:
+            # A capability case that starts passing should be promoted to regression
+            # in a new corpus version, like a strict xfail. Cases whose decision has
+            # no Cloudeo consumer yet stay unknown, never pass.
+            expected = "unknown" if t.case_id in UNOBSERVABLE else "fail"
+            assert t.status == "completed" and t.verdict == expected, t.case_id
+
+
+def test_capability_failures_do_not_fail_the_run_but_regressions_do(tmp_path, monkeypatch, capsys):
+    assert cli(["run", "--suite", CORPUS, "--out", str(tmp_path / "a")]) == 0
+    out = capsys.readouterr().out
+    assert "regression: pass" in out and "capability: pass 0, fail 6, unknown 2" in out
+    # An intentional policy defect: unknown runtime state treated as safe to re-run.
+    monkeypatch.setattr(
+        "cloudeo.orchestration.execution_failure.TERMINAL_OBSERVED",
+        frozenset({"failed", "cancelled", "unknown"}),
+    )
+    assert cli(["run", "--suite", CORPUS, "--out", str(tmp_path / "b")]) == 1
+    trial = by_case(TrialStore(tmp_path / "b").trials())["uhp-unknown-no-unsafe-retry"]
+    assert trial.verdict == "fail"
+    assert any("marked-safe-to-replay" in r for r in trial.execution_grade.reasons)
+
+
+def holdout_setup(tmp_path, *, store_case=True):
+    """A copy of the shipped data whose suite lists one holdout case by ID and digest."""
+    data = copy_data(tmp_path)
+    holdout = tmp_path / "restricted"
+    source = case("direct-tool-verified-success").model_dump(mode="json")
+    secret_case = EvalCase.model_validate(
+        {**source, "id": "holdout-sample", "revision": 1, "partition": "holdout"}
+    )
+    if store_case:
+        (holdout / "cases").mkdir(parents=True)
+        (holdout / "cases" / "holdout-sample.r1.json").write_text(secret_case.model_dump_json())
+    suite = json.loads((data / "suites" / f"{SUITE}.json").read_text())
+    suite["id"] = "with-holdout"
+    suite["cases"].append(
+        {"case_id": "holdout-sample", "revision": 1, "case_digest": secret_case.digest,
+         "holdout": True}
+    )  # fmt: skip
+    (data / "suites" / "with-holdout.json").write_text(json.dumps(suite))
+    return data, holdout
+
+
+def test_holdout_runs_only_from_restricted_storage_and_reports_counts(tmp_path):
+    data, holdout = holdout_setup(tmp_path)
+    run_id, trials, summary = asyncio.run(
+        run_suite("with-holdout", tmp_path / "out", data=data, holdout=holdout)
+    )
+    assert "holdout-sample" not in {t.case_id for t in trials}
+    assert not any("holdout-sample" in p.read_text() for p in (tmp_path / "out").rglob("*.json"))
+    assert summary == {"cases": 1, "pass": 1, "fail": 0, "unknown": 0, "unavailable": 0}
+    (held,) = TrialStore(holdout / "results").trials(run_id)
+    assert held.case_id == "holdout-sample" and held.verdict == "pass"
+
+
+def test_holdout_without_storage_is_unavailable_not_silently_dropped(tmp_path):
+    data, _ = holdout_setup(tmp_path, store_case=False)
+    _, trials, summary = asyncio.run(run_suite("with-holdout", tmp_path / "out", data=data))
+    assert len(trials) == 5
+    assert summary == {"cases": 1, "pass": 0, "fail": 0, "unknown": 0, "unavailable": 1}
+
+
+def test_holdout_content_in_the_repository_is_refused(tmp_path):
+    data, holdout = holdout_setup(tmp_path)
+    shutil.copy(holdout / "cases" / "holdout-sample.r1.json", data / "cases")
+    with pytest.raises(ManifestError, match="holdout content is in the repository"):
+        load_suite("with-holdout", data, holdout)
+
+
+def test_holdout_flag_and_case_partition_must_agree(tmp_path):
+    data, holdout = holdout_setup(tmp_path)
+    path = data / "suites" / f"{SUITE}.json"
+    suite = json.loads(path.read_text())
+    suite["cases"][0]["holdout"] = True
+    path.write_text(json.dumps(suite))
+    shutil.move(data / "cases" / "direct-tool-verified-success.r2.json", holdout / "cases")
+    with pytest.raises(ManifestError, match="partition and manifest holdout flag disagree"):
+        load_suite(SUITE, data, holdout)
+
+
+def test_cli_prints_only_holdout_counts(tmp_path, monkeypatch, capsys):
+    data, holdout = holdout_setup(tmp_path)
+    monkeypatch.setattr("cloudeo.evaluation.runner.DATA", data)
+    monkeypatch.setenv("CLOUDEO_EVAL_HOLDOUT_DIR", str(holdout))
+    real = run_suite
+
+    async def with_data(*args, **kwargs):
+        return await real(*args, data=data, **kwargs)
+
+    monkeypatch.setattr("cloudeo.evaluation.__main__.run_suite", with_data)
+    assert cli(["run", "--suite", "with-holdout", "--out", str(tmp_path / "out")]) == 0
+    out = capsys.readouterr().out
+    assert "holdout: cases 1, pass 1" in out and "holdout-sample" not in out
+
+
+def test_capability_cases_cannot_pass_without_their_control_entry_point(tmp_path):
+    # Even with the desired behavior, a raw-dispatch run lacks the control decision
+    # the case requires, so it grades unknown until the case is revised.
+    trial = by_case(run(tmp_path, suite=CORPUS)[1])["rate-limited-retry-within-policy"]
+    desired = {**trial.observations, "outcome.status": "completed", "uhp.task_posts": 2}
+    c = next(c for c in load_suite(CORPUS)[1] if c.id == trial.case_id)
+    assert grade_outcome(c, recorded(trial, observations=desired)).verdict == "unknown"

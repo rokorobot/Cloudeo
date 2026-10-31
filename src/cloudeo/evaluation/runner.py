@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -34,12 +35,27 @@ CAPABILITIES = {
 }
 
 
+# Restricted holdout storage: <dir>/cases/<id>.r<rev>.json and <dir>/results/.
+HOLDOUT_ENV = "CLOUDEO_EVAL_HOLDOUT_DIR"
+
+
 class ManifestError(ValueError):
     pass
 
 
-def load_suite(suite_id: str, data: Path = DATA) -> tuple[EvalSuite, list[EvalCase]]:
-    """The suite and its exact case revisions; any digest mismatch is refused."""
+def holdout_dir() -> Path | None:
+    value = os.environ.get(HOLDOUT_ENV)
+    return Path(value) if value else None
+
+
+def load_suite(
+    suite_id: str, data: Path = DATA, holdout: Path | None = None
+) -> tuple[EvalSuite, list[EvalCase]]:
+    """The suite and its exact case revisions; any digest mismatch is refused.
+
+    Holdout cases load only from `holdout` storage; without it, or without the
+    file, they are left out here and reported as unavailable by the runner.
+    """
     suite = EvalSuite.model_validate_json((data / "suites" / f"{suite_id}.json").read_text())
     if suite.grader_versions != GRADER_VERSIONS:
         raise ManifestError(
@@ -47,8 +63,18 @@ def load_suite(suite_id: str, data: Path = DATA) -> tuple[EvalSuite, list[EvalCa
         )
     cases = []
     for entry in suite.cases:
-        path = data / "cases" / f"{entry.case_id}.r{entry.revision}.json"
+        name = f"{entry.case_id}.r{entry.revision}.json"
+        if entry.holdout:
+            if (data / "cases" / name).exists():
+                raise ManifestError(f"{entry.case_id}: holdout content is in the repository")
+            path = holdout / "cases" / name if holdout else None
+            if path is None or not path.is_file():
+                continue
+        else:
+            path = data / "cases" / name
         case = EvalCase.model_validate_json(path.read_text())
+        if (case.partition == "holdout") != entry.holdout:
+            raise ManifestError(f"{case.id}: partition and manifest holdout flag disagree")
         if (case.id, case.revision) != (entry.case_id, entry.revision):
             raise ManifestError(f"{path.name} does not hold {entry.case_id} r{entry.revision}")
         if case.digest != entry.case_digest:
@@ -91,11 +117,18 @@ async def run_suite(
     repetitions: int = 1,
     label: str = "baseline",
     data: Path = DATA,
-) -> tuple[str, list[EvalTrial]]:
-    suite, cases = load_suite(suite_id, data)
+    holdout: Path | None = None,
+) -> tuple[str, list[EvalTrial], dict[str, int]]:
+    """Run a suite. Holdout trials are stored only in holdout storage; the
+    caller gets their aggregate counts, never their trials."""
+    holdout = holdout or holdout_dir()
+    suite, cases = load_suite(suite_id, data, holdout)
     store = TrialStore(out)
     run_id = uuid.uuid4().hex
     store.mark_abandoned(run_id)
+    held = TrialStore(holdout / "results") if holdout else None
+    if held:
+        held.mark_abandoned(run_id)
     caps = capabilities()
     commit, dirty, lock_sha = _code_state()
     for repetition in range(1, repetitions + 1):
@@ -104,11 +137,18 @@ async def run_suite(
                 code_commit=commit, code_dirty=dirty, python=sys.version.split()[0],
                 uv_lock_sha256=lock_sha, suite_id=suite.id, suite_version=suite.version,
                 suite_digest=suite.digest, case_digest=case.digest,
-                fixture_digest=case.fixture_digest, grader_versions=dict(GRADER_VERSIONS),
+                fixture_digest=case.fixture_digest, partition=case.partition,
+                severity=case.severity, grader_versions=dict(GRADER_VERSIONS),
                 capabilities=caps,
             )  # fmt: skip
-            await _run_trial(store, run_id, suite, case, repetition, label, provenance, caps)
-    return run_id, store.trials(run_id)
+            target = held if case.partition == "holdout" else store
+            await _run_trial(target, run_id, suite, case, repetition, label, provenance, caps)
+    loaded = {c.id for c in cases}
+    summary = {"cases": sum(e.holdout for e in suite.cases), "pass": 0, "fail": 0, "unknown": 0,
+               "unavailable": sum(e.holdout and e.case_id not in loaded for e in suite.cases)}  # fmt: skip
+    for trial in held.trials(run_id) if held else ():
+        summary[trial.verdict] += 1
+    return run_id, store.trials(run_id), summary
 
 
 async def _run_trial(store, run_id, suite, case, repetition, label, provenance, caps) -> None:
@@ -186,7 +226,10 @@ def verify_store(out: Path, data: Path = DATA) -> list[tuple[EvalTrial, list[str
             key = (retained.suite_id, retained.case_id)
             if key not in cases:
                 cases.update(
-                    {(retained.suite_id, c.id): c for c in load_suite(retained.suite_id, data)[1]}
+                    {
+                        (retained.suite_id, c.id): c
+                        for c in load_suite(retained.suite_id, data, holdout_dir())[1]
+                    }
                 )
             case = cases[key]
             regraded = (grade_outcome(case, retained), grade_execution(case, retained))
