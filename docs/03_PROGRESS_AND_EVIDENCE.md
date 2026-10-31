@@ -1973,3 +1973,24 @@ and LongHorizon executor paths do not use the entry point yet (slice 2).
 Measured with EVAL-01 `corpus-v3`: regression 22/22 pass (was 19/19 in
 corpus-v2 with unapproved dispatch as a failing capability case); capability
 5 fail, 2 unknown. A seeded bypass of control fails the refusal cases.
+
+---
+
+## 2026-10-31 — ADR-037 slice 2: V2C-02 ENFORCED
+
+Owner decision: one LongHorizon managed run is one control attempt.
+`ExecutorAuthorization` is produced only by
+`orchestration.dispatch.authorize_executor_attempt`, after `begin_attempt`
+recorded the attempt (AST-checked). `UHPWorkspaceBridge.run` and
+`UHPWorkspaceExecutorAdapter` require it and refuse any other harness, model,
+workspace or candidate before anything is uploaded.
+
+Traceability: 11 ENFORCED, 12 DEFERRED; 12 strict expected-failure
+obligations (was 13). Negative tests: no authorization or dispatch before an
+approved, executing WorkOrder; none when control raises attention; the bridge
+sends nothing for a mismatched model, harness, candidate or workspace; the
+executor refuses a mismatched authorization; the checker flags construction
+elsewhere.
+
+Existing bridge, executor, auditor and manager tests now pass an
+authorization; their behavior is unchanged.

@@ -36,6 +36,7 @@ from lh_harness.types import EpisodeBudget, EpisodeResult
 from test_uhp_workspace_bridge import (  # noqa: F401 - fixtures are used by name
     FakeHarnessRouter,
     accepted,
+    authorized,
     broker,
     candidate,
     git,
@@ -201,7 +202,9 @@ async def test_a_to_i_executor_then_independent_read_only_audit(
         response_overrides=lambda n: {} if n == 0 else reply(VALID_REPORT),
     )
     bridge, bridge_client = make_bridge(broker, server, staging)
-    executor = UHPWorkspaceExecutorAdapter(EXECUTOR_PROFILE, bridge, candidate)
+    executor = UHPWorkspaceExecutorAdapter(
+        EXECUTOR_PROFILE, bridge, candidate, authorization=authorized(candidate)
+    )
     async with bridge_client:
         executed = await executor.run_episode("Do the CLI subtask.", env(), EXECUTOR_BUDGET)
     assert executed.status == "done", executed.error
@@ -680,7 +683,7 @@ def _instances(broker, candidate, staging, tmp_path):
             EXECUTOR_PROFILE, ExecutionDispatcher(harness_task=UHPHarnessTaskBackend(client))
         ),
         UHPWorkspaceExecutorAdapter: UHPWorkspaceExecutorAdapter(
-            EXECUTOR_PROFILE, bridge, candidate
+            EXECUTOR_PROFILE, bridge, candidate, authorization=authorized(candidate)
         ),
         UHPWorkspaceAuditorAdapter: UHPWorkspaceAuditorAdapter(
             AUDITOR_PROFILE, transport, candidate

@@ -28,6 +28,7 @@ from test_uhp_workspace_bridge import (  # noqa: F401 - fixtures are used by nam
     HEADERS,
     FakeHarnessRouter,
     accepted,
+    authorized,
     broker,
     candidate,
     git,
@@ -192,7 +193,9 @@ class Setup:
         self.broker = broker
         self.candidate = candidate
         self.manager = UHPHarnessAgentAdapter(PROFILE, dispatcher)
-        self.executor = UHPWorkspaceExecutorAdapter(PROFILE, bridge, candidate)
+        self.executor = UHPWorkspaceExecutorAdapter(
+            PROFILE, bridge, candidate, authorization=authorized(candidate)
+        )
         self.auditor = UHPWorkspaceAuditorAdapter(AUDIT_PROFILE, transport, candidate)
         self.env = LocalEnvironment(tmp_dir=str(tmp_path / "lh_tmp"))
         self.config = HarnessConfig(

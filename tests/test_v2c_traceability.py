@@ -48,15 +48,24 @@ TRACE = {
         [MACHINE + "test_v2c_01_control_layer_cannot_touch_accepted_state"],
         [MACHINE + "test_v2c_01_k1_checker_flags_forbidden_access"],
     ),
-    "V2C-02": deferred(
-        "no workspace write happens before an approved plan: executor dispatch runs only through "
-        "begin_attempt of an approved, executing WorkOrder",
+    "V2C-02": enforced(
+        "executor dispatch only through begin_attempt of an approved, executing WorkOrder: "
+        "orchestration.dispatch is the only producer of ExecutorAuthorization (AST-checked), "
+        "which it issues only for an attempt begin_attempt recorded; the workspace bridge and "
+        "the LongHorizon executor adapter require it and send only its harness, model and "
+        "candidate; dispatch_attempt sends exactly the bound profile's harness and model",
         [
+            DISPATCH + "test_an_approved_attempt_dispatches_exactly_the_bound_profile",
+            DISPATCH + "test_authorization_names_exactly_the_recorded_attempt",
+            DISPATCH + "test_v2c_02_only_orchestration_dispatch_produces_authorizations",
             MACHINE + "test_v2c_02_no_candidate_or_blocks_before_plan_approval",
-            # Slice 1 (ADR-037): the control-owned entry point exists; the bridge and
-            # LongHorizon executor paths do not use it yet.
+        ],
+        [
             DISPATCH + "test_v2c_02_no_dispatch_before_an_approved_executing_work_order",
+            DISPATCH + "test_v2c_02_no_authorization_before_an_approved_executing_work_order",
+            DISPATCH + "test_v2c_02_the_bridge_sends_nothing_outside_its_authorization",
             DISPATCH + "test_a_task_naming_another_harness_or_model_is_refused_before_any_attempt",
+            DISPATCH + "test_v2c_02_checker_flags_authorization_built_elsewhere",
         ],
     ),
     "V2C-03": enforced(
