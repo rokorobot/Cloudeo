@@ -189,9 +189,10 @@ async def _controller(fixture, workdir, record, *, treg_cli):
 # --- UHP dispatch + orchestration failure mapping: the UHP server is faked ---
 
 
-def _executing_work_order(spec: dict):
-    """An approved, executing WorkOrder whose block b1 has begun an attempt by the
-    bound executor: the state in which an execution failure is routed."""
+def _work_order(spec: dict, stage: str = "attempt_started"):
+    """A WorkOrder built through control's public machine, up to `stage`:
+    "plan_proposed", "executing", or "attempt_started" (b1 begun by the bound
+    executor, the state in which an execution failure is routed)."""
     from datetime import datetime
 
     from cloudeo.control import machine as m
@@ -230,13 +231,17 @@ def _executing_work_order(spec: dict):
         budget=Budget(max_attempts_per_block=2),
         context_report=EvidenceRef(kind="context_report", ref="ctx-eval"),
     )  # fmt: skip
-    wo = m.approve_plan(m.propose_plan(wo, plan), plan_version=1, approved_by="eval",
-                        approved_at=now)  # fmt: skip
+    wo = m.propose_plan(wo, plan)
+    if stage == "plan_proposed":
+        return wo
+    wo = m.approve_plan(wo, plan_version=1, approved_by="eval", approved_at=now)
     wo = m.attach_candidate(
         wo, Candidate(workspace_id="eval", candidate_id="cand-eval", base_commit=base),
         accepted_baseline=base,
     )  # fmt: skip
     wo = m.start_execution(wo, accepted_baseline=base)
+    if stage == "executing":
+        return wo
     return m.begin_attempt(wo, "b1", profile=profiles[Role.PRIMARY_CODE_EXECUTOR].ref)
 
 
@@ -341,7 +346,7 @@ async def uhp_dispatch(fixture, workdir, record):
         })  # fmt: skip
         if "work_order" in fixture:
             # Route through control's public state machine, then read the result.
-            before = _executing_work_order(fixture["work_order"])
+            before = _work_order(fixture["work_order"])
             after = route_execution_failure(before, assessment)
             attention = after.open_attention
             record("control", "transition", status=str(after.status),
@@ -354,6 +359,65 @@ async def uhp_dispatch(fixture, workdir, record):
                 == before.block("b1").attempts,
             })  # fmt: skip
     return observations, "complete"
+
+
+@scenario("orchestration.dispatch_attempt")
+async def control_dispatch(fixture, workdir, record):
+    """Executor dispatch through control (V2C-02 slice 1): the real
+    `dispatch_attempt` over the real UHP backend and client; only the UHP
+    server is faked."""
+    import httpx
+
+    from cloudeo.control.machine import TransitionRejected
+    from cloudeo.control.model import Role
+    from cloudeo.execution.uhp_backend import UHPHarnessTaskBackend
+    from cloudeo.orchestration.dispatch import DispatchRefused, dispatch_attempt
+    from cloudeo.uhp.client import UHPClient
+    from cloudeo.uhp.models import UHP_VERSION, UHPTaskRequest
+
+    posts: list[dict] = []
+    reply = fixture["server_reply"]
+
+    def server(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content) if request.content else {}
+        record("uhp_server", "request", method=request.method, path=request.url.path,
+               harness_id=_harness(payload), model=payload.get("model"))  # fmt: skip
+        posts.append(payload)
+        body = _uhp_body(reply["result"], payload, len(posts))
+        return httpx.Response(200, json=body, headers={"UHP-Version": UHP_VERSION})
+
+    work_order = _work_order(fixture["work_order"], fixture["stage"])
+    profile = next(
+        b.primary for b in work_order.execution_profile.bindings
+        if b.role == Role(fixture["role"])
+    )  # fmt: skip
+    client = UHPClient(
+        "http://uhp.eval/api/harness", "eval-not-a-real-key", transport=httpx.MockTransport(server)
+    )
+    decision, refusal, result = "dispatched", None, None
+    try:
+        async with client:
+            result = await dispatch_attempt(
+                work_order, "b1", profile=profile,
+                task=UHPTaskRequest.model_validate(fixture["task"]),
+                backend=UHPHarnessTaskBackend(client),
+            )  # fmt: skip
+        if not result.dispatched:
+            decision = "attention"
+    except TransitionRejected as exc:  # control refused: an observed decision
+        decision, refusal = "refused", exc.code
+    except DispatchRefused:
+        decision, refusal = "refused", "task_not_approved"
+    record("control", "dispatch_decision", decision=decision, refusal=refusal)
+    after = result.work_order if result else work_order
+    return {
+        "control.dispatch_decision": decision,
+        "control.refusal": refusal,
+        "control.attempts_recorded": len(after.block("b1").attempts) if after.blocks else 0,
+        "uhp.task_posts": len(posts),
+        "uhp.posted_identities": [[_harness(p), p.get("model")] for p in posts],
+        "outcome.status": result.outcome.status if result and result.outcome else None,
+    }, "complete"
 
 
 # --- Promotion gate: real Git broker; the auditor's verdict is the faked boundary ---

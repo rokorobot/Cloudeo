@@ -19,10 +19,16 @@ from pathlib import Path
 import pytest
 import test_control_machine
 import test_control_store
+import test_orchestration_dispatch
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUSES = ("ENFORCED", "DEFERRED", "NOT_APPLICABLE")
-MODULES = {"test_control_machine": test_control_machine, "test_control_store": test_control_store}
+MODULES = {
+    "test_control_machine": test_control_machine,
+    "test_control_store": test_control_store,
+    "test_orchestration_dispatch": test_orchestration_dispatch,
+}
+DISPATCH = "test_orchestration_dispatch::"
 MACHINE = "test_control_machine::"
 STORE = "test_control_store::"
 
@@ -45,7 +51,13 @@ TRACE = {
     "V2C-02": deferred(
         "no workspace write happens before an approved plan: executor dispatch runs only through "
         "begin_attempt of an approved, executing WorkOrder",
-        [MACHINE + "test_v2c_02_no_candidate_or_blocks_before_plan_approval"],
+        [
+            MACHINE + "test_v2c_02_no_candidate_or_blocks_before_plan_approval",
+            # Slice 1 (ADR-037): the control-owned entry point exists; the bridge and
+            # LongHorizon executor paths do not use it yet.
+            DISPATCH + "test_v2c_02_no_dispatch_before_an_approved_executing_work_order",
+            DISPATCH + "test_a_task_naming_another_harness_or_model_is_refused_before_any_attempt",
+        ],
     ),
     "V2C-03": enforced(
         "sequential immutable plan versions; approval only of the latest, newer version; "

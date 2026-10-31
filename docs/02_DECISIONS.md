@@ -3559,3 +3559,49 @@ the LongHorizon path also needs its own LongHorizon adapter and an entry in
 slice stays inside `cloudeo.execution`: a neutral error class and runtime
 identity fields, additive and behavior-preserving, plus the dependency
 checks above.
+
+## ADR-037 — Control-owned executor dispatch (V2C-02, slice 1)
+
+**Status:** Accepted (2026-10-31) by the owner as the next product step after
+EVAL-01A; slice 1 implemented. (ADR-036 is reserved by the draft
+workflow-run execution ADR, not yet in this repository.)
+
+**Context:** V2C-02 requires that executor dispatch runs only through
+`begin_attempt` of an approved, executing WorkOrder. Today nothing connects a
+harness dispatch to control: `ExecutionDispatcher` sends any
+`HarnessTaskExecution`, and the workspace bridge (`bridge/bridge.py`) and the
+LongHorizon base adapter (`longhorizon/adapter.py`) dispatch executor tasks
+with no WorkOrder. EVAL-01 measures this as the capability case
+`unapproved-harness-dispatch-refused`. Fallback, retry and provider
+allow-lists all need the same control-owned dispatch step.
+
+**Decision:** add `cloudeo.orchestration.dispatch.dispatch_attempt`, the
+control-owned entry point for primary_code_executor dispatch (ADR-030:
+orchestration applies control decisions; policy stays in `cloudeo.control`).
+
+- It calls `machine.begin_attempt` first. A `TransitionRejected` (wrong state,
+  block order, unbound profile, fallback without its condition and evidence)
+  propagates, and nothing is dispatched. If `begin_attempt` raises attention
+  instead (attempts exhausted, an independence gap), nothing is dispatched.
+- The harness and model sent are those of the approved `AgentProfile`, set by
+  orchestration. A task naming another harness or model, or a profile outside
+  the envelope, is refused (`DispatchRefused`) before `begin_attempt`, so no
+  attempt is recorded for it.
+- It changes WorkOrders only through `cloudeo.control.machine` and imports no
+  forbidden runtime module; the existing ADR-030 boundary checks cover it.
+
+**Not in this slice:** routing the workspace bridge and the LongHorizon
+executor adapters through `dispatch_attempt` (slice 2). Until then V2C-02
+stays DEFERRED; the new tests are supporting evidence only. Fallback
+selection (V2C-12) and a retry policy remain separate decisions that will use
+this entry point.
+
+**Evidence:** `tests/test_orchestration_dispatch.py` (positive and negative
+cases); EVAL-01 `corpus-v3`, where `unapproved-harness-dispatch-refused` r2
+and two new dispatch cases are regression cases, and a seeded bypass of
+control fails them.
+
+**Consequences:** a caller that uses `dispatch_attempt` cannot dispatch an
+unapproved executor task or a different model than approved. Callers that
+use `ExecutionDispatcher` directly still can; slice 2 removes that path for
+executors.

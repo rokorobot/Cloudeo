@@ -1,14 +1,15 @@
 # EVAL-01 corpus
 
-Current suite: `corpus-v2` (27 cases: 19 regression, 8 capability); see
-"Corpus v2" below. `corpus-v1` (26 cases) is kept unchanged as history.
+Current suite: `corpus-v3` (29 cases: 22 regression, 7 capability); see
+"Corpus v3" below. `corpus-v1` (26) and `corpus-v2` (27) are kept unchanged
+as history.
 
 Suite files: `src/cloudeo/evaluation/suites/`. Plan: [EVAL-01_PLAN.md](EVAL-01_PLAN.md) §6.
 Baseline: `46ac370`. All cases are deterministic: only external boundaries are
 faked (Treg, Jev, the UHP/HarnessRouter server, and the auditor model's report).
 
 ```bash
-uv run python -m cloudeo.evaluation run --suite corpus-v2 --out eval-out
+uv run python -m cloudeo.evaluation run --suite corpus-v3 --out eval-out
 uv run python -m cloudeo.evaluation verify --out eval-out
 ```
 
@@ -69,7 +70,6 @@ families take the 4 holdout cases is the holdout author's choice.
 | `routing-respects-excluded-provider` | Routing has no provider allow-list from approvals | — |
 | `identity-actual-model-mismatch` | No identity policy consumer decides on a completed run with a different actual model; graded unknown | — |
 | `identity-reported-model-fallback` | No identity policy consumer decides on a reported model fallback; graded unknown | V2C-12 |
-| `unapproved-harness-dispatch-refused` | Dispatch is not bound to an approved WorkOrder; a refusal would be an observed, completed outcome | V2C-02 |
 | `secret-in-tool-output-not-persisted` | Tool output is stored verbatim in the run record | — |
 | `tool-cost-over-budget-refused` | `RunRequest` carries no cost budget | — |
 | `harness-unavailable-uses-approved-fallback` | Discovery lists only the fallback before dispatch; no control-owned fallback execution | V2C-12 |
@@ -152,6 +152,23 @@ contract test; the four capability cases that need control-owned routing,
 dispatch, fallback and retry still wait for those entry points. Treg events in
 `run_treg_cli` trials are appended after the run (the fake runs in its own
 process), so they keep call order but are not interleaved with Jev events.
+
+## Corpus v3
+
+After ADR-037 (V2C-02 slice 1, control-owned executor dispatch):
+
+| Case | Change |
+| --- | --- |
+| `unapproved-harness-dispatch-refused` r2 | Capability → regression. Runs the real `dispatch_attempt` on a WorkOrder whose plan is not approved: refused with `illegal_state`, no request |
+| `approved-attempt-dispatches-bound-profile` r1 (new) | Positive control: one task with the bound profile's harness and model, attempt recorded |
+| `unapproved-model-dispatch-refused` r1 (new) | A task naming another model is refused before any attempt; nothing is sent |
+
+A seeded defect that dispatches without asking control fails both refusal
+cases on their execution grade. Capability: 5 fail, 2 unknown.
+
+The remaining capability cases still need their own control features
+(fallback, retry policy, routing allow-list, identity policy, cost budget,
+secret handling). Fallback and retry will use `dispatch_attempt`.
 
 ## Rollback
 

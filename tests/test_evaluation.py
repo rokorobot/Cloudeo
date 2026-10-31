@@ -381,7 +381,7 @@ def test_cli_run_and_list(tmp_path, capsys):
 
 # --- PR 4: corpus v1 and holdout plumbing ---
 
-CORPUS = "corpus-v2"
+CORPUS = "corpus-v3"
 UNOBSERVABLE = {"identity-actual-model-mismatch", "identity-reported-model-fallback"}
 NEEDS_LH = {c.id for c in load_suite(CORPUS)[1] if "longhorizon" in c.required_capabilities}
 
@@ -389,10 +389,10 @@ NEEDS_LH = {c.id for c in load_suite(CORPUS)[1] if "longhorizon" in c.required_c
 def test_corpus_composition():
     suite, cases = load_suite(CORPUS)
     partitions = [c.partition for c in cases]
-    assert len(cases) == 27 and len({c.id for c in cases}) == 27
-    assert (partitions.count("regression"), partitions.count("capability")) == (19, 8)
-    # corpus-v1 stays loadable and unchanged as history.
-    assert len(load_suite("corpus-v1")[1]) == 26
+    assert len(cases) == 29 and len({c.id for c in cases}) == 29
+    assert (partitions.count("regression"), partitions.count("capability")) == (22, 7)
+    # Earlier corpus versions stay loadable and unchanged as history.
+    assert [len(load_suite(v)[1]) for v in ("corpus-v1", "corpus-v2")] == [26, 27]
     assert not any(e.holdout for e in suite.cases)  # added later by an independent author
     # Every case has an oracle of its own; critical cases are in the regression gate.
     assert all(c.expected_state for c in cases)
@@ -418,7 +418,7 @@ def test_corpus_regression_passes_and_capability_gaps_stay_visible(tmp_path):
 def test_capability_failures_do_not_fail_the_run_but_regressions_do(tmp_path, monkeypatch, capsys):
     assert cli(["run", "--suite", CORPUS, "--out", str(tmp_path / "a")]) == 0
     out = capsys.readouterr().out
-    assert "regression: pass" in out and "capability: pass 0, fail 6, unknown 2" in out
+    assert "regression: pass" in out and "capability: pass 0, fail 5, unknown 2" in out
     # An intentional policy defect: unknown runtime state treated as safe to re-run.
     monkeypatch.setattr(
         "cloudeo.orchestration.execution_failure.TERMINAL_OBSERVED",
@@ -548,3 +548,23 @@ def test_execution_failure_is_routed_through_control(tmp_path, monkeypatch):
     broken = by_case(run(tmp_path / "bad", suite=CORPUS)[1])["uhp-unknown-no-unsafe-retry"]
     assert broken.verdict == "fail"
     assert any("control.work_order_status" in r for r in broken.outcome_grade.reasons)
+
+
+def test_dispatch_that_bypasses_control_is_caught(tmp_path, monkeypatch):
+    # Seeded defect: dispatch sends the task without asking control first.
+    from cloudeo.execution.contracts import HarnessTaskExecution
+    from cloudeo.orchestration import dispatch
+
+    async def bypass(work_order, block_id, *, profile, task, backend, **_):
+        sent = task.model_copy(update={"harness_id": task.harness_id or "chrn_claude"})
+        outcome = await backend.execute(HarnessTaskExecution(task=sent))
+        return dispatch.AttemptDispatch(work_order=work_order, dispatched=True, outcome=outcome)
+
+    ok = by_case(run(tmp_path / "ok", suite=CORPUS)[1])["unapproved-harness-dispatch-refused"]
+    assert ok.verdict == "pass"
+    monkeypatch.setattr(dispatch, "dispatch_attempt", bypass)
+    trials = by_case(run(tmp_path / "bad", suite=CORPUS)[1])
+    for case_id in ("unapproved-harness-dispatch-refused", "unapproved-model-dispatch-refused"):
+        assert trials[case_id].verdict == "fail", case_id
+        reasons = trials[case_id].execution_grade.reasons
+        assert any("dispatch-without-approval" in r for r in reasons), case_id
