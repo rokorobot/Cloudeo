@@ -10,9 +10,9 @@ Plan: [EVAL-01_PLAN.md](EVAL-01_PLAN.md). Recorded 2026-10-31.
 | `feat/v2-profile-billing-policy` (V2 chain tip, 15 linear commits on `main`) | `7f8885538d884aded4bf5a4d3e87322402830e0d` | **Recommended** EVAL-01 target; not yet accepted or merged |
 
 **Decision (owner, 2026-10-31):** the V2 chain is accepted and integrated into
-`main` via `integrate/v2-control-chain`. The canonical EVAL-01 baseline is the
-resulting `main` merge commit, recorded in `03_PROGRESS_AND_EVIDENCE.md` after
-merge. EVAL-01 work targets `main`. Later baseline changes need a new record
+`main` via `integrate/v2-control-chain` (PR #7). The canonical EVAL-01
+baseline is that merge commit:
+`46ac3704577ae2dbe3bf05f765f43adcc97d30ea`. EVAL-01 work targets `main`. Later baseline changes need a new record
 here; scores from different baselines are never combined.
 
 Remote freshness was checked on 2026-10-31: both refs above were the tips of

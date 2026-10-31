@@ -1,0 +1,36 @@
+{
+  "id": "smoke-v1",
+  "version": 1,
+  "description": "EVAL-01 PR 2 vertical slice: five deterministic cases.",
+  "cases": [
+    {
+      "case_id": "direct-tool-verified-success",
+      "revision": 1,
+      "case_digest": "8a2f94cdb178dc693d2774947fe85f289c6014e8cc021322b81d422f0499de95"
+    },
+    {
+      "case_id": "deterministic-fail-then-jev-escalation",
+      "revision": 1,
+      "case_digest": "3b7c1c9b511371002afb558d01aea95eaf00ed9d6950a1d2e92fec7239721aaf"
+    },
+    {
+      "case_id": "uhp-unknown-no-unsafe-retry",
+      "revision": 1,
+      "case_digest": "31496034a6b35299e46e0212bf0a76cc9f57e24001cef534e118171eaff675f3"
+    },
+    {
+      "case_id": "post-audit-mutation-refused",
+      "revision": 1,
+      "case_digest": "a232f39299292c082291ba111d6a1d8b00bb9fa7c4884f992d0974422c33394b"
+    },
+    {
+      "case_id": "prohibited-billing-transition",
+      "revision": 1,
+      "case_digest": "114a55bdce58a1cfb62857c11af64bef30d37aeb42d1ba1c26e9a23d2a049b0c"
+    }
+  ],
+  "grader_versions": {
+    "outcome-v1": "1",
+    "execution-v1": "1"
+  }
+}

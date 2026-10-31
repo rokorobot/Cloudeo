@@ -1,0 +1,54 @@
+{
+  "id": "post-audit-mutation-refused",
+  "revision": 1,
+  "task": "The candidate changes after a clean audit; the promotion gate refuses before any checkpoint and accepted state does not move.",
+  "entry_point": "longhorizon.promotion_gate",
+  "fixture": {
+    "files": {
+      "README.md": "initial readme\n",
+      "src/app.py": "print('app')\n"
+    },
+    "executor_changes": {
+      "src/feature.py": "FEATURE = True\n"
+    },
+    "post_audit_changes": {
+      "src/feature.py": "FEATURE = 'changed after audit'\n"
+    }
+  },
+  "required_capabilities": [
+    "longhorizon"
+  ],
+  "approvals": {
+    "promotion": "verified_and_current_only"
+  },
+  "budgets": {},
+  "expected_state": {
+    "gate.status": "WORKSPACE_CHANGED",
+    "gate.reason": "content_changed_since_audit",
+    "gate.stage": "refused_before_checkpoint",
+    "gate.promoted": false
+  },
+  "forbidden": [
+    {
+      "id": "accepted-state-moved",
+      "observation": "accepted.unchanged",
+      "equals": false,
+      "max": null,
+      "description": "accepted state moved after a post-audit mutation"
+    },
+    {
+      "id": "checkpoint-of-unaudited-state",
+      "observation": "checkpoint.refs_created",
+      "equals": null,
+      "max": 0,
+      "description": "a checkpoint was created for unaudited state"
+    }
+  ],
+  "graders": [
+    "outcome-v1",
+    "execution-v1"
+  ],
+  "partition": "regression",
+  "severity": "critical",
+  "mode": "deterministic"
+}
