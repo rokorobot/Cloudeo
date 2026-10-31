@@ -1,29 +1,13 @@
 """UHPClient standard file operations (UHP 2026-09-12 Files, Extended class)."""
 
-from email.parser import BytesParser
-from email.policy import HTTP
-
 import httpx
 import pytest
 
+from cloudeo.evaluation.fake_harnessrouter import parse_multipart
 from cloudeo.uhp.client import UHPClient, UHPHTTPError, UHPProtocolError, UHPTransportError
 from cloudeo.uhp.models import UHP_VERSION, UHPFile, UHPFileContent, UHPFileList
 
 HEADERS = {"UHP-Version": UHP_VERSION}
-
-
-def parse_multipart(request: httpx.Request) -> dict:
-    raw = f"Content-Type: {request.headers['Content-Type']}\r\n\r\n".encode() + request.read()
-    message = BytesParser(policy=HTTP).parsebytes(raw)
-    parts = {}
-    for part in message.iter_parts():
-        name = part.get_param("name", header="content-disposition")
-        parts[name] = {
-            "filename": part.get_filename(),
-            "content_type": part.get_content_type(),
-            "payload": part.get_payload(decode=True),
-        }
-    return parts
 
 
 def client(handler, api_key="test-not-a-real-key"):

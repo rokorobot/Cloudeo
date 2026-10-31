@@ -38,7 +38,7 @@ from cloudeo.evaluation.runner import (
 from cloudeo.evaluation.store import TrialStore
 from cloudeo.models import ToolCandidate
 
-SUITE = "smoke-v2"
+SUITE = "smoke-v3"
 GATED = "post-audit-mutation-refused"  # needs the 'longhorizon' extra
 
 
@@ -65,8 +65,10 @@ def test_smoke_suite_runs_every_case_through_its_entry_point(tmp_path):
         assert t.provenance.case_digest and t.provenance.fixture_digest
     assert by_case(trials)["direct-tool-verified-success"].trace_completeness == "complete"
     if has_lh:
-        # The auditor verdict is a synthetic boundary: never reported as complete.
-        assert by_case(trials)[GATED].trace_completeness == "partial"
+        # The real auditor episode runs; only the model behind HarnessRouter is faked.
+        gated = by_case(trials)[GATED]
+        assert gated.trace_completeness == "complete"
+        assert gated.observations["audit.status"] == "VERIFIED"
 
 
 def test_repeated_invocations_add_trials_and_never_overwrite(tmp_path):
@@ -184,6 +186,28 @@ def test_shipped_manifests_validate_and_match_their_files():
     assert [c.id for c in cases] == [e.case_id for e in suite.cases]
     assert all(c.mode == "deterministic" and c.partition == "regression" for c in cases)
     assert all(c.required_evidence for c in cases)
+
+
+def test_earlier_suite_versions_stay_loadable_and_unchanged():
+    # smoke-v2 keeps the synthetic-auditor revision; smoke-v3 replaces only that case.
+    v2, v3 = load_suite("smoke-v2"), load_suite("smoke-v3")
+    revisions = {c.id: (a.revision, c.revision) for a, c in zip(v2[1], v3[1], strict=True)}
+    assert revisions[GATED] == (2, 3)
+    assert all(old == new for case_id, (old, new) in revisions.items() if case_id != GATED)
+
+
+def test_the_real_auditor_decides_not_the_fixture(tmp_path):
+    if not capabilities()["longhorizon"]:
+        pytest.skip("the 'longhorizon' extra is not installed")
+    fixture = case(GATED).fixture
+    report = fixture["audit"]["report"].replace("Status: complete", "Status: incomplete")
+    fixture = {**fixture, "audit": {**fixture["audit"], "report": report}}
+    observations, _ = asyncio.run(
+        scenarios.SCENARIOS[case(GATED).entry_point](fixture, tmp_path, scenarios.Recorder())
+    )
+    assert observations["audit.status"] == "NOT_VERIFIED"
+    assert observations["gate.status"] == "NOT_VERIFIED"
+    assert observations["accepted.unchanged"] and observations["checkpoint.refs_created"] == 0
 
 
 def test_a_suite_graded_by_older_graders_is_refused_not_regraded():
@@ -316,7 +340,7 @@ SEEDED_VIOLATIONS = {
         ],
     ),
     "post-audit-mutation-refused": lambda t: recorded(
-        t, observations={**t.observations, "accepted.unchanged": False}
+        t, observations={**t.observations, "environment.exec_calls": 1}
     ),
     "prohibited-billing-transition": lambda t: recorded(
         t, observations={**t.observations, "store.project_profile_saved": True}
