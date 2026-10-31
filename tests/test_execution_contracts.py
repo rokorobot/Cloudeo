@@ -9,6 +9,7 @@ from cloudeo.core.validators import validate_tool_output
 from cloudeo.execution.base import ExecutionResult
 from cloudeo.execution.contracts import (
     DirectToolExecution,
+    ExecutionError,
     ExecutionOutcome,
     ExecutionRequest,
     HarnessTaskExecution,
@@ -184,7 +185,12 @@ async def test_treg_success_maps_to_completed_and_preserves_native_result():
     assert outcome.cost.direct_tool_economics == client.last_execution_economics
     assert type(outcome.cost.direct_tool_economics) is dict
     assert outcome.cost.harness_usage is None
-    assert outcome.runtime == RuntimeIdentity(backend="treg", requested_tool="one.lookup")
+    assert outcome.runtime == RuntimeIdentity(
+        backend="treg",
+        execution_plane="direct_tool",
+        adapter_id="treg",
+        requested_tool="one.lookup",
+    )
     assert outcome.native_result == ExecutionResult(
         output="provider output", economics=client.last_execution_economics
     )
@@ -513,3 +519,67 @@ async def test_dispatcher_with_real_backends_end_to_end():
         task = await dispatcher.execute(harness_task())
     assert (tool.runtime.backend, tool.status) == ("treg", "completed")
     assert (task.runtime.backend, task.status) == ("uhp", "completed")
+
+
+# --- Provider-neutral error class and identity (ADR-035, PN-03) ---
+
+
+@pytest.mark.parametrize(
+    "http_status,expected",
+    [
+        (400, "invalid_request"),
+        (401, "authentication"),
+        (403, "authorization"),
+        (404, "invalid_request"),
+        (408, "timeout"),
+        (429, "rate_limited"),
+        (500, "runtime_unavailable"),
+        (503, "runtime_unavailable"),
+        (307, "unknown"),
+    ],
+)
+async def test_uhp_http_status_gets_a_neutral_error_class(http_status, expected):
+    body = {"vendor": "no envelope"}
+    client, backend = uhp_backend(
+        lambda request: httpx.Response(http_status, json=body, headers=HEADERS)
+    )
+    async with client:
+        outcome = await backend.execute(harness_task())
+    assert outcome.error.error_class == expected
+    assert outcome.error.http_status == http_status  # native evidence is kept
+
+
+@pytest.mark.parametrize(
+    "handler,error_class",
+    [(refuse_connection, "transport"), (malformed_success, "protocol")],
+)
+async def test_uhp_transport_and_protocol_failures_get_neutral_classes(handler, error_class):
+    client, backend = uhp_backend(handler)
+    async with client:
+        outcome = await backend.execute(harness_task())
+    assert outcome.error.error_class == error_class
+
+
+async def test_treg_error_is_a_tool_failure():
+    outcome = await TregDirectToolBackend(
+        FakeTreg(error=TregError("provider unavailable"))
+    ).execute(DirectToolExecution(candidate=candidate()))
+    assert outcome.error.error_class == "tool_failure"
+
+
+def test_error_class_defaults_to_unknown_and_rejects_unlisted_values():
+    assert ExecutionError(source="treg", message="x").error_class == "unknown"
+    with pytest.raises(ValueError):
+        ExecutionError(source="treg", message="x", error_class="vendor_specific")
+
+
+async def test_uhp_identity_records_plane_and_adapter_but_never_invents_provider():
+    client, backend = uhp_backend(
+        lambda request: httpx.Response(200, json=uhp_wire(), headers=HEADERS)
+    )
+    async with client:
+        outcome = await backend.execute(harness_task())
+    assert outcome.runtime.execution_plane == "uhp_harness"
+    assert outcome.runtime.adapter_id == "uhp"
+    assert outcome.runtime.provider is None
+    assert outcome.runtime.inference_provider is None

@@ -9,11 +9,11 @@ Plan: [EVAL-01_PLAN.md](EVAL-01_PLAN.md). Recorded 2026-10-31.
 | `main` | `86e7361e9927ff8c0d100a351434b96c87476917` | Supported path; covered by CI from this PR |
 | `feat/v2-profile-billing-policy` (V2 chain tip, 15 linear commits on `main`) | `7f8885538d884aded4bf5a4d3e87322402830e0d` | **Recommended** EVAL-01 target; not yet accepted or merged |
 
-**Decision pending (maintainer):** accept `7f88855` (or a later V2 integration
-commit) as the canonical EVAL-01 baseline. Until then, the PR 2 runner targets
-`main`, and V2-dependent cases (prohibited billing transition) are labelled
-unsupported with separate coverage. Scores from different baselines are never
-combined.
+**Decision (owner, 2026-10-31):** the V2 chain is accepted and integrated into
+`main` via `integrate/v2-control-chain`. The canonical EVAL-01 baseline is the
+resulting `main` merge commit, recorded in `03_PROGRESS_AND_EVIDENCE.md` after
+merge. EVAL-01 work targets `main`. Later baseline changes need a new record
+here; scores from different baselines are never combined.
 
 Remote freshness was checked on 2026-10-31: both refs above were the tips of
 `origin/main` and `origin/feat/v2-profile-billing-policy`.
@@ -61,9 +61,8 @@ CI (`.github/workflows/ci.yml`) runs both jobs on every PR and on pushes to
 | Unexpected or stale skips fail | `tests/expected_skips.json` compared both ways | V2 tip core run → fails on `test_orchestration_kernel_outcome` (see below) |
 | Artifacts identify commit/environment | `environment.json` per job | Records commit, `dirty`, Python, `uv.lock` SHA-256, package versions and Git pins |
 
-**When V2 integrates into `main`:** add
-`"::tests.test_orchestration_kernel_outcome"` to the `core` inventory. The
-check fails until that is done, by design.
+The V2 integration added `"::tests.test_orchestration_kernel_outcome"` to the
+`core` inventory; without it the check failed, by design.
 
 ## Deferred-obligation inventory (V2 tip `7f88855`)
 

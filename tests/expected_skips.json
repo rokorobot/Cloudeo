@@ -7,6 +7,7 @@
     "::tests.test_longhorizon_promotion_gate",
     "::tests.test_longhorizon_workspace_auditor",
     "::tests.test_longhorizon_workspace_executor",
+    "::tests.test_orchestration_kernel_outcome",
     "tests.test_uhp_workspace_bridge::test_base_longhorizon_adapter_still_has_no_workspace_sync"
   ],
   "longhorizon": []
