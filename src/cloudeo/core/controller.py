@@ -218,8 +218,10 @@ class Controller:
                 output=output,
                 deterministic_status="inconclusive",
                 deterministic_evidence=[
-                    "Dry run: command constructed; provider execution and "
-                    "result verification intentionally skipped."
+                    (
+                        "Dry run: command constructed; provider execution and "
+                        "result verification intentionally skipped."
+                    )
                 ],
                 verification_source="dry_run",
                 verification_probability=0.0,
