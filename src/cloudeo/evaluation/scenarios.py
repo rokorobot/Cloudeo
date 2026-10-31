@@ -84,8 +84,10 @@ async def controller_run(fixture, workdir, record):
         async def decide(self, state, questions):
             if "tool_route" in questions:
                 record("jev", "route")
-                if "jev_route" in fixture:  # the model's routing answer, as fixture data
-                    return {"answers": {"tool_route": dict(fixture["jev_route"])}}
+                route = fixture.get("jev_route")  # the model's routing answer, as fixture data
+                # A model can only pick among the choices Cloudeo offered it.
+                if route and route["choice"] in questions["tool_route"]["criteria"]:
+                    return {"answers": {"tool_route": dict(route)}}
             else:
                 record("jev", "verify", tool_output=state["tool_output"])
             return await super().decide(state, questions)
@@ -100,7 +102,8 @@ async def controller_run(fixture, workdir, record):
         )
         async with database.session() as session:
             rows = (await session.exec(select(RunRecord))).all()
-        record("db", "run_records", rows=[[r.id, r.status] for r in rows])
+        if rows:  # the event exists only when there is something persisted
+            record("db", "run_records", rows=[[r.id, r.status] for r in rows])
         stored = "".join(r.payload_json + r.result_json for r in rows)
     finally:
         await database.engine.dispose()
@@ -132,6 +135,10 @@ async def controller_run(fixture, workdir, record):
 # --- UHP dispatch + orchestration failure mapping: the UHP server is faked ---
 
 
+def _harness(payload: dict) -> str | None:
+    return payload.get("metadata", {}).get("harness_id")
+
+
 def _uhp_body(fixture_result: dict, payload: dict, n: int) -> dict:
     return {
         "id": f"resp_eval_{n}", "object": "response", "created_at": 1786400000,
@@ -160,8 +167,9 @@ async def uhp_dispatch(fixture, workdir, record):
     from cloudeo.uhp.models import UHP_VERSION, UHPTaskRequest
 
     headers = {"UHP-Version": UHP_VERSION}  # a conforming server always sends it
-    # Replies in order; the last one repeats. {"result": {...}} is a 200 response.
-    replies = fixture.get("server_replies") or [fixture["server_reply"]]
+    # Replies in order (the last one repeats), or per harness. {"result": {...}} is a 200.
+    by_harness = fixture.get("replies_by_harness", {})
+    replies = fixture.get("server_replies") or [fixture.get("server_reply")]
     posts: list[dict] = []
 
     def server(request: httpx.Request) -> httpx.Response:
@@ -169,9 +177,14 @@ async def uhp_dispatch(fixture, workdir, record):
         record("uhp_server", "request", method=request.method, path=request.url.path,
                harness_id=payload.get("metadata", {}).get("harness_id"),
                previous_response_id=payload.get("previous_response_id"))  # fmt: skip
+        if request.method == "GET" and request.url.path in fixture.get("get_replies", {}):
+            # Discovery or health evidence the runtime offers before any dispatch.
+            body = fixture["get_replies"][request.url.path]
+            return httpx.Response(200, json=body, headers=headers)
         if request.method == "POST" and request.url.path.endswith("/v1/responses"):
             posts.append(payload)
-        reply = replies[min(len(posts), len(replies)) - 1]
+        harness = payload.get("metadata", {}).get("harness_id")
+        reply = by_harness.get(harness) or replies[min(len(posts), len(replies)) - 1]
         if "result" in reply:
             body = _uhp_body(reply["result"], payload, len(posts))
             return httpx.Response(200, json=body, headers=headers)
@@ -182,22 +195,30 @@ async def uhp_dispatch(fixture, workdir, record):
     )
     dispatcher = ExecutionDispatcher(harness_task=UHPHarnessTaskBackend(client))
     task = UHPTaskRequest.model_validate(fixture["task"])
-    async with client:
-        outcome = await dispatcher.execute(HarnessTaskExecution(task=task))
+    record("cloudeo", "dispatch_requested", harness_id=task.harness_id)
+    try:
+        async with client:
+            outcome = await dispatcher.execute(HarnessTaskExecution(task=task))
+    except Exception as exc:  # noqa: BLE001 - a refusal to dispatch is an observed outcome
+        record("cloudeo", "dispatch_refused", error=type(exc).__name__)
+        return {"dispatch.refused": True, "uhp.task_posts": len(posts)}, "complete"
     runtime = outcome.runtime
+    fallback = fixture.get("approved_fallback_harness")
     observations = {
+        "dispatch.refused": False,
         "outcome.status": outcome.status,
         "outcome.error_class": outcome.error.error_class if outcome.error else None,
         "outcome.runtime.actual_model": runtime.actual_model,
         "outcome.runtime.model_fallback": runtime.model_fallback,
-        # Reported as a plain success: completed, no error, nothing flagged.
-        "outcome.accepted_as_completed": outcome.status == "completed" and outcome.error is None,
         "uhp.task_posts": len(posts),
+        "uhp.primary_posts": sum(_harness(p) == task.harness_id for p in posts),
+        "uhp.fallback_posts": sum(fallback is not None and _harness(p) == fallback for p in posts),
         "uhp.resumed_posts": sum(1 for p in posts if p.get("previous_response_id")),
-        "uhp.fallback_posts": sum(
-            1 for p in posts if p.get("metadata", {}).get("harness_id") != task.harness_id
-        ),
+        # A retry must resend exactly the same task (harness, model, input).
+        "uhp.repeats_identical": all(p == posts[0] for p in posts),
     }
+    # No Cloudeo component yet decides whether a completed run with a different
+    # identity is acceptable, so "identity.decision" is not observed (unknown).
     if "synthetic_secret" in fixture:
         observations["output.contains_secret"] = fixture["synthetic_secret"] in (
             outcome.output_text or ""
@@ -244,6 +265,13 @@ def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(cwd), *identity, *args], capture_output=True, text=True, check=True
     ).stdout.strip()
+
+
+def _git_bytes(cwd: Path, *args: str) -> str:
+    """Raw file content (no strip), so the oracle compares exact bytes."""
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True
+    ).stdout
 
 
 def _write(root: Path, files: dict[str, str]) -> None:
@@ -303,7 +331,16 @@ def _gate(repo, broker, candidate, verification, accepted_before, record):
     record("git", "refs", refs=refs, accepted_before=accepted_before,
            accepted_after=accepted_after)  # fmt: skip
     checkpoint = result.checkpoint.commit if result.checkpoint else None
+    # Read accepted state from Git directly, not from the gate's own result.
+    paths = _git(repo, "ls-tree", "-r", "--name-only", accepted_after).splitlines()
+    accepted_files = {p: _git_bytes(repo, "show", f"{accepted_after}:{p}") for p in paths}
     return {
+        "accepted.files": accepted_files,
+        # A promotion's commit sits directly on the base the candidate started from.
+        "accepted.parent_is_base": _git(
+            repo, "rev-list", "--parents", "-n1", accepted_after
+        ).split()[1:]
+        == [candidate.base_commit],
         "gate.status": result.decision.status,
         "gate.reason": result.decision.reason,
         "gate.stage": result.stage,
@@ -395,10 +432,15 @@ async def audit_then_promotion_gate(fixture, workdir, record):
         {"type": "output_text", "text": audit["report"]}]}]}  # fmt: skip
     # What the (faked) auditor model does to its remote copy; a read-only audit does nothing.
     writes = audit.get("remote_writes")
+
+    def remote_work(workspace):
+        _write(workspace, writes)
+        record("auditor_model", "write", paths=sorted(writes))
+
     router = FakeHarnessRouter(
         workdir / "harnessrouter",
         response_overrides=reply,
-        work=(lambda ws: _write(ws, writes)) if writes else None,
+        work=remote_work if writes else None,
     )
 
     def server(request: httpx.Request) -> httpx.Response:
@@ -439,6 +481,7 @@ async def audit_then_promotion_gate(fixture, workdir, record):
     observations.update({
         "audit.status": verification.status,
         "audit.reason": verification.reason,
+        "audit.mutations": verification.verifier_workspace_mutations,
         "audit.task_posts": sum(
             1 for e in record.events
             if e.actor == "uhp_server" and e.data["method"] == "POST"

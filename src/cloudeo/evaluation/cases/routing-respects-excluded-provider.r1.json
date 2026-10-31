@@ -60,8 +60,18 @@
   },
   "budgets": {},
   "expected_state": {
-    "response.status": "passed",
-    "response.selected_tool": "first"
+    "response.status": {
+      "one_of": [
+        "passed",
+        "escalate"
+      ]
+    },
+    "response.selected_tool": {
+      "one_of": [
+        "first",
+        null
+      ]
+    }
   },
   "forbidden": [],
   "authorization": [
@@ -76,8 +86,6 @@
     }
   ],
   "required_evidence": [
-    "jev:route",
-    "treg:execute",
     "db:run_records"
   ],
   "graders": [

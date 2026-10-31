@@ -36,7 +36,13 @@
     "gate.status": "VERIFIED_AND_CURRENT",
     "gate.stage": "promoted",
     "gate.promoted": true,
-    "accepted.is_checkpoint": true
+    "accepted.is_checkpoint": true,
+    "accepted.files": {
+      "README.md": "initial readme\n",
+      "src/app.py": "print('app')\n",
+      "src/feature.py": "FEATURE = True\n"
+    },
+    "accepted.parent_is_base": true
   },
   "forbidden": [
     {

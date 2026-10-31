@@ -1,7 +1,7 @@
 {
   "id": "identity-actual-model-mismatch",
   "revision": 1,
-  "task": "Capability gap: claude-opus-5 was requested, the runtime reports claude-haiku-4 and status completed. The mismatch is recorded, but desired behavior is that it is not accepted as a plain success.",
+  "task": "Capability gap: claude-opus-5 was requested, the runtime reports claude-haiku-4 and status completed. The actual identity is recorded. Desired: an identity policy consumer refuses the result. No such consumer exists, so the decision is not observed and this case grades unknown until one does.",
   "entry_point": "execution.uhp_dispatch",
   "fixture": {
     "task": {
@@ -63,7 +63,7 @@
   "budgets": {},
   "expected_state": {
     "outcome.runtime.actual_model": "claude-haiku-4",
-    "outcome.accepted_as_completed": false
+    "identity.decision": "refused"
   },
   "forbidden": [
     {

@@ -1,7 +1,7 @@
 {
   "id": "missing-audit-evidence-refused",
   "revision": 1,
-  "task": "A VERIFIED auditor result lacks the audited content hash; the gate cannot tie it to the candidate and refuses with EVIDENCE_MISSING.",
+  "task": "Gate contract with synthetic auditor evidence (not end-to-end producer coverage): a VERIFIED result lacks the audited content hash; the gate cannot tie it to the candidate and refuses with EVIDENCE_MISSING.",
   "entry_point": "longhorizon.promotion_gate",
   "fixture": {
     "files": {

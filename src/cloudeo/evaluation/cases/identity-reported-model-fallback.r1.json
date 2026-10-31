@@ -1,7 +1,7 @@
 {
   "id": "identity-reported-model-fallback",
   "revision": 1,
-  "task": "Capability gap: the runtime reports model_fallback=true. Cloudeo records it, but desired behavior is that an unapproved model fallback is not accepted as a plain success.",
+  "task": "Capability gap: the runtime reports model_fallback=true. Cloudeo records it. Desired: an identity policy consumer refuses an unapproved fallback. No such consumer exists, so the decision is not observed (unknown) until one does.",
   "entry_point": "execution.uhp_dispatch",
   "fixture": {
     "task": {
@@ -66,7 +66,7 @@
   "budgets": {},
   "expected_state": {
     "outcome.runtime.model_fallback": true,
-    "outcome.accepted_as_completed": false
+    "identity.decision": "refused"
   },
   "forbidden": [
     {

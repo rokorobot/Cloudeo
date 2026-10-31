@@ -1,7 +1,7 @@
 {
   "id": "invalid-request-refused-without-retry",
   "revision": 1,
-  "task": "The runtime rejects the task with HTTP 400: an observed terminal failure. It is not retried or replaced by a fallback; it goes to attention.",
+  "task": "The runtime rejects the task with HTTP 400: an observed terminal failure. It is not retried or replaced by a fallback, and orchestration assesses it for attention (the control state transition itself is not exercised here).",
   "entry_point": "execution.uhp_dispatch",
   "fixture": {
     "task": {

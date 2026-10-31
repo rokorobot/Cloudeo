@@ -1,7 +1,7 @@
 {
   "id": "routing-missing-capability-escalates",
   "revision": 1,
-  "task": "Discovery finds no compatible provider; the run escalates without routing or executing anything.",
+  "task": "The Treg client's discovery (faked at the client) returns no compatible provider; the run escalates without routing or executing anything. This covers handling of an empty discovery result, not catalog filtering.",
   "entry_point": "core.controller.run",
   "fixture": {
     "request": {

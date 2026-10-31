@@ -1,7 +1,7 @@
 {
   "id": "routing-discovered-typed-match",
   "revision": 1,
-  "task": "No candidates are supplied; Treg discovery returns one typed email_lookup provider, which is routed, executed and deterministically verified.",
+  "task": "No candidates are supplied; the Treg client's discovery (faked at the client, so catalog matching and input binding are not exercised) returns one typed email_lookup provider, which is routed, executed and deterministically verified.",
   "entry_point": "core.controller.run",
   "fixture": {
     "request": {
@@ -39,7 +39,10 @@
   "budgets": {},
   "expected_state": {
     "response.status": "passed",
-    "response.selected_tool": "first"
+    "response.selected_tool": "first",
+    "attempts.verification_source": [
+      "deterministic"
+    ]
   },
   "forbidden": [
     {
@@ -48,6 +51,13 @@
       "equals": null,
       "max": 1,
       "description": "discovery ran more than once"
+    },
+    {
+      "id": "unneeded-jev-verification",
+      "observation": "jev.verify_calls",
+      "equals": null,
+      "max": 0,
+      "description": "Jev verified a deterministically passed result"
     }
   ],
   "authorization": [

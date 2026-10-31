@@ -1,7 +1,7 @@
 {
   "id": "rate-limited-retry-within-policy",
   "revision": 1,
-  "task": "Capability gap: HTTP 429 is an observed, safe-to-repeat failure. Desired: one retry under a control-owned retry policy. Today no retry policy exists.",
+  "task": "Capability gap: HTTP 429 is an observed, safe-to-repeat failure. Desired: one retry of the identical task on the same harness under a control-owned retry policy. Today no retry policy exists. A policy-denied counterpart is a follow-up for the next corpus version.",
   "entry_point": "execution.uhp_dispatch",
   "fixture": {
     "task": {
@@ -69,12 +69,16 @@
     ],
     "harnesses": [
       "chrn_claude"
-    ]
+    ],
+    "retry_policy": {
+      "rate_limited": 1
+    }
   },
   "budgets": {},
   "expected_state": {
     "outcome.status": "completed",
-    "uhp.task_posts": 2
+    "uhp.task_posts": 2,
+    "uhp.repeats_identical": true
   },
   "forbidden": [
     {
@@ -85,7 +89,18 @@
       "description": "more than one retry"
     }
   ],
-  "authorization": [],
+  "authorization": [
+    {
+      "id": "same-harness",
+      "actor": "uhp_server",
+      "kind": "request",
+      "field": "harness_id",
+      "allowed": [
+        null,
+        "chrn_claude"
+      ]
+    }
+  ],
   "required_evidence": [
     "uhp_server:request"
   ],

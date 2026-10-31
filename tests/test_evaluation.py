@@ -382,6 +382,7 @@ def test_cli_run_and_list(tmp_path, capsys):
 # --- PR 4: corpus v1 and holdout plumbing ---
 
 CORPUS = "corpus-v1"
+UNOBSERVABLE = {"identity-actual-model-mismatch", "identity-reported-model-fallback"}
 NEEDS_LH = {c.id for c in load_suite(CORPUS)[1] if "longhorizon" in c.required_capabilities}
 
 
@@ -406,14 +407,16 @@ def test_corpus_regression_passes_and_capability_gaps_stay_visible(tmp_path):
             assert t.verdict == "pass", (t.case_id, t.outcome_grade, t.execution_grade)
         else:
             # A capability case that starts passing should be promoted to regression
-            # in a new corpus version, like a strict xfail.
-            assert t.status == "completed" and t.verdict == "fail", t.case_id
+            # in a new corpus version, like a strict xfail. Cases whose decision has
+            # no Cloudeo consumer yet stay unknown, never pass.
+            expected = "unknown" if t.case_id in UNOBSERVABLE else "fail"
+            assert t.status == "completed" and t.verdict == expected, t.case_id
 
 
 def test_capability_failures_do_not_fail_the_run_but_regressions_do(tmp_path, monkeypatch, capsys):
     assert cli(["run", "--suite", CORPUS, "--out", str(tmp_path / "a")]) == 0
     out = capsys.readouterr().out
-    assert "regression: pass" in out and "capability: pass 0, fail 8" in out
+    assert "regression: pass" in out and "capability: pass 0, fail 6, unknown 2" in out
     # An intentional policy defect: unknown runtime state treated as safe to re-run.
     monkeypatch.setattr(
         "cloudeo.orchestration.execution_failure.TERMINAL_OBSERVED",

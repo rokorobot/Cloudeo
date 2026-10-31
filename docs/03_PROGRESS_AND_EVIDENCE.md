@@ -1931,3 +1931,9 @@ caught by `uhp-unknown-no-unsafe-retry` and fails the run.
 
 Open: no holdout cases yet (independent author); oracle review by an
 independent reviewer before merge.
+
+Independent oracle review (separate thread, Codex): 9 OK, 11 WEAK, 6 WRONG on
+the first revision. All WRONG and most WEAK findings were fixed before merge;
+the rest are stated limits with follow-ups (see `docs/EVAL-01_CORPUS.md`,
+"Oracle review"). After fixes: regression 18/18 pass; capability 6 fail and
+2 unknown (identity cases: no identity policy consumer exists to observe).

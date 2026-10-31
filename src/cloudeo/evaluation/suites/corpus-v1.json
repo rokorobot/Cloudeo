@@ -36,61 +36,61 @@
     {
       "case_id": "routing-discovered-typed-match",
       "revision": 1,
-      "case_digest": "0834cf72b5af418949ba17a21ffd1ba3cf67c99d199e88abcf75bef4485b9116",
+      "case_digest": "bdd6f81a7278f420d3af62114a4b7bede865d45346409351767c76f7541d7760",
       "holdout": false
     },
     {
       "case_id": "routing-missing-capability-escalates",
       "revision": 1,
-      "case_digest": "aa5396890d99826d48c21f9ab7f8986426aba12b3835e17bfe3b67374292d46d",
+      "case_digest": "a65235ee914cdc9f0e5259d04d98f9c9b63264a5bd92385469abc03b5043ded0",
       "holdout": false
     },
     {
       "case_id": "routing-respects-excluded-provider",
       "revision": 1,
-      "case_digest": "4b5f84d7bba35a4bea672ab74f8fc40609a7bb98f8f1a57a2c9fcee04a2cf18c",
+      "case_digest": "66621388e0b69af86ee6f012cdc8f5c31718d1ef8706a7cf9a363503689791c0",
       "holdout": false
     },
     {
       "case_id": "persuasive-invalid-result-escalates",
       "revision": 1,
-      "case_digest": "34a5108c271a00120c1ad98b851eb9541b00f8ec83f549d84aee72f336998d61",
+      "case_digest": "d81aabdfc06254447ee16c80399c1dee5579481e3d29b94935800a8665b5cbe8",
       "holdout": false
     },
     {
       "case_id": "identity-actual-model-mismatch",
       "revision": 1,
-      "case_digest": "404480fc8c45685e862c92665f004ffb2310543f35f8df917ad07dd62c8f7f3b",
+      "case_digest": "524cc038b176446a9cbd6ad0d69f4d7dbbc675b3bfb831e3036b7dfa5b906511",
       "holdout": false
     },
     {
       "case_id": "identity-reported-model-fallback",
       "revision": 1,
-      "case_digest": "c7d906631cf1122d5234d08824a0a50ddc7f27d14ff198bcba01980eb9ec5478",
+      "case_digest": "fdf9c98327c341b0e28138ece10961aa3bcca04df473964d0182f60394f06915",
       "holdout": false
     },
     {
       "case_id": "auditor-remote-write-blocks-promotion",
       "revision": 1,
-      "case_digest": "e54ce50aa40ef1ca70cab8532a3a0b9ae67f05bd76bb3c49a2fe33b40d06b8ca",
+      "case_digest": "a1afec214e514f7c6c49781f2a63a1eeb4158ba43df4b809d137f8c9b34c5768",
       "holdout": false
     },
     {
       "case_id": "ignored-secret-never-uploaded",
       "revision": 1,
-      "case_digest": "33c05117cb45cef8057ea71b31d8154bfb4fb9334e8b2f8d82eb938509627803",
+      "case_digest": "5e83bc6a5d147ffca9569984b6ef3258334fc305f1d2fa3f365e2dc5a74f4c24",
       "holdout": false
     },
     {
       "case_id": "unapproved-harness-dispatch-refused",
       "revision": 1,
-      "case_digest": "9cc52696ffb53cdeba71f48277c49dd308df8e56e77d823757bb1e498824fb74",
+      "case_digest": "6c8b189ce6f5189a7f85111c8995f9830ca3958314281e6380839f124fdf59d2",
       "holdout": false
     },
     {
       "case_id": "secret-in-tool-output-not-persisted",
       "revision": 1,
-      "case_digest": "d75bb3bbf1d556f06f01b45fe5e719265c4a3a302e1fda8a38b6ad914bc3929a",
+      "case_digest": "b115523d5ef493982e12de25e112549cf25b63f19d2fb2f2f29645a2fd3b90cc",
       "holdout": false
     },
     {
@@ -102,13 +102,13 @@
     {
       "case_id": "tool-cost-over-budget-refused",
       "revision": 1,
-      "case_digest": "d88c33c2c91836a085a73f16019db6ca7bd239dee235b282cb1d779140585c16",
+      "case_digest": "79db89ac85e3c76f3c252318d59bfe4183fd35fd553b25d26dbdd9086993f4f5",
       "holdout": false
     },
     {
       "case_id": "missing-audit-evidence-refused",
       "revision": 1,
-      "case_digest": "0fa32f027e9dd473959c0de0705c47d5139fb3400e0706bfdc592c903bf310cf",
+      "case_digest": "3ed0fdb7921f26e3fe0fff920fd3ec3201c89eb63f2e10115086ce9bcd10ce6d",
       "holdout": false
     },
     {
@@ -132,7 +132,7 @@
     {
       "case_id": "verified-candidate-promoted",
       "revision": 1,
-      "case_digest": "05b2f06db48a3ad518e6088f5ca0f4f57311012160e5d7340a5e3687683e4c12",
+      "case_digest": "27a0a70f9496aaf465b162df2c1853b7d57752666346f436059f9b358c372690",
       "holdout": false
     },
     {
@@ -144,19 +144,19 @@
     {
       "case_id": "invalid-request-refused-without-retry",
       "revision": 1,
-      "case_digest": "934636fb45bd3186346da00c7b201b41e0218d586dc09ea06cb15e1173dcb991",
+      "case_digest": "8676f4d9dabe1486ee8fd32122fc47a3126d3233281f99cd786bf99000f25eb2",
       "holdout": false
     },
     {
       "case_id": "harness-unavailable-uses-approved-fallback",
       "revision": 1,
-      "case_digest": "42c4216cd8e3a50c5eaf68402530a15895f70653c785d317550bdabaebfd17d9",
+      "case_digest": "dca9915cc6b0e6bafd80c9c749b3bb648333ddb5e2e34619c9e6739133f26f83",
       "holdout": false
     },
     {
       "case_id": "rate-limited-retry-within-policy",
       "revision": 1,
-      "case_digest": "d1b1710a3f801583b530d6a687fc88e725757aec99329a29324be82f8b5deb67",
+      "case_digest": "721a4266a0fb708032e7f4a470be001a44b272731fd8c000c4d4141ec12c1395",
       "holdout": false
     }
   ],

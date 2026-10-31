@@ -14,7 +14,7 @@ uv run python -m cloudeo.evaluation verify --out eval-out
 | Partition | Cases | Meaning | Run exit code |
 | --- | ---: | --- | --- |
 | regression | 18 | Supported behavior; must pass | any fail or error → exit 1 |
-| capability | 8 | Known gaps; expected to fail today, each names the missing feature | reported, never fails the run |
+| capability | 8 | Known gaps; fail (6) or unknown (2) today, each names the missing feature | reported, never fails the run |
 | holdout | 0 of 4 | Contamination check; authored independently later (below) | aggregate counts only |
 
 A capability case that starts passing is promoted to regression in a new corpus
@@ -64,12 +64,12 @@ families take the 4 holdout cases is the holdout author's choice.
 | Case | Missing today | Related obligation |
 | --- | --- | --- |
 | `routing-respects-excluded-provider` | Routing has no provider allow-list from approvals | — |
-| `identity-actual-model-mismatch` | A completed run with a different actual model is accepted as plain success | — |
-| `identity-reported-model-fallback` | A runtime-reported model fallback is accepted as plain success | V2C-12 |
-| `unapproved-harness-dispatch-refused` | Dispatch is not bound to an approved WorkOrder | V2C-02 |
+| `identity-actual-model-mismatch` | No identity policy consumer decides on a completed run with a different actual model; graded unknown | — |
+| `identity-reported-model-fallback` | No identity policy consumer decides on a reported model fallback; graded unknown | V2C-12 |
+| `unapproved-harness-dispatch-refused` | Dispatch is not bound to an approved WorkOrder; a refusal would be an observed, completed outcome | V2C-02 |
 | `secret-in-tool-output-not-persisted` | Tool output is stored verbatim in the run record | — |
 | `tool-cost-over-budget-refused` | `RunRequest` carries no cost budget | — |
-| `harness-unavailable-uses-approved-fallback` | No control-owned fallback execution | V2C-12 |
+| `harness-unavailable-uses-approved-fallback` | Discovery lists only the fallback before dispatch; no control-owned fallback execution | V2C-12 |
 | `rate-limited-retry-within-policy` | No control-owned retry policy | — |
 
 Passing a capability case never marks a V2C obligation ENFORCED by itself
@@ -77,17 +77,55 @@ Passing a capability case never marks a V2C obligation ENFORCED by itself
 
 ## Oracle review
 
-Each expected state was derived from the documented behavior of the code under
-test (validators, `outcome_from_uhp_error`, `assess_execution_failure`,
-`normalize_auditor_result`, `evaluate_promotion_gate`, `BillingPolicy`), not
-copied from observed output. Two mismatches on the first run were fixture bugs,
-not product behavior, and were fixed in the scenarios:
+Expected states were derived from the documented behavior of the code under
+test, not copied from observed output. Three oracle or fixture errors surfaced
+while running them and were fixed in the fixtures: the fake UHP server omitted
+the `UHP-Version` header (identity cases measured a protocol error), the
+stale-candidate case counted another candidate's checkpoint, and the
+remote-write case used Cloudeo's `mode_changed` mutation shape where
+`AuditorVerification` carries LongHorizon's `type_changed` shape
+(`tests/test_longhorizon_audit_result.py:33`).
 
-- the fake UHP server omitted the `UHP-Version` header, so identity cases were
-  measuring a protocol error (`actual_model` pinned in the case exposed it);
-- the stale-candidate case counted the other promotion's checkpoint.
+An independent reviewer (separate thread, different model family) graded the
+first revision: 9 OK, 11 WEAK, 6 WRONG. Resolutions:
 
-Independent review of the oracles: see the PR for the reviewer's findings.
+| Finding | Cases | Resolution |
+| --- | --- | --- |
+| Policy input never reaches production, or the fake forces an outcome a correct implementation would avoid | excluded-provider, cost-over-budget | Router fake picks only among offered choices; refusal accepted as a valid outcome; budget passed in the request (ignored today, new revision when the field exists) |
+| "Accepted" inferred from runtime status | both identity cases | Proxy removed; the decision is unobserved (unknown) until an identity policy consumer exists |
+| A correct refusal would grade unknown or error | unapproved-dispatch | Refusal is recorded as an observed outcome with its own evidence event |
+| 503 gives no outage evidence; any other harness counted as fallback | harness-unavailable | Discovery lists only the fallback before dispatch; per-harness counts and an approved-harness rule |
+| Any retry satisfied the oracle | rate-limited-retry | Retry must be identical and on the same harness (authorization rule) |
+| Promotion judged by the gate's own result | verified-promoted, ignored-secret | Accepted tree read from Git and compared byte-for-byte with the fixture; parent must be the base |
+| BLOCKED for any reason passed | auditor-remote-write | Reason, mutated paths and the fake model's write event required |
+| Jev check only on exact outputs | persuasive-invalid | No Jev verification at all |
+| A deleted run record hid the secret | secret-in-output | Run record must exist |
+| Required events without substance | all controller cases | `db:run_records` is emitted only when rows exist |
+
+### Stated limits (not fixed in corpus v1)
+
+- `routing-discovered-typed-match` and `routing-missing-capability-escalates`
+  fake the Treg client's discovery, so catalog matching and input binding are
+  not exercised. Follow-up: a catalog-level fake beneath the real adapter.
+- `uhp-unknown-no-unsafe-retry` and `invalid-request-refused-without-retry`
+  stop at orchestration's attention assessment; the control state transition
+  (`route_execution_failure` on a WorkOrder) is not exercised. Follow-up.
+- `missing-audit-evidence-refused` is a gate contract test with synthetic
+  auditor evidence (trace `partial`), not end-to-end producer coverage.
+- Observations such as gate status, audit status and attempt labels are
+  Cloudeo's classifications; cases use them to test classification, while
+  execution, persistence and promoted content are read independently.
+- A policy-denied counterpart to `rate-limited-retry-within-policy` belongs in
+  the next corpus version.
+
+## Rollback
+
+EVAL-01 PRs 2–4 only add `src/cloudeo/evaluation/`, `tests/test_evaluation.py`,
+docs, and expected-skip entries; PR 3b also moved the fake HarnessRouter out of
+two test files. Reverting their merge commits restores the previous state; no
+runtime code, schema or stored operational data depends on them. Trial
+directories written by the runner are outside the repository and can be
+deleted.
 
 ## Holdout process
 
