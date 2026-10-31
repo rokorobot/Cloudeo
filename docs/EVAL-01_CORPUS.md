@@ -1,11 +1,14 @@
-# EVAL-01 corpus v1
+# EVAL-01 corpus
 
-Suite: `src/cloudeo/evaluation/suites/corpus-v1.json`. Plan: [EVAL-01_PLAN.md](EVAL-01_PLAN.md) §6.
+Current suite: `corpus-v2` (27 cases: 19 regression, 8 capability); see
+"Corpus v2" below. `corpus-v1` (26 cases) is kept unchanged as history.
+
+Suite files: `src/cloudeo/evaluation/suites/`. Plan: [EVAL-01_PLAN.md](EVAL-01_PLAN.md) §6.
 Baseline: `46ac370`. All cases are deterministic: only external boundaries are
 faked (Treg, Jev, the UHP/HarnessRouter server, and the auditor model's report).
 
 ```bash
-uv run python -m cloudeo.evaluation run --suite corpus-v1 --out eval-out
+uv run python -m cloudeo.evaluation run --suite corpus-v2 --out eval-out
 uv run python -m cloudeo.evaluation verify --out eval-out
 ```
 
@@ -128,6 +131,27 @@ no longer treats an exception as a refusal.
   execution, persistence and promoted content are read independently.
 - A policy-denied counterpart to `rate-limited-retry-within-policy` belongs in
   the next corpus version.
+
+## Corpus v2
+
+Closes two stated limits of corpus v1 and adds the policy-denied retry case:
+
+| Case | v1 | v2 |
+| --- | --- | --- |
+| `routing-discovered-typed-match` r2 | Treg faked at the client | Real `TregCLIClient` over a fake `treg` command (`fake_treg.py`): Cloudeo's discovery queries, catalog search and get, input binding, endpoint rejection and call arguments all run; the exact bound call is part of the oracle |
+| `routing-missing-capability-escalates` r2 | Empty candidate list supplied | The catalog offers only an endpoint needing an input the request lacks; the real adapter rejects it during binding |
+| `uhp-unknown-no-unsafe-retry` r3 | Stopped at the attention assessment | Routed through `route_execution_failure` on an approved, executing WorkOrder: `USER_ATTENTION_REQUIRED`, `AGENT_UNAVAILABLE`, no new attempt |
+| `invalid-request-refused-without-retry` r2 | Same | Same as above |
+| `rate-limited-not-retried-without-policy` r1 (new, regression) | — | HTTP 429 with no retry policy: one request, attention raised; counterpart to the retry capability case |
+
+Seeded defects caught: input binding that drops an enum input (call arguments
+differ), and a routing step that never raises attention.
+
+Remaining limits: `missing-audit-evidence-refused` is still a synthetic gate
+contract test; the four capability cases that need control-owned routing,
+dispatch, fallback and retry still wait for those entry points. Treg events in
+`run_treg_cli` trials are appended after the run (the fake runs in its own
+process), so they keep call order but are not interleaved with Jev events.
 
 ## Rollback
 

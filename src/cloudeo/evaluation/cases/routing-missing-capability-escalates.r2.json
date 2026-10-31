@@ -1,0 +1,101 @@
+{
+  "id": "routing-missing-capability-escalates",
+  "revision": 2,
+  "task": "The Treg catalog offers only an endpoint that needs a LinkedIn URL the request does not have. Cloudeo's real adapter rejects it during input binding, so no provider is compatible; the run escalates without routing or executing.",
+  "entry_point": "core.controller.run_treg_cli",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      }
+    },
+    "treg_catalog": {
+      "search": {
+        "work email": {
+          "count": 2,
+          "total": 2,
+          "results": [
+            {
+              "id": "treg.people.email.find",
+              "kind": "routed",
+              "capability": "people.email.find",
+              "score": 18.9,
+              "routed_children": [
+                "linked.people.email.find"
+              ]
+            },
+            {
+              "id": "linked.people.email.find",
+              "kind": "data",
+              "capability": "people.email.find",
+              "score": 18.9
+            }
+          ]
+        }
+      },
+      "endpoints": {
+        "linked.people.email.find": {
+          "endpoint": {
+            "id": "linked.people.email.find",
+            "provider": "linked",
+            "method": "GET",
+            "capability": "people.email.find",
+            "summary": "Email from a profile URL",
+            "input": {
+              "queryParams": {
+                "linkedin_url": {
+                  "type": "string",
+                  "required": true
+                }
+              }
+            }
+          },
+          "provider": {
+            "display_name": "Linked"
+          }
+        }
+      },
+      "outputs": {}
+    }
+  },
+  "required_capabilities": [],
+  "approvals": {},
+  "budgets": {},
+  "expected_state": {
+    "response.status": "escalate",
+    "response.selected_tool": null,
+    "response.discovered_candidates": [],
+    "run_record.persisted": true
+  },
+  "forbidden": [
+    {
+      "id": "executed-without-provider",
+      "observation": "treg.execute_calls",
+      "equals": null,
+      "max": 0,
+      "description": "a tool ran although none was compatible"
+    },
+    {
+      "id": "routed-without-provider",
+      "observation": "jev.route_calls",
+      "equals": null,
+      "max": 0,
+      "description": "Jev was asked to route with no candidate"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "treg_catalog:search",
+    "treg_catalog:get",
+    "db:run_records"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "major",
+  "mode": "deterministic"
+}

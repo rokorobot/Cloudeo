@@ -381,7 +381,7 @@ def test_cli_run_and_list(tmp_path, capsys):
 
 # --- PR 4: corpus v1 and holdout plumbing ---
 
-CORPUS = "corpus-v1"
+CORPUS = "corpus-v2"
 UNOBSERVABLE = {"identity-actual-model-mismatch", "identity-reported-model-fallback"}
 NEEDS_LH = {c.id for c in load_suite(CORPUS)[1] if "longhorizon" in c.required_capabilities}
 
@@ -389,8 +389,10 @@ NEEDS_LH = {c.id for c in load_suite(CORPUS)[1] if "longhorizon" in c.required_c
 def test_corpus_composition():
     suite, cases = load_suite(CORPUS)
     partitions = [c.partition for c in cases]
-    assert len(cases) == 26 and len({c.id for c in cases}) == 26
-    assert (partitions.count("regression"), partitions.count("capability")) == (18, 8)
+    assert len(cases) == 27 and len({c.id for c in cases}) == 27
+    assert (partitions.count("regression"), partitions.count("capability")) == (19, 8)
+    # corpus-v1 stays loadable and unchanged as history.
+    assert len(load_suite("corpus-v1")[1]) == 26
     assert not any(e.holdout for e in suite.cases)  # added later by an independent author
     # Every case has an oracle of its own; critical cases are in the regression gate.
     assert all(c.expected_state for c in cases)
@@ -508,3 +510,41 @@ def test_capability_cases_cannot_pass_without_their_control_entry_point(tmp_path
     desired = {**trial.observations, "outcome.status": "completed", "uhp.task_posts": 2}
     c = next(c for c in load_suite(CORPUS)[1] if c.id == trial.case_id)
     assert grade_outcome(c, recorded(trial, observations=desired)).verdict == "unknown"
+
+
+def test_discovery_runs_through_the_real_treg_adapter(tmp_path, monkeypatch):
+    # Seeded defect in Cloudeo's input binding: optional/enum inputs are dropped.
+    from cloudeo.adapters import treg
+
+    real = treg._bind_param_group
+
+    def drops_realtime(specs, state):
+        bound, missing = real(specs, state)
+        return (
+            ({k: v for k, v in bound.items() if k != "realtime"}, missing)
+            if bound
+            else (
+                bound,
+                missing,
+            )
+        )
+
+    trial = by_case(run(tmp_path / "ok", suite=CORPUS)[1])["routing-discovered-typed-match"]
+    assert trial.verdict == "pass"
+    assert trial.observations["treg.catalog_queries"] == ["verified work email", "work email"]
+    monkeypatch.setattr(treg, "_bind_param_group", drops_realtime)
+    broken = by_case(run(tmp_path / "bad", suite=CORPUS)[1])["routing-discovered-typed-match"]
+    assert broken.outcome_grade.verdict == "fail"
+    assert any("treg.call_args" in r for r in broken.outcome_grade.reasons)
+
+
+def test_execution_failure_is_routed_through_control(tmp_path, monkeypatch):
+    trial = by_case(run(tmp_path / "ok", suite=CORPUS)[1])["uhp-unknown-no-unsafe-retry"]
+    assert trial.observations["control.work_order_status"] == "USER_ATTENTION_REQUIRED"
+    # Seeded defect: routing returns the WorkOrder unchanged (attention never raised).
+    monkeypatch.setattr(
+        "cloudeo.orchestration.execution_failure.route_execution_failure", lambda wo, a: wo
+    )
+    broken = by_case(run(tmp_path / "bad", suite=CORPUS)[1])["uhp-unknown-no-unsafe-retry"]
+    assert broken.verdict == "fail"
+    assert any("control.work_order_status" in r for r in broken.outcome_grade.reasons)

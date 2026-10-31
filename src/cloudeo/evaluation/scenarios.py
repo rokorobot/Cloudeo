@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -48,6 +49,45 @@ def scenario(entry_point: str):
 
 @scenario("core.controller.run")
 async def controller_run(fixture, workdir, record):
+    """Treg faked at the client: candidates and outputs come straight from the fixture."""
+    return await _controller(fixture, workdir, record, treg_cli=False)
+
+
+@scenario("core.controller.run_treg_cli")
+async def controller_run_treg_cli(fixture, workdir, record):
+    """The real TregCLIClient over the fake `treg` command: Cloudeo's discovery
+    queries, catalog matching, input binding and call construction all run."""
+    return await _controller(fixture, workdir, record, treg_cli=True)
+
+
+FAKE_TREG = Path(__file__).with_name("fake_treg.py")
+
+
+def _treg_cli(fixture, workdir, settings):
+    from cloudeo.adapters.treg import TregCLIClient
+
+    catalog, log = workdir / "treg-catalog.json", workdir / "treg-calls.jsonl"
+    catalog.write_text(json.dumps(fixture["treg_catalog"]))
+    log.touch()
+    client = TregCLIClient(settings)
+    # Only the external command is replaced; every argument is Cloudeo's own.
+    client.prefix = [sys.executable, "-I", str(FAKE_TREG), str(catalog), str(log)]
+    return client, log
+
+
+def _record_treg_log(log: Path, record) -> None:
+    """Replay the fake's invocation log as boundary events, in call order."""
+    for line in log.read_text().splitlines():
+        args = json.loads(line)
+        if args[:3] == ["--json", "catalog", "search"]:
+            record("treg_catalog", "search", query=args[3])
+        elif args[:3] == ["--json", "catalog", "get"]:
+            record("treg_catalog", "get", endpoint_id=args[3])
+        elif args[:1] == ["call"]:
+            record("treg", "execute", tool_id=args[1], treg_tool_id=args[1], args=args[2:])
+
+
+async def _controller(fixture, workdir, record, *, treg_cli):
     from sqlmodel import select
 
     from cloudeo.adapters.jev import MockJevClient
@@ -64,7 +104,7 @@ async def controller_run(fixture, workdir, record):
             return value
         return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
 
-    outputs = {tool: as_output(value) for tool, value in fixture["tool_outputs"].items()}
+    outputs = {tool: as_output(value) for tool, value in fixture.get("tool_outputs", {}).items()}
 
     class FakeTreg(TregClient):
         async def execute(self, candidate, dry_run=False):
@@ -96,10 +136,14 @@ async def controller_run(fixture, workdir, record):
     settings = Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{workdir}/runs.db")
     database = Database(settings)
     await database.init()
+    treg, log = _treg_cli(fixture, workdir, settings) if treg_cli else (FakeTreg(), None)
     try:
-        response = await Controller(settings, RecordingJev(), FakeTreg(), database).run(
+        response = await Controller(settings, RecordingJev(), treg, database).run(
             RunRequest.model_validate(fixture["request"])
         )
+        if log is not None:
+            # Appended after the run: the fake runs in its own process.
+            _record_treg_log(log, record)
         async with database.session() as session:
             rows = (await session.exec(select(RunRecord))).all()
         if rows:  # the event exists only when there is something persisted
@@ -117,6 +161,7 @@ async def controller_run(fixture, workdir, record):
         "attempts.verification_source": [a.verification_source for a in response.attempts],
         "treg.execute_calls": record.count("treg", "execute"),
         "treg.discover_calls": record.count("treg", "discover"),
+        "response.discovered_candidates": response.discovered_candidates,
         "jev.route_calls": record.count("jev", "route"),
         "jev.verify_calls": record.count("jev", "verify"),
         "run_record.persisted": [(r.id, r.status) for r in rows]
@@ -129,10 +174,70 @@ async def controller_run(fixture, workdir, record):
         observations["jev.verified_oracle_invalid"] = sum(o in invalid for o in verified)
     if "synthetic_secret" in fixture:
         observations["run_record.contains_secret"] = fixture["synthetic_secret"] in stored
+    if treg_cli:
+        del observations["treg.discover_calls"]  # discovery is internal to the adapter
+        observations["treg.catalog_queries"] = [
+            e.data["query"] for e in record.events if e.actor == "treg_catalog"
+            and e.kind == "search"
+        ]  # fmt: skip
+        observations["treg.call_args"] = {
+            e.data["tool_id"]: e.data["args"] for e in record.events if e.kind == "execute"
+        }
     return observations, "complete"
 
 
 # --- UHP dispatch + orchestration failure mapping: the UHP server is faked ---
+
+
+def _executing_work_order(spec: dict):
+    """An approved, executing WorkOrder whose block b1 has begun an attempt by the
+    bound executor: the state in which an execution failure is routed."""
+    from datetime import datetime
+
+    from cloudeo.control import machine as m
+    from cloudeo.control.model import (
+        AgentProfile,
+        BillingPolicy,
+        BlockSpec,
+        Budget,
+        Candidate,
+        EvidenceRef,
+        PlanVersion,
+        ProjectExecutionProfile,
+        Role,
+        RoleBinding,
+    )
+
+    base, now = spec["accepted_baseline"], datetime.fromisoformat(spec["approved_at"])
+    profiles = {Role(role): AgentProfile.model_validate(p) for role, p in spec["roles"].items()}
+    project = ProjectExecutionProfile(
+        project_id="eval", version=1,
+        bindings=tuple(RoleBinding(role=r, primary=p.ref) for r, p in profiles.items()),
+        profiles=tuple(dict.fromkeys(profiles.values())),
+        billing_policy=BillingPolicy.model_validate(spec["billing_policy"]),
+        approved_by="eval", approved_at=now,
+    )  # fmt: skip
+    wo = m.create_work_order(
+        work_order_id="wo-eval", project_id="eval", objective=spec["objective"],
+        memory_paths=tuple(spec["memory_paths"]), execution_profile=project,
+    )  # fmt: skip
+    wo = m.start_intake(wo, accepted_baseline=base)
+    plan = PlanVersion(
+        version=1, architecture_summary=spec["objective"],
+        blocks=(BlockSpec(block_id="b1", order=1, goal=spec["objective"], scope=("src",),
+                          acceptance_checks=("uv run pytest -q",)),),
+        acceptance_criteria=(spec["objective"],), risk_class="low",
+        budget=Budget(max_attempts_per_block=2),
+        context_report=EvidenceRef(kind="context_report", ref="ctx-eval"),
+    )  # fmt: skip
+    wo = m.approve_plan(m.propose_plan(wo, plan), plan_version=1, approved_by="eval",
+                        approved_at=now)  # fmt: skip
+    wo = m.attach_candidate(
+        wo, Candidate(workspace_id="eval", candidate_id="cand-eval", base_commit=base),
+        accepted_baseline=base,
+    )  # fmt: skip
+    wo = m.start_execution(wo, accepted_baseline=base)
+    return m.begin_attempt(wo, "b1", profile=profiles[Role.PRIMARY_CODE_EXECUTOR].ref)
 
 
 def _harness(payload: dict) -> str | None:
@@ -162,6 +267,7 @@ async def uhp_dispatch(fixture, workdir, record):
     from cloudeo.orchestration.execution_failure import (
         FAILURE_STATUSES,
         assess_execution_failure,
+        route_execution_failure,
     )
     from cloudeo.uhp.client import UHPClient
     from cloudeo.uhp.models import UHP_VERSION, UHPTaskRequest
@@ -233,6 +339,20 @@ async def uhp_dispatch(fixture, workdir, record):
             "assessment.attention_code": str(assessment.attention.code),
             "assessment.condition_if_established": None if condition is None else str(condition),
         })  # fmt: skip
+        if "work_order" in fixture:
+            # Route through control's public state machine, then read the result.
+            before = _executing_work_order(fixture["work_order"])
+            after = route_execution_failure(before, assessment)
+            attention = after.open_attention
+            record("control", "transition", status=str(after.status),
+                   codes=sorted(str(r.code) for r in attention.reasons) if attention else [])  # fmt: skip
+            observations.update({
+                "control.work_order_status": str(after.status),
+                "control.attention_codes": sorted(str(r.code) for r in attention.reasons)
+                if attention else [],
+                "control.attempts_unchanged": after.block("b1").attempts
+                == before.block("b1").attempts,
+            })  # fmt: skip
     return observations, "complete"
 
 

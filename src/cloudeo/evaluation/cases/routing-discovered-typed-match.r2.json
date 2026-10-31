@@ -1,0 +1,174 @@
+{
+  "id": "routing-discovered-typed-match",
+  "revision": 2,
+  "task": "No candidates are supplied. Cloudeo's real Treg adapter builds discovery queries, searches the (faked) Treg catalog, binds request state to each endpoint's input schema, rejects the endpoint it cannot satisfy, and calls the one it can with the bound inputs; the result is deterministically verified.",
+  "entry_point": "core.controller.run_treg_cli",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      }
+    },
+    "treg_catalog": {
+      "search": {
+        "work email": {
+          "count": 3,
+          "total": 3,
+          "results": [
+            {
+              "id": "treg.people.email.find",
+              "kind": "routed",
+              "capability": "people.email.find",
+              "score": 18.9,
+              "routed_children": [
+                "kitt.people.email.find",
+                "linked.people.email.find"
+              ]
+            },
+            {
+              "id": "kitt.people.email.find",
+              "kind": "data",
+              "capability": "people.email.find",
+              "score": 18.9
+            },
+            {
+              "id": "linked.people.email.find",
+              "kind": "data",
+              "capability": "people.email.find",
+              "score": 18.9
+            }
+          ]
+        }
+      },
+      "endpoints": {
+        "kitt.people.email.find": {
+          "endpoint": {
+            "id": "kitt.people.email.find",
+            "provider": "kitt",
+            "method": "POST",
+            "capability": "people.email.find",
+            "summary": "Find a verified B2B email",
+            "cost": {
+              "type": "per_success",
+              "value": 0.005,
+              "currency": "USD"
+            },
+            "input": {
+              "bodyType": "json",
+              "body": {
+                "fullName": {
+                  "type": "string",
+                  "required": true
+                },
+                "domain": {
+                  "type": "string",
+                  "required": true
+                },
+                "realtime": {
+                  "type": "boolean",
+                  "required": true,
+                  "enum": [
+                    true
+                  ]
+                }
+              }
+            }
+          },
+          "provider": {
+            "display_name": "Kitt"
+          }
+        },
+        "linked.people.email.find": {
+          "endpoint": {
+            "id": "linked.people.email.find",
+            "provider": "linked",
+            "method": "GET",
+            "capability": "people.email.find",
+            "summary": "Email from a profile URL",
+            "input": {
+              "queryParams": {
+                "linkedin_url": {
+                  "type": "string",
+                  "required": true
+                }
+              }
+            }
+          },
+          "provider": {
+            "display_name": "Linked"
+          }
+        }
+      },
+      "outputs": {
+        "kitt.people.email.find": {
+          "email": "ada@example.com",
+          "fullName": "Ada Example",
+          "validIdentity": true,
+          "validSMTP": true,
+          "validity": "valid"
+        }
+      }
+    }
+  },
+  "required_capabilities": [],
+  "approvals": {
+    "tools": [
+      "kitt.people.email.find"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "response.status": "passed",
+    "response.selected_tool": "kitt.people.email.find",
+    "response.discovered_candidates": [
+      "kitt.people.email.find"
+    ],
+    "attempts.verification_source": [
+      "deterministic"
+    ],
+    "treg.call_args": {
+      "kitt.people.email.find": [
+        "--method",
+        "POST",
+        "--data",
+        "{\"fullName\":\"Ada Example\",\"domain\":\"example.com\",\"realtime\":true}"
+      ]
+    }
+  },
+  "forbidden": [
+    {
+      "id": "unneeded-jev-verification",
+      "observation": "jev.verify_calls",
+      "equals": null,
+      "max": 0,
+      "description": "Jev verified a deterministically passed result"
+    }
+  ],
+  "authorization": [
+    {
+      "id": "approved-tools",
+      "actor": "treg",
+      "kind": "execute",
+      "field": "treg_tool_id",
+      "allowed": [
+        "kitt.people.email.find"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "treg_catalog:search",
+    "treg_catalog:get",
+    "db:run_records",
+    "treg:execute",
+    "jev:route"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "major",
+  "mode": "deterministic"
+}
