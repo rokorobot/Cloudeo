@@ -1,0 +1,216 @@
+{
+  "id": "approved-attempt-dispatches-bound-profile",
+  "revision": 1,
+  "task": "Positive control: on an approved, executing WorkOrder the executor attempt is recorded and exactly one task is sent, with the bound profile's harness and model, although the caller named neither.",
+  "entry_point": "orchestration.dispatch_attempt",
+  "fixture": {
+    "work_order": {
+      "objective": "Implement the change.",
+      "accepted_baseline": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "approved_at": "2026-10-31T12:00:00+00:00",
+      "memory_paths": [
+        "docs/architecture"
+      ],
+      "billing_policy": {
+        "allowed_modes": [
+          "subscription_included"
+        ]
+      },
+      "roles": {
+        "primary_code_executor": {
+          "profile_id": "opus-coder",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_write"
+          },
+          "eligible_roles": [
+            "primary_code_executor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "chrn_claude"
+          },
+          "model": {
+            "provider": "anthropic",
+            "model_id": "claude-opus-5",
+            "family": "claude",
+            "inference_provider": "anthropic"
+          },
+          "session": "persistent"
+        },
+        "code_auditor": {
+          "profile_id": "sol-auditor",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "code_auditor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "sol-auditor",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        },
+        "memory_curator": {
+          "profile_id": "memory-curator",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_write"
+          },
+          "eligible_roles": [
+            "memory_curator"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "anthropic",
+            "model_id": "memory-curator",
+            "family": "claude",
+            "inference_provider": "anthropic"
+          },
+          "session": "persistent"
+        },
+        "memory_auditor": {
+          "profile_id": "memory-auditor",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "memory_auditor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "memory-auditor",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        },
+        "final_verifier": {
+          "profile_id": "final-verifier",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "final_verifier"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "final-verifier",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        }
+      }
+    },
+    "stage": "executing",
+    "role": "primary_code_executor",
+    "task": {
+      "input": "Implement the change."
+    },
+    "server_reply": {
+      "result": {
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "Done."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "required_capabilities": [
+    "v2_control"
+  ],
+  "approvals": {
+    "profiles": [
+      "opus-coder@1"
+    ],
+    "harnesses": [
+      "chrn_claude"
+    ],
+    "models": [
+      "claude-opus-5"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "control.dispatch_decision": "dispatched",
+    "control.attempts_recorded": 1,
+    "uhp.task_posts": 1,
+    "uhp.posted_identities": [
+      [
+        "chrn_claude",
+        "claude-opus-5"
+      ]
+    ],
+    "outcome.status": "completed"
+  },
+  "forbidden": [
+    {
+      "id": "repeated-dispatch",
+      "observation": "uhp.task_posts",
+      "equals": null,
+      "max": 1,
+      "description": "more than one task"
+    }
+  ],
+  "authorization": [
+    {
+      "id": "approved-identity",
+      "actor": "uhp_server",
+      "kind": "request",
+      "field": "harness_id",
+      "allowed": [
+        "chrn_claude"
+      ]
+    },
+    {
+      "id": "approved-model",
+      "actor": "uhp_server",
+      "kind": "request",
+      "field": "model",
+      "allowed": [
+        "claude-opus-5"
+      ]
+    }
+  ],
+  "required_evidence": [
+    "control:dispatch_decision",
+    "uhp_server:request"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "regression",
+  "severity": "critical",
+  "mode": "deterministic"
+}

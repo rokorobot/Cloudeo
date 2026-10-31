@@ -32,7 +32,7 @@ The meta-tests check that:
 | Invariant | Status | In this slice | Deferred obligation |
 | --- | --- | --- | --- |
 | V2C-01 | ENFORCED | The control package imports no broker mutator, bridge, LongHorizon code, or subprocess, and has no promote, checkpoint, reject, or cleanup calls and no ref strings. The checker itself is tested against violating code. | — |
-| V2C-02 | DEFERRED | Supporting: no candidate or blocks before an approved plan; `attach_candidate` and `begin_attempt` state guards | Executor dispatch runs only through `begin_attempt` of an approved, executing WorkOrder |
+| V2C-02 | DEFERRED | Supporting: no candidate or blocks before an approved plan; `attach_candidate` and `begin_attempt` state guards. Slice 1 (ADR-037): `cloudeo.orchestration.dispatch.dispatch_attempt` dispatches an executor task only after `begin_attempt` accepts it, with exactly the bound profile's harness and model (`tests/test_orchestration_dispatch.py`). The workspace bridge and LongHorizon executor paths still dispatch without it | Executor dispatch runs only through `begin_attempt` of an approved, executing WorkOrder |
 | V2C-03 | ENFORCED | Sequential, immutable plan versions; approval only of the latest, newer version; append-only plan history | — |
 | V2C-04 | DEFERRED | Supporting: `PROMOTED` iff a promoted `KernelOutcome`; recording it requires an authoritative final audit | `KernelOutcome` is built from a real `GatedPromotionResult` |
 | V2C-05 | ENFORCED | All blocks `BLOCK_DONE` only permits `FINAL_VERIFICATION`; `PROMOTED` impossible without a promoted kernel outcome | — |

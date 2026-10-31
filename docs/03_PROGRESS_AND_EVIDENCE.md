@@ -1956,3 +1956,20 @@ Observed: regression 19/19 pass; capability 6 fail, 2 unknown (unchanged).
 Seeded defects caught: dropped enum input in binding; attention never raised.
 One fixture bug found while authoring (a routed anchor still listing the
 removed endpoint) was fixed in the fixture.
+
+---
+
+## 2026-10-31 — ADR-037: control-owned executor dispatch (V2C-02 slice 1)
+
+Added `cloudeo.orchestration.dispatch.dispatch_attempt`: an executor task is
+dispatched only after `machine.begin_attempt` accepts it, with exactly the
+bound profile's harness and model. Wrong state, unbound profile, fallback
+without condition, exhausted attempts, an independence gap, or a task naming
+another harness or model: nothing is dispatched.
+
+V2C-02 stays DEFERRED (13 strict obligations unchanged): the workspace bridge
+and LongHorizon executor paths do not use the entry point yet (slice 2).
+
+Measured with EVAL-01 `corpus-v3`: regression 22/22 pass (was 19/19 in
+corpus-v2 with unapproved dispatch as a failing capability case); capability
+5 fail, 2 unknown. A seeded bypass of control fails the refusal cases.
