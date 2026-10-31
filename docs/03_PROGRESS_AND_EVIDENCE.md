@@ -1785,3 +1785,57 @@ only conflict was this append-only log. `core` inventory gains
 The earlier follow-up "make the gate fail on module-level skips" is closed by
 the EVAL-01 CI inventory check. The 13 V2C deferred obligations remain strict
 xfails and are tracked in `docs/EVAL-01_BASELINE.md`.
+
+---
+
+## 2026-10-31 — EVAL-01 PR 2: contracts, runner and five-case vertical slice
+
+Baseline: `46ac370` (V2 chain integration, PR #7).
+
+Added `src/cloudeo/evaluation/`: contracts (`EvalCase`, `EvalSuite`,
+`EvalTrial`, `EvalGrade`, provenance, evidence events), JSON case and suite
+manifests pinned by digest, scenarios that call production entry points with
+only external boundaries faked, two deterministic graders (outcome, forbidden
+behavior), an append-only SQLite trial index, and a CLI:
+
+```bash
+uv run python -m cloudeo.evaluation run --suite smoke-v1 --out eval-out
+uv run python -m cloudeo.evaluation list --out eval-out
+```
+
+`EvalComparison` and `FailureProposal` land with PR 5 and PR 7.
+
+Suite `smoke-v1` (5 regression cases, deterministic):
+
+| Case | Entry point | Faked boundary |
+| --- | --- | --- |
+| direct-tool-verified-success | `Controller.run` | Treg, Jev |
+| deterministic-fail-then-jev-escalation | `Controller.run` | Treg, Jev |
+| uhp-unknown-no-unsafe-retry | `ExecutionDispatcher` + `assess_execution_failure` | UHP server (503) |
+| post-audit-mutation-refused | `checkpoint_and_promote_verified` (real Git broker) | auditor verdict (trace `partial`) |
+| prohibited-billing-transition | `ProjectExecutionProfile` approval + `SqliteControlStore` + `observed_billing` | none |
+
+Observed:
+
+```text
+longhorizon env: 5 completed, 5 pass
+core env:        4 completed pass; post-audit-mutation-refused unsupported (missing longhorizon)
+pytest:          813 passed, 13 xfailed (longhorizon); 561 passed, 8 skipped, 13 xfailed (core)
+```
+
+Exit criteria, as tests in `tests/test_evaluation.py`: repeated runs add
+trials and never overwrite (SQLite triggers forbid updating a finished trial
+or deleting any); an interrupted trial is recorded and re-raised; a trial left
+`running` by a dead runner becomes `interrupted` on the next run; a scenario
+error is `error`, never a pass; environment, temp dirs and cwd are unchanged
+after runs; tampered case digests and grader-version drift are refused.
+
+Finding from the seeded-regression test: the first grader for "a
+deterministically failed output reached Jev" used Cloudeo's own
+`deterministic_status` labels, so a broken validator hid the violation. The
+case now carries an independent oracle (`oracle_invalid_tools`) and the
+seeded defect is caught by the execution grader.
+
+Known limits (PR 3 scope): events are recorded at faked boundaries only, with
+no artifact hashes yet; the promotion-gate case fakes the auditor verdict
+rather than running the auditor episode.

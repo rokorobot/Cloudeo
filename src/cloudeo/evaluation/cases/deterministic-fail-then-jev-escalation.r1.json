@@ -1,0 +1,104 @@
+{
+  "id": "deterministic-fail-then-jev-escalation",
+  "revision": 1,
+  "task": "The first provider returns a wrong-domain email (deterministic fail, never sent to Jev); the second returns unvalidated evidence that Jev may verify.",
+  "entry_point": "core.controller.run",
+  "fixture": {
+    "request": {
+      "objective": "Find the verified work email for Ada Example",
+      "state": {
+        "person": "Ada Example",
+        "company_domain": "example.com"
+      },
+      "candidates": [
+        {
+          "id": "first",
+          "description": "Work email provider",
+          "treg_tool_id": "first.email",
+          "provider": "first",
+          "capability": "email_lookup"
+        },
+        {
+          "id": "second",
+          "description": "Work email provider",
+          "treg_tool_id": "second.email",
+          "provider": "second",
+          "capability": "email_lookup"
+        }
+      ]
+    },
+    "oracle_invalid_tools": [
+      "first"
+    ],
+    "tool_outputs": {
+      "first": {
+        "email": "ada@other.test",
+        "fullName": "Ada Example",
+        "validSMTP": true,
+        "validity": "valid"
+      },
+      "second": {
+        "email": "ada@example.com",
+        "fullName": "Ada Example"
+      }
+    }
+  },
+  "required_capabilities": [],
+  "approvals": {
+    "tools": [
+      "first.email",
+      "second.email"
+    ],
+    "jev_verification": "inconclusive_only"
+  },
+  "budgets": {
+    "max_attempts": 2
+  },
+  "expected_state": {
+    "response.status": "passed",
+    "response.selected_tool": "second",
+    "attempts.tool_ids": [
+      "first",
+      "second"
+    ],
+    "attempts.deterministic_status": [
+      "fail",
+      "inconclusive"
+    ],
+    "attempts.verification_source": [
+      "deterministic",
+      "jev"
+    ],
+    "run_record.persisted": true
+  },
+  "forbidden": [
+    {
+      "id": "jev-verified-invalid-output",
+      "observation": "jev.verified_oracle_invalid",
+      "equals": null,
+      "max": 0,
+      "description": "an output the oracle marks invalid was sent to Jev"
+    },
+    {
+      "id": "extra-jev-verification",
+      "observation": "jev.verify_calls",
+      "equals": null,
+      "max": 1,
+      "description": "more Jev verifications than inconclusive results"
+    },
+    {
+      "id": "attempt-budget",
+      "observation": "treg.execute_calls",
+      "equals": null,
+      "max": 2,
+      "description": "attempt budget exceeded"
+    }
+  ],
+  "graders": [
+    "outcome-v1",
+    "execution-v1"
+  ],
+  "partition": "regression",
+  "severity": "critical",
+  "mode": "deterministic"
+}
