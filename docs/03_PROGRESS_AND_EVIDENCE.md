@@ -2022,3 +2022,66 @@ Tested offline (fake HarnessRouter): pairing and order, run and weekly caps,
 mid-run stop on overspend, unknown-cost accounting, dirty-tree refusal,
 regrading from retained evidence, both live scenarios end to end. No live run
 has happened yet.
+
+---
+
+## 2026-10-31 — Live trials run inside Cloudroom; first pilot
+
+Owner decision: run live comparisons inside the Cloudroom sandbox. The GitHub
+`live-eval` workflow is removed. Containers cannot run here (no
+`CAP_SYS_ADMIN`), so `scripts/live_eval/hr_native.sh` runs the pinned
+HarnessRouter CE v0.23.7 natively (same source commit, Claude Code 2.1.280,
+Codex 0.154.0, same three processes and environment as the image entrypoint);
+`scripts/live_eval/run_local.sh` runs one comparison with all checks before
+spend. Model ids from the running catalog: `claude-opus-5.5`, `gpt-5.6-sol`
+(owner: the best GPT 5.6 tier).
+
+Pilot (1 repetition, run `db667c2691e5…`, counted USD 2.10 at reserve; the
+runtime reported no currency cost):
+
+| Case | opus-5-5 | gpt-5-6 |
+| --- | --- | --- |
+| live-exact-reply | pass (`CLOUDEO_LIVE_OK`) | runtime failed: `Reconnecting... 1/5` |
+| live-arithmetic | pass (`1610`) | runtime failed |
+| live-workspace-edit | file correct, synced, accepted unchanged; graded unknown (bug below) | runtime failed, sync skipped |
+
+Root cause of every GPT failure: the OpenAI account has no credits
+(`credit_balance_exhausted`, confirmed with a minimal direct API call; the key
+itself is valid and lists `gpt-5.6-sol`). This is infrastructure, not model
+quality; the pilot's verified-rate difference is not a result.
+
+Bug found by the pilot and fixed: the workspace-edit scenario did not record
+`uhp.task_posts`, so a correct edit graded unknown. Both live scenarios now
+count task submissions at the transport.
+
+---
+
+## 2026-11-01 — First full live comparison (Opus 5.5 vs GPT 5.6 Sol)
+
+After the owner added OpenAI credits (a minimal direct call returned
+`completed`).
+
+Run `cmp-dce078a3a56f` (`live-smoke-v1`, 3 repetitions, 18 trials, coverage
+100%, no execution-policy violations, observational):
+
+| Case | opus-5-5 | gpt-5-6 |
+| --- | --- | --- |
+| live-exact-reply | 3/3 | 3/3 |
+| live-arithmetic | 3/3 | 3/3 |
+| live-workspace-edit r1 | 3/3 | 1/3 |
+
+The two GPT edit failures completed and synced but the file differed from the
+oracle. The r1 instruction ("the single line: hello from cloudeo.") was
+ambiguous about the final period, and the scenario did not record the
+written content, so the failures could not be attributed.
+
+Fixes: the scenario records the written file content; `live-workspace-edit`
+r2 states the exact bytes (suite `live-smoke-v2`; `live-edit-v1` holds only
+that case). Rerun `51e9f38d1642` (`live-edit-v1`, 3 repetitions): opus-5-5
+3/3, gpt-5-6 3/3, every file exactly `hello from cloudeo\n`, one task each.
+
+Conclusion: on these three cheap cases both configurations succeed when the
+instruction is unambiguous; the r1 gap was the case's wording. Median time per
+edit trial: Opus 24.8 s, GPT 29.4 s. The runtime reported no currency cost;
+the budget counted USD 10.50 this week at reserve. This small pilot cannot
+establish a quality difference; harder cases are needed for that.

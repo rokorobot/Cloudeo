@@ -775,9 +775,10 @@ def live_available() -> bool:
     )
 
 
-def _live_client():
+def _live_client(record=None):
     """A UHP client for the live HarnessRouter. Auth is an API key, or the
-    console session cookie of a private, single-job instance (never logged)."""
+    console session cookie of a private, single-job instance (never logged).
+    Every task submission is recorded at this boundary as a uhp_server event."""
     import httpx
 
     from cloudeo.uhp.client import UHPClient
@@ -792,6 +793,8 @@ def _live_client():
         async def handle_async_request(self, request):
             if cookie:
                 request.headers["Cookie"] = cookie
+            if record is not None and request.method == "POST":
+                record("uhp_server", "request", method="POST", path=request.url.path)
             return await self.inner.handle_async_request(request)
 
         async def aclose(self):
@@ -799,6 +802,13 @@ def _live_client():
 
     inner = LIVE_TRANSPORT or httpx.AsyncHTTPTransport()
     return UHPClient(url, os.environ.get("CLOUDEO_EVAL_UHP_KEY"), transport=Cookie(inner))
+
+
+def _task_posts(record) -> int:
+    return sum(
+        1 for e in record.events
+        if e.actor == "uhp_server" and e.data.get("path", "").endswith("/v1/responses")
+    )  # fmt: skip
 
 
 def _live_identity(outcome, profile_model: str) -> dict:
@@ -833,7 +843,7 @@ async def live_harness_task(fixture, workdir, record):
         b for b in work_order.execution_profile.bindings if b.role == Role.PRIMARY_CODE_EXECUTOR
     )
     approved = work_order.execution_profile.profile(binding.primary)
-    client = _live_client()
+    client = _live_client(record)
     record("cloudeo", "dispatch_requested", model=approved.model.model_id)
     async with client:
         result = await dispatch_attempt(
@@ -848,7 +858,7 @@ async def live_harness_task(fixture, workdir, record):
     return {
         **_live_identity(outcome, approved.model.model_id),
         "control.dispatched": result.dispatched,
-        "uhp.task_posts": 1 if result.dispatched else 0,
+        "uhp.task_posts": _task_posts(record),
         # Judged against the case's own expected answer; whitespace-trimmed exact match.
         "output.exact_match": text == fixture["expected_output"],
         "output.text": text[:2000],
@@ -880,7 +890,7 @@ async def live_workspace_edit(fixture, workdir, record):
         approved = work_order.execution_profile.profile(binding.primary)
         attempt = authorize_executor_attempt(work_order, "b1", profile=binding.primary)
         record("control", "authorization", granted=attempt.authorization is not None)
-        client = _live_client()
+        client = _live_client(record)
         dispatcher = ExecutionDispatcher(harness_task=UHPHarnessTaskBackend(client))
         bridge = UHPWorkspaceBridge(broker, client, dispatcher, staging_root=workdir)
         task = WorkspaceBridgeTask(
@@ -897,7 +907,10 @@ async def live_workspace_edit(fixture, workdir, record):
     return {
         **_live_identity(outcome, approved.model.model_id),
         "bridge.sync_status": str(result.workspace_sync_status),
+        "uhp.task_posts": _task_posts(record),
         # Read from the candidate's files directly, not from the harness's report.
         "workspace.expected_file_matches": content == fixture["expected_file"]["content"],
+        # What the executor actually wrote (capped), so a mismatch can be diagnosed.
+        "workspace.file_content": None if content is None else content[:500],
         "accepted.unchanged": accepted == candidate.base_commit,
     }, "partial"
