@@ -2053,3 +2053,35 @@ quality; the pilot's verified-rate difference is not a result.
 Bug found by the pilot and fixed: the workspace-edit scenario did not record
 `uhp.task_posts`, so a correct edit graded unknown. Both live scenarios now
 count task submissions at the transport.
+
+---
+
+## 2026-11-01 — First full live comparison (Opus 5.5 vs GPT 5.6 Sol)
+
+After the owner added OpenAI credits (a minimal direct call returned
+`completed`).
+
+Run `cmp-dce078a3a56f` (`live-smoke-v1`, 3 repetitions, 18 trials, coverage
+100%, no execution-policy violations, observational):
+
+| Case | opus-5-5 | gpt-5-6 |
+| --- | --- | --- |
+| live-exact-reply | 3/3 | 3/3 |
+| live-arithmetic | 3/3 | 3/3 |
+| live-workspace-edit r1 | 3/3 | 1/3 |
+
+The two GPT edit failures completed and synced but the file differed from the
+oracle. The r1 instruction ("the single line: hello from cloudeo.") was
+ambiguous about the final period, and the scenario did not record the
+written content, so the failures could not be attributed.
+
+Fixes: the scenario records the written file content; `live-workspace-edit`
+r2 states the exact bytes (suite `live-smoke-v2`; `live-edit-v1` holds only
+that case). Rerun `51e9f38d1642` (`live-edit-v1`, 3 repetitions): opus-5-5
+3/3, gpt-5-6 3/3, every file exactly `hello from cloudeo\n`, one task each.
+
+Conclusion: on these three cheap cases both configurations succeed when the
+instruction is unambiguous; the r1 gap was the case's wording. Median time per
+edit trial: Opus 24.8 s, GPT 29.4 s. The runtime reported no currency cost;
+the budget counted USD 10.50 this week at reserve. This small pilot cannot
+establish a quality difference; harder cases are needed for that.
