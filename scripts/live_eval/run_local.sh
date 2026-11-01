@@ -9,6 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPS=${1:-3}
+SUITE=${CLOUDEO_EVAL_SUITE:-live-smoke-v2}
 BASE=src/cloudeo/evaluation/configurations/${2:-opus-5-5}.json
 CAND=src/cloudeo/evaluation/configurations/${3:-gpt-5-6}.json
 OUT=${CLOUDEO_EVAL_OUT:-$HOME/.cloudeo-eval/live}
@@ -19,7 +20,7 @@ RUN=/opt/harnessrouter/run
 mkdir -p "$OUT" "$(dirname "$LEDGER")"
 eval_cli() { uv run --no-sync python -m cloudeo.evaluation "$@"; }
 
-eval_cli compare --suite live-smoke-v1 --baseline "$BASE" --candidate "$CAND" \
+eval_cli compare --suite "$SUITE" --baseline "$BASE" --candidate "$CAND" \
   --repetitions "$REPS" --out "$OUT" --ledger "$LEDGER" --estimate-only
 
 if ! curl -fsS -m 3 http://127.0.0.1:18810/api/harness/v1/uhp >/dev/null 2>&1; then
@@ -37,6 +38,6 @@ CLOUDEO_EVAL_UHP_COOKIE=$(awk '{sub(/^#HttpOnly_/, "")} !/^#/ && NF >= 7 {printf
 export CLOUDEO_EVAL_UHP_COOKIE CLOUDEO_EVAL_UHP_URL=http://127.0.0.1:18810/api/harness
 
 uv run --no-sync python scripts/live_eval/preflight.py "$BASE" "$CAND"
-eval_cli compare --suite live-smoke-v1 --baseline "$BASE" --candidate "$CAND" \
+eval_cli compare --suite "$SUITE" --baseline "$BASE" --candidate "$CAND" \
   --repetitions "$REPS" --out "$OUT" --ledger "$LEDGER" --require-clean
 eval_cli verify --out "$OUT"

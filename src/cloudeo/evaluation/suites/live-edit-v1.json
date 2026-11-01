@@ -1,0 +1,17 @@
+{
+  "id": "live-edit-v1",
+  "version": 1,
+  "description": "Only live-workspace-edit r2, to rerun that case alone.",
+  "cases": [
+    {
+      "case_id": "live-workspace-edit",
+      "revision": 2,
+      "case_digest": "f24c0b10524340fcd3648fd4881341540891038e90eabc3f38744b3afad238ed",
+      "holdout": false
+    }
+  ],
+  "grader_versions": {
+    "outcome": "2",
+    "execution": "2"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "id": "live-smoke-v2",
+  "version": 2,
+  "description": "live-smoke-v1 with an unambiguous workspace-edit instruction (r2).",
+  "cases": [
+    {
+      "case_id": "live-exact-reply",
+      "revision": 1,
+      "case_digest": "7c205eefe02c3619f0c466a91cde9244b9a476979962f331f123925339be394a",
+      "holdout": false
+    },
+    {
+      "case_id": "live-arithmetic",
+      "revision": 1,
+      "case_digest": "358069f23df64634217ebf1d4bb1ebd90b7485b7116230fc588a3630a03319a8",
+      "holdout": false
+    },
+    {
+      "case_id": "live-workspace-edit",
+      "revision": 2,
+      "case_digest": "f24c0b10524340fcd3648fd4881341540891038e90eabc3f38744b3afad238ed",
+      "holdout": false
+    }
+  ],
+  "grader_versions": {
+    "outcome": "2",
+    "execution": "2"
+  }
+}

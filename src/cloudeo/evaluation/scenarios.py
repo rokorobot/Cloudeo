@@ -910,5 +910,7 @@ async def live_workspace_edit(fixture, workdir, record):
         "uhp.task_posts": _task_posts(record),
         # Read from the candidate's files directly, not from the harness's report.
         "workspace.expected_file_matches": content == fixture["expected_file"]["content"],
+        # What the executor actually wrote (capped), so a mismatch can be diagnosed.
+        "workspace.file_content": None if content is None else content[:500],
         "accepted.unchanged": accepted == candidate.base_commit,
     }, "partial"
