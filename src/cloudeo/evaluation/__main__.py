@@ -1,4 +1,4 @@
-"""CLI: python -m cloudeo.evaluation {run,digest,list}."""
+"""CLI: python -m cloudeo.evaluation {run,gate,digest,list,verify,compare}."""
 
 from __future__ import annotations
 
@@ -26,6 +26,9 @@ def main(argv: list[str] | None = None) -> int:
     listing.add_argument("--out", type=Path, required=True)
     verify = sub.add_parser("verify", help="regrade stored trials from retained evidence")
     verify.add_argument("--out", type=Path, required=True)
+    gate = sub.add_parser("gate", help="run a suite once; exit 0 pass, 1 fail, 2 blocked")
+    gate.add_argument("--suite", required=True)
+    gate.add_argument("--out", type=Path, required=True)
     compare = sub.add_parser("compare", help="paired comparison of two configurations")
     compare.add_argument("--suite", required=True)
     compare.add_argument("--baseline", type=Path, required=True, help="configuration JSON")
@@ -45,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "compare":
         return _compare(args)
+    if args.command == "gate":
+        return _gate(args)
 
     if args.command == "verify":
         report = verify_store(args.out)
@@ -82,6 +87,18 @@ def main(argv: list[str] | None = None) -> int:
         or (t.verdict == "fail" and t.provenance.partition != "capability")
     ]  # fmt: skip
     return 1 if args.command == "run" and bad else 0
+
+
+def _gate(args) -> int:
+    from cloudeo.evaluation.gate import build_report, write_report
+    from cloudeo.evaluation.runner import holdout_dir, load_suite
+
+    suite, cases = load_suite(args.suite, holdout=holdout_dir())
+    run_id, trials, holdout = asyncio.run(run_suite(args.suite, args.out))
+    report = build_report(run_id, suite, cases, trials, holdout)
+    _, md_path = write_report(args.out, report)
+    print(md_path.read_text())
+    return report["exit_code"]
 
 
 def _compare(args) -> int:

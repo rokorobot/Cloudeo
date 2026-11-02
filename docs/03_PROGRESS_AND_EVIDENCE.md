@@ -2156,3 +2156,24 @@ Evidence:
   version current at confirm time, so a change arriving through the stream
   while the dialog was open would have been decided unseen. The version is
   now pinned when the dialog opens (regression test added).
+
+## 2026-11-02 — EVAL-01 PR 6a: deterministic regression gate in CI
+
+- `cloudeo.evaluation.gate` and `python -m cloudeo.evaluation gate --suite S --out DIR`: one run of a suite gives one verdict.
+  - **fail** (exit 1): any regression trial fails, or any trial of a critical case has an execution-policy violation, so a correct answer reached through a forbidden path still fails.
+  - **blocked** (exit 2): no fail, but a regression trial is unknown, error, interrupted or unsupported, or a regression case never ran.
+  - **pass** (exit 0): otherwise.
+  - Capability results are reported, never gated. Holdout appears only as aggregate counts.
+  - The reports `gate-<run>.json` and `gate-<run>.md` record the suite digest, commit and dirty state, grader versions, per-partition counts and every reason.
+- CI: step "EVAL-01 regression gate" in the required `longhorizon` job (`corpus-v3`); the report goes into the existing `ci-artifacts` upload. The `core` job doesn't run it, because LongHorizon regression cases are unsupported there and would correctly block.
+- Owner decisions recorded for later slices: weekly live loop cap USD 10; failure analyst GPT 6 (`gpt-6-sol`, high). Thresholds, holdout custody and the release-comparison budget are still open.
+
+Evidence:
+- `corpus-v3` on `aba0746`: gate **pass**, regression 22/22, capability 0 pass / 5 fail / 2 unknown.
+- `tests/test_eval_gate.py` (5), run in both the full and the core-only environment:
+  - clean main → pass (core-only: blocked, every reason "unsupported");
+  - seeded forbidden billing fallback (`observed_billing` accepting metered use for a subscription profile) → fail, naming `prohibited-billing-transition`;
+  - correct direct-tool answer plus an unapproved Treg call → fail;
+  - boundary events not recorded → blocked (`evidence_missing`), never pass;
+  - scenario error → blocked.
+- `uv run pytest -q` → 926 passed, 12 xfailed (with the `longhorizon` extra); `ruff check .` clean.
