@@ -10,7 +10,7 @@ Plan: [EVAL-01_PLAN.md](EVAL-01_PLAN.md) §5 PR 5 and §8.
 | Spending caps | USD 7 per comparison run; USD 20 per rolling 7 days |
 | Where it runs | Here, in the Cloudroom cloud sandbox, started from chat |
 | Credentials | Entered once through Cloudroom's secret form into the git-ignored `.env.live` |
-| Comparison thresholds | Not approved: every comparison is **observational** and cannot authorize promotion |
+| Comparison thresholds | `gates/thresholds-v1.json`, owner-approved 2026-11-02. With `--thresholds` the verdict is pass / fail / inconclusive (exit 0 / 1 / 2) and the digest is recorded; without it, observational |
 
 Model ids were confirmed against the running HarnessRouter's catalog
 (`/v1/models`), not assumed.

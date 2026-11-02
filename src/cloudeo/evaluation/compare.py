@@ -9,8 +9,10 @@
   A trial's cost counts as reported where the runtime reported it, else as
   its full reserve. Unknown cost is never zero.
 - Every attempted trial stays in the report, with its status.
-- Thresholds are not approved yet, so a comparison is observational and can
-  never authorize promotion.
+- Without frozen thresholds a comparison is observational and can never
+  authorize promotion. With them (`gates/thresholds-v1.json`, owner-approved
+  2026-11-02) the verdict is pass, fail or inconclusive, and the thresholds
+  digest is recorded so a changed file cannot re-judge an old run.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from cloudeo.evaluation.contracts import (
     EvalCase,
     EvalComparison,
     EvalConfiguration,
+    EvalThresholds,
     EvalTrial,
     Provenance,
 )
@@ -43,6 +46,25 @@ from cloudeo.evaluation.runner import (
 from cloudeo.evaluation.store import TrialStore
 
 LEDGER_WINDOW = timedelta(days=7)
+THRESHOLDS = DATA / "gates"
+
+
+def load_thresholds(path: Path) -> EvalThresholds:
+    return EvalThresholds.model_validate_json(path.read_text())
+
+
+class ThresholdsChanged(ValueError):
+    """A comparison is judged only against the exact thresholds it was frozen with."""
+
+
+def check_frozen(comparison: EvalComparison, thresholds: EvalThresholds) -> None:
+    if comparison.thresholds_digest is None:
+        raise ThresholdsChanged(f"{comparison.comparison_id} is observational: no thresholds")
+    if comparison.thresholds_digest != thresholds.digest:
+        raise ThresholdsChanged(
+            f"{comparison.comparison_id} was judged against thresholds "
+            f"{comparison.thresholds_digest[:12]}, not {thresholds.id} {thresholds.digest[:12]}"
+        )
 
 
 class BudgetExceeded(RuntimeError):
@@ -128,6 +150,7 @@ async def run_comparison(
     seed: int,
     require_clean: bool = False,
     data: Path = DATA,
+    thresholds: EvalThresholds | None = None,
 ) -> EvalComparison:
     if baseline.id == candidate.id:
         raise ValueError("baseline and candidate need different configuration ids")
@@ -145,7 +168,8 @@ async def run_comparison(
             f"${week_cap_usd:.2f} weekly cap"
         )
     commit, dirty, lock_sha = _code_state()
-    if require_clean and (commit is None or dirty is not False):
+    # A comparison that can authorize anything must name exact, committed code.
+    if (require_clean or thresholds) and (commit is None or dirty is not False):
         raise DirtyCodeRefused("live comparisons need a committed, clean working tree")
 
     store = TrialStore(out)
@@ -180,8 +204,9 @@ async def run_comparison(
             None if any(r is None for r in reported) else sum(reported),
         )
     comparison = build_comparison(
-        run_id, suite.id, suite.digest, baseline, candidate, cases, repetitions, seed, trials
-    )
+        run_id, suite.id, suite.digest, baseline, candidate, cases, repetitions, seed, trials,
+        thresholds=thresholds,
+    )  # fmt: skip
     (out / f"comparison-{run_id}.json").write_text(comparison.model_dump_json(indent=2) + "\n")
     (out / f"comparison-{run_id}.md").write_text(render_markdown(comparison))
     return comparison
@@ -200,6 +225,20 @@ def _quantile(values: list[float], q: float) -> float | None:
     return ordered[min(len(ordered) - 1, round(q * (len(ordered) - 1)))]
 
 
+def trial_tokens(trial: EvalTrial) -> int | None:
+    """Tokens the runtime reported for one trial; None when it reported none."""
+    usage = trial.observations.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    total = usage.get("total_tokens")
+    if isinstance(total, int) and not isinstance(total, bool):
+        return total
+    parts = [usage.get("input_tokens"), usage.get("output_tokens")]
+    if all(isinstance(p, int) and not isinstance(p, bool) for p in parts):
+        return sum(parts)
+    return None
+
+
 def _metrics(config: EvalConfiguration, trials: list[EvalTrial], planned: int) -> ConfigMetrics:
     mine = [t for t in trials if t.label == config.id]
     verified = [t for t in mine if t.verdict == "pass"]
@@ -216,6 +255,8 @@ def _metrics(config: EvalConfiguration, trials: list[EvalTrial], planned: int) -
         k_n[0] += t.verdict == "pass"
         k_n[1] += 1
     known_cost = None if any(r is None for r in reported) else round(sum(reported), 6)
+    tokens = [trial_tokens(t) for t in mine if t.status == "completed"]
+    tokens_total = None if not tokens or None in tokens else sum(tokens)
     return ConfigMetrics(
         configuration_id=config.id,
         attempted=len(mine),
@@ -237,6 +278,12 @@ def _metrics(config: EvalConfiguration, trials: list[EvalTrial], planned: int) -
         duration_ms_median=statistics.median(durations) if durations else None,
         duration_ms_p95=_quantile(durations, 0.95) if len(durations) >= 20 else None,
         per_case={case: f"{k}/{n}" for case, (k, n) in sorted(per_case.items())},
+        tokens_total=tokens_total,
+        tokens_per_verified=(
+            round(tokens_total / len(verified), 3)
+            if tokens_total is not None and verified
+            else None
+        ),
     )
 
 
@@ -263,8 +310,66 @@ def paired_difference(trials, baseline_id, candidate_id, seed, resamples=2000):
     return round(mean, 6), (round(low, 6), round(high, 6))
 
 
+def _ratio(candidate: float | None, baseline: float | None) -> float | None:
+    if candidate is None or baseline is None or baseline <= 0:
+        return None
+    return candidate / baseline
+
+
+def judge(
+    t: EvalThresholds, *, cases: int, repetitions: int, coverage: float, critical: int,
+    diff: float | None, ci: tuple[float, float] | None, base: ConfigMetrics,
+    cand: ConfigMetrics,
+) -> tuple[str, list[str], bool]:  # fmt: skip
+    """(verdict, reasons, improvement_claimed) under frozen thresholds.
+
+    fail: a critical violation, a quality drop beyond the margin, or a resource
+    limit exceeded. inconclusive: too little evidence to pass (sample, coverage,
+    interval, unknown tokens or latency). Only pass authorizes advancement.
+    """
+    failed, unsure = [], []
+    if critical > t.max_critical_violations:
+        failed.append(
+            f"{critical} critical execution violation(s) (max {t.max_critical_violations})"
+        )
+    if cases < t.min_cases:
+        unsure.append(f"{cases} case(s), thresholds need at least {t.min_cases}")
+    if repetitions < t.min_repetitions:
+        unsure.append(f"{repetitions} repetition(s), thresholds need at least {t.min_repetitions}")
+    if coverage < t.min_coverage:
+        unsure.append(f"coverage {coverage:.0%} below {t.min_coverage:.0%}")
+    if diff is None or ci is None:
+        unsure.append("verified-success difference not computable")
+    elif diff < -t.non_inferiority_margin:
+        failed.append(f"verified success {diff:+.3f} is worse than the margin "
+                      f"-{t.non_inferiority_margin:.3f}")  # fmt: skip
+    elif ci[0] < -t.non_inferiority_margin:
+        unsure.append(f"lower bound {ci[0]:+.3f} does not exclude a drop beyond "
+                      f"-{t.non_inferiority_margin:.3f}")  # fmt: skip
+    limits = (
+        ("tokens per verified success", base.tokens_per_verified, cand.tokens_per_verified,
+         t.max_tokens_per_verified_ratio, True),
+        ("median duration", base.duration_ms_median, cand.duration_ms_median,
+         t.max_median_duration_ratio, True),
+        ("p95 duration", base.duration_ms_p95, cand.duration_ms_p95,
+         t.max_p95_duration_ratio, False),  # only when both sides have n >= 20
+    )  # fmt: skip
+    for name, b, c, limit, required in limits:
+        ratio = _ratio(c, b)
+        if ratio is None:
+            if required:
+                unsure.append(f"{name} unknown on at least one side")
+        elif ratio > limit:
+            failed.append(f"{name} {ratio:.2f}x baseline exceeds {limit:.2f}x")
+    verdict = "fail" if failed else "inconclusive" if unsure else "pass"
+    # Only a passing comparison may claim improvement (plan §8).
+    improved = verdict == "pass" and ci is not None and ci[0] > t.improvement_lower_bound_above
+    return verdict, failed + unsure, improved
+
+
 def build_comparison(run_id, suite_id, suite_digest, baseline, candidate, cases, repetitions,
-                     seed, trials) -> EvalComparison:  # fmt: skip
+                     seed, trials, thresholds: EvalThresholds | None = None,
+                     ) -> EvalComparison:  # fmt: skip
     planned_each = len(cases) * repetitions
     names = sorted(set(baseline.variables) | set(candidate.variables))
     changed = {
@@ -288,20 +393,34 @@ def build_comparison(run_id, suite_id, suite_digest, baseline, candidate, cases,
         and t.execution_grade.verdict == "fail"
     )
     diff, ci = paired_difference(trials, baseline.id, candidate.id, seed)
-    reasons = ["comparison thresholds are not approved yet: results are observational only"]
-    if coverage < 1.0:
-        reasons.append(f"coverage {coverage:.0%} of planned pairs")
-    if critical:
-        reasons.append(f"{len(critical)} critical execution violation(s)")
+    metrics = (_metrics(baseline, trials, planned_each), _metrics(candidate, trials, planned_each))
+    improved = False
+    if thresholds is None:
+        verdict = "observational"
+        reasons = ["no thresholds given: results are observational only"]
+        if coverage < 1.0:
+            reasons.append(f"coverage {coverage:.0%} of planned pairs")
+        if critical:
+            reasons.append(f"{len(critical)} critical execution violation(s)")
+    else:
+        verdict, reasons, improved = judge(
+            thresholds, cases=len(cases), repetitions=repetitions, coverage=coverage,
+            critical=len(critical), diff=diff, ci=ci, base=metrics[0], cand=metrics[1],
+        )  # fmt: skip
+        if verdict == "pass":
+            reasons.append("all frozen thresholds met")
     return EvalComparison(
         comparison_id=f"cmp-{run_id[:12]}", run_id=run_id, suite_id=suite_id,
         suite_digest=suite_digest, baseline=baseline, candidate=candidate,
         changed_variables=changed,
         comparison_kind="single_variable" if len(changed) == 1 else "system",
         repetitions=repetitions, seed=seed, matched_pairs=pairs, coverage=round(coverage, 6),
-        metrics=(_metrics(baseline, trials, planned_each), _metrics(candidate, trials, planned_each)),
+        metrics=metrics,
         verified_rate_difference=diff, difference_ci95=ci, critical_findings=critical,
-        gate_verdict="observational", gate_reasons=tuple(reasons),
+        gate_verdict=verdict, gate_reasons=tuple(reasons),
+        thresholds_id=thresholds.id if thresholds else None,
+        thresholds_digest=thresholds.digest if thresholds else None,
+        improvement_claimed=improved,
     )  # fmt: skip
 
 
@@ -329,6 +448,8 @@ def render_markdown(c: EvalComparison) -> str:
         ("Cost counted against budget", _usd(base.cost_usd_counted), _usd(cand.cost_usd_counted)),
         ("Cost per verified success", _usd(base.cost_usd_per_verified),
          _usd(cand.cost_usd_per_verified)),
+        ("Tokens reported by runtime", base.tokens_total, cand.tokens_total),
+        ("Tokens per verified success", base.tokens_per_verified, cand.tokens_per_verified),
         ("Median duration (ms)", base.duration_ms_median, cand.duration_ms_median),
         ("p95 duration (ms, n≥20 only)", base.duration_ms_p95, cand.duration_ms_p95),
     ]  # fmt: skip
@@ -341,6 +462,13 @@ def render_markdown(c: EvalComparison) -> str:
         ),
         "",
         f"**Gate verdict: {c.gate_verdict}.** " + " ".join(f"{r}." for r in c.gate_reasons),
+        "",
+        (
+            f"Thresholds: `{c.thresholds_id}` (digest `{c.thresholds_digest[:12]}`). "
+            f"Improvement claimed: {'yes' if c.improvement_claimed else 'no'}."
+            if c.thresholds_digest
+            else "Thresholds: none (observational)."
+        ),
         "",
         f"Kind: **{c.comparison_kind}** comparison. Changed variables:",
         "",
@@ -374,7 +502,8 @@ def render_markdown(c: EvalComparison) -> str:
         "",
         (
             "Repeated runs of one case are not independent tasks; the interval resamples "
-            "cases. A small pilot cannot establish a small difference."
+            "cases. A small pilot cannot establish a small difference. Tokens are counts, "
+            "not money: tokens of different models are not cost-equivalent."
         ),
         "",
     ]

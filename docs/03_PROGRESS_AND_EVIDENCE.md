@@ -2177,3 +2177,30 @@ Evidence:
   - boundary events not recorded → blocked (`evidence_missing`), never pass;
   - scenario error → blocked.
 - `uv run pytest -q` → 926 passed, 12 xfailed (with the `longhorizon` extra); `ruff check .` clean.
+
+## 2026-11-02 — EVAL-01 PR 6b: frozen comparison thresholds
+
+Owner decision: thresholds as proposed are approved, now `src/cloudeo/evaluation/gates/thresholds-v1.json`:
+
+- 0 critical violations
+- coverage ≥ 95%
+- ≥ 12 cases × 5 repetitions
+- non-inferiority margin 10 points; improvement claimed only when the lower bound is > 0
+- tokens per verified success ≤ 1.25× baseline
+- median and p95 duration ≤ 1.5× baseline (p95 only when both sides have n ≥ 20)
+- release caps USD 45 per run, USD 60 per week
+
+The weekly live loop keeps its own USD 10 cap through explicit flags.
+
+- `compare --thresholds FILE` (exit codes 0 pass, 1 fail, 2 inconclusive).
+  - **fail:** a critical violation, a point estimate worse than the margin, or a token or latency limit exceeded.
+  - **inconclusive:** sample or coverage below the minimum, an interval reaching past the margin, or tokens or latency unknown.
+  - Only pass may claim improvement.
+  - Judged runs require clean committed code. Comparisons record `thresholds_id` and `thresholds_digest`, and `check_frozen` refuses other thresholds or an observational run.
+- New metrics: `tokens_total` and `tokens_per_verified`, read from runtime `usage` (`total_tokens`, else input + output). Unknown when any completed trial reported none. Tokens are counts, not money.
+- Contract additions are optional fields, so earlier comparison JSON stays loadable.
+
+Evidence:
+- `tests/test_eval_thresholds.py` (21): pins the approved values; every fail and inconclusive rule; improvement only on pass; tokens never guessed; a judged offline run is inconclusive and records its digest; a dirty tree is refused; CLI caps come from the thresholds file.
+  - This found and fixed a bug while building it: an inconclusive result could claim improvement.
+- `uv run pytest -q` → 981 passed, 12 xfailed; `ruff check .` clean. Threshold tests also pass in the core-only environment.

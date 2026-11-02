@@ -36,9 +36,14 @@ def main(argv: list[str] | None = None) -> int:
     compare.add_argument("--out", type=Path, required=True)
     compare.add_argument("--repetitions", type=int, default=5)
     compare.add_argument("--seed", type=int, default=20261031)
-    # Owner-approved caps (2026-10-31): USD 7 per run, USD 20 per rolling week.
-    compare.add_argument("--run-cap-usd", type=float, default=7.0)
-    compare.add_argument("--week-cap-usd", type=float, default=20.0)
+    # Owner-approved caps: USD 7 per run and USD 20 per rolling week by default
+    # (2026-10-31); a thresholds file carries its own release caps (2026-11-02).
+    compare.add_argument("--run-cap-usd", type=float)
+    compare.add_argument("--week-cap-usd", type=float)
+    compare.add_argument(
+        "--thresholds", type=Path,
+        help="frozen thresholds JSON (e.g. gates/thresholds-v1.json); requires a clean tree",
+    )  # fmt: skip
     compare.add_argument("--ledger", type=Path, help="spend ledger (default OUT/ledger.jsonl)")
     compare.add_argument("--require-clean", action="store_true", help="refuse a dirty tree")
     compare.add_argument(
@@ -109,6 +114,7 @@ def _compare(args) -> int:
         DirtyCodeRefused,
         Ledger,
         estimate,
+        load_thresholds,
         plan,
         run_comparison,
     )
@@ -118,6 +124,13 @@ def _compare(args) -> int:
     baseline = EvalConfiguration.model_validate_json(args.baseline.read_text())
     candidate = EvalConfiguration.model_validate_json(args.candidate.read_text())
     ledger = Ledger(args.ledger or args.out / "ledger.jsonl")
+    thresholds = load_thresholds(args.thresholds) if args.thresholds else None
+    if args.run_cap_usd is None:
+        args.run_cap_usd = thresholds.run_cap_usd if thresholds else 7.0
+    if args.week_cap_usd is None:
+        args.week_cap_usd = thresholds.week_cap_usd if thresholds else 20.0
+    if thresholds:
+        print(f"thresholds: {thresholds.id} (digest {thresholds.digest[:12]}), frozen for this run")
     _, cases = load_suite(args.suite, holdout=holdout_dir())
     cases = [c for c in cases if c.partition != "holdout"]
     planned = estimate(plan(cases, args.repetitions, (baseline, candidate), args.seed))
@@ -134,14 +147,15 @@ def _compare(args) -> int:
             run_comparison(
                 args.suite, baseline, candidate, args.out, repetitions=args.repetitions,
                 run_cap_usd=args.run_cap_usd, week_cap_usd=args.week_cap_usd, ledger=ledger,
-                seed=args.seed, require_clean=args.require_clean,
+                seed=args.seed, require_clean=args.require_clean, thresholds=thresholds,
             )
         )  # fmt: skip
     except (BudgetExceeded, DirtyCodeRefused) as exc:
         print(f"refused: {exc}")
         return 2
     print((args.out / f"comparison-{comparison.run_id}.md").read_text())
-    return 0
+    # Observational runs report only; a judged run exits 0 only on pass.
+    return {"observational": 0, "pass": 0, "fail": 1, "inconclusive": 2}[comparison.gate_verdict]
 
 
 if __name__ == "__main__":

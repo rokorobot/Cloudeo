@@ -1,0 +1,18 @@
+{
+  "id": "thresholds-v1",
+  "version": 1,
+  "approved_by": "owner",
+  "approved_at": "2026-11-02",
+  "primary_metric": "verified_success_rate",
+  "max_critical_violations": 0,
+  "min_coverage": 0.95,
+  "min_cases": 12,
+  "min_repetitions": 5,
+  "non_inferiority_margin": 0.1,
+  "improvement_lower_bound_above": 0.0,
+  "max_tokens_per_verified_ratio": 1.25,
+  "max_median_duration_ratio": 1.5,
+  "max_p95_duration_ratio": 1.5,
+  "run_cap_usd": 45.0,
+  "week_cap_usd": 60.0
+}

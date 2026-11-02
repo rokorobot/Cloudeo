@@ -243,6 +243,10 @@ class ConfigMetrics(_Frozen):
     duration_ms_median: float | None
     duration_ms_p95: float | None
     per_case: dict[str, str]  # case id -> "k/n" verified
+    # Runtime-reported tokens (usage.total_tokens, else input + output). None if
+    # any completed trial reported none; tokens are never converted to money.
+    tokens_total: int | None = None
+    tokens_per_verified: float | None = None
 
 
 class EvalComparison(_Frozen):
@@ -268,3 +272,35 @@ class EvalComparison(_Frozen):
     critical_findings: tuple[str, ...]
     gate_verdict: Literal["observational", "pass", "fail", "inconclusive"]
     gate_reasons: tuple[str, ...]
+    # The frozen thresholds this verdict was judged against (None: observational).
+    thresholds_id: str | None = None
+    thresholds_digest: str | None = None
+    # Only when the interval's lower bound is above the approved floor.
+    improvement_claimed: bool = False
+
+
+class EvalThresholds(_Frozen):
+    """Owner-approved comparison thresholds (plan §8), frozen before a run by digest."""
+
+    id: str = Identifier
+    version: int = Field(ge=1)
+    approved_by: str
+    approved_at: str
+    primary_metric: Literal["verified_success_rate"]
+    max_critical_violations: int = Field(ge=0)
+    min_coverage: float = Field(gt=0, le=1)
+    min_cases: int = Field(ge=1)
+    min_repetitions: int = Field(ge=1)
+    # Candidate may be at most this much worse (lower 95% bound >= -margin).
+    non_inferiority_margin: float = Field(ge=0, lt=1)
+    # An improvement is claimed only when the lower 95% bound is above this.
+    improvement_lower_bound_above: float
+    max_tokens_per_verified_ratio: float = Field(gt=0)
+    max_median_duration_ratio: float = Field(gt=0)
+    max_p95_duration_ratio: float = Field(gt=0)
+    run_cap_usd: float = Field(gt=0)
+    week_cap_usd: float = Field(gt=0)
+
+    @property
+    def digest(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json"))
