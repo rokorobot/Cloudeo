@@ -137,6 +137,17 @@ export interface WorkOrderDetail extends WorkOrderSummary {
   attention?: AttentionView;
   history?: HistoryEntry[];
   timestamps?: { label: string; at: string; by?: string }[];
+  /** Control mode: owner commands that apply now (ADR-038); disabled ones carry the reason. */
+  commands?: OwnerCommandView[];
+}
+
+export const OWNER_COMMANDS = ["approve_plan", "reject_plan", "resume", "replan", "defer", "abort"] as const;
+export type OwnerCommand = (typeof OWNER_COMMANDS)[number];
+
+export interface OwnerCommandView {
+  command: OwnerCommand;
+  enabled: boolean;
+  reason?: string;
 }
 
 /* ---------- PLAN ---------- */

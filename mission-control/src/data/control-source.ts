@@ -1,6 +1,8 @@
 import { groupSummaries, type Result, type WorkOrderList, type WorkOrderQuerySource } from "@/data/sources";
 import {
   LIFECYCLE,
+  OWNER_COMMANDS,
+  type OwnerCommand,
   STAGE_STATUSES,
   type UnsupportedWorkOrder,
   type WorkOrderDetail,
@@ -60,7 +62,34 @@ export function normalizeDetail(raw: WorkOrderDetail): WorkOrderDetail {
     oneOf(["baseline", "accepted", "candidate", "rejected"] as const, c.status, "checkpoint status");
   for (const h of raw.history ?? []) oneOf(CONTROL_STATES, h.state, "history state");
   if (raw.attention?.raisedFrom) oneOf(CONTROL_STATES, raw.attention.raisedFrom, "attention source state");
+  for (const c of raw.commands ?? []) oneOf(OWNER_COMMANDS, c.command, "owner command");
   return raw;
+}
+
+export type CommandResult = { status: "recorded"; version: number } | { status: "refused"; error: string; message: string };
+
+/** Sends one owner command through the Mission Control server (ADR-038). */
+export async function sendOwnerCommand(
+  id: string,
+  command: OwnerCommand,
+  expectedVersion: number,
+  message = "",
+  fetchImpl: typeof fetch = (...args) => fetch(...args),
+  base = "/api/control",
+): Promise<CommandResult> {
+  try {
+    const res = await fetchImpl(`${base}/work-orders/${encodeURIComponent(id)}/commands`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command, expectedVersion, message }),
+      cache: "no-store",
+    });
+    const body = await readJson(res);
+    if (res.ok && typeof body.version === "number") return { status: "recorded", version: body.version };
+    return { status: "refused", error: body.detail?.error ?? `http_${res.status}`, message: body.detail?.message ?? `HTTP ${res.status}` };
+  } catch (e) {
+    return { status: "refused", error: "unreachable", message: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 async function readJson(res: Response): Promise<{ detail?: { error?: string; message?: string } } & Record<string, unknown>> {

@@ -3630,3 +3630,70 @@ the whole run; control's block lifecycle is unchanged).
 - Trust boundary unchanged (ADR-030): the guarantee is structural. Code that
   builds an authorization by hand outside orchestration is caught by the
   mechanical check and review, not authenticated at runtime.
+
+## ADR-038 — Mission Control owner commands
+
+**Status:** Accepted (2026-11-02) by the owner ("go ahead with 4a as
+described"); implemented. Pause, stop and take control are explicitly out of
+scope (see "Not decided here").
+
+**Context:** Mission Control reads V2 WorkOrders in real time but could not
+record any decision. The V2 control model gives the user exactly two kinds of
+action: approve or reject a proposed plan (`approve_plan`, `reject_plan`), and
+decide on the open attention request (`machine.decide`: resume, replan,
+change_agent, change_budget, defer, abort). It has no pause, stop or
+take-control. The Cloudeo API had no authentication, so a write endpoint would
+let any local process, or any web page through the owner's browser, act in
+the owner's name. Nothing yet consumes recorded decisions (no orchestrator
+loop), and `resume` back into PLAN_APPROVED, EXECUTING or FINAL_VERIFICATION
+rechecks the accepted baseline, which needs a Workspace Broker the API is not
+bound to.
+
+**Decision:**
+
+- One write endpoint, `POST /v1/mission-control/work-orders/{id}/commands`,
+  on its own router; the read router stays GET-only. Body:
+  `{command, expectedVersion, message?}`, nothing else (extra fields 422).
+- Commands: `approve_plan`, `reject_plan`, and the decisions `abort`, `defer`,
+  `replan`, `resume`. Each runs the existing state-machine transition; no
+  WorkOrder semantics change. `resume` is offered only when no baseline
+  recheck is needed and no blocking reason is open. Waivers,
+  `change_agent` and `change_budget` are not sent (they need an envelope
+  amendment the UI cannot author yet).
+- `available_commands(wo)` (pure) decides which commands apply and why one is
+  disabled; the adapter exposes it as `commands` on the detail view and the
+  endpoint enforces the same table. The UI never derives availability.
+- Exactly the version seen: the command is applied to `expectedVersion` or
+  not at all (409 `stale_version`), on top of the store's own compare-and-swap.
+  The UI pins the version when the confirm dialog opens, so a change that
+  arrives through the live stream while the owner decides is refused, not
+  silently decided.
+- Identity: the actor is `CLOUDEO_MISSION_CONTROL_OWNER` from server config,
+  never from the request. Recorded events are `owner_<command>`.
+- Authentication: a bearer owner token (`CLOUDEO_MISSION_CONTROL_OWNER_TOKEN`,
+  at least 32 characters) held only by the API and the Mission Control
+  server; the browser never sees it. Without both settings the endpoint
+  answers 503. The API refuses any request carrying `Origin` (browsers always
+  send it on POST), so no web page can call it directly. The Mission Control
+  route accepts only same-origin JSON requests (Origin host and
+  Sec-Fetch-Site) and forwards only the three body fields.
+- The store is opened for writing only for a command, and a missing store is
+  never created.
+
+**Not decided here:** pause / stop as an "operator halt" (a new attention
+code, so resume, defer and abort apply as usual) needs its own ADR. Take
+control waits for the Session Fabric (ADR-031). A decision is recorded, not
+executed: until an orchestrator consumes the store, a recorded `resume` or
+approval changes state but starts no work.
+
+**Evidence:** `tests/test_mission_control_commands.py` (availability, the
+service over a real store, stale and refused commands write nothing, token,
+Origin, body and configuration refusals, read router GET-only);
+`mission-control/src/components/work-order/owner-commands.test.tsx`
+(confirm, cancel, stale, disabled reasons, plan approval, version pinned at
+dialog open, same-origin guard). Live check recorded in
+`03_PROGRESS_AND_EVIDENCE.md` (2026-11-02).
+
+**Consequences:** the owner can approve plans and close attention requests
+from Mission Control, attributed and version-exact. Anyone holding the owner
+token can act as the owner; it is a local secret like the API keys in `.env`.

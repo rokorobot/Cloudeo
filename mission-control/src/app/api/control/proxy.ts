@@ -19,3 +19,17 @@ export async function proxyGet(path: string): Promise<Response> {
     );
   }
 }
+
+/** True only for a request this app's own pages sent (Origin and Sec-Fetch-Site), never a cross-site one. */
+export function sameOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+  if (!origin || !host) return false;
+  const site = request.headers.get("sec-fetch-site");
+  if (site !== null && site !== "same-origin") return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}

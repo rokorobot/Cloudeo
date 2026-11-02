@@ -11,6 +11,7 @@ from cloudeo.config import settings
 from cloudeo.core.controller import Controller
 from cloudeo.db.models import RunRecord
 from cloudeo.db.session import Database
+from cloudeo.mission_control.api import commands_router as mission_control_commands
 from cloudeo.mission_control.api import router as mission_control_router
 from cloudeo.models import DecisionRequest, RunRequest, RunResponse
 
@@ -33,6 +34,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(mission_control_router)
+app.include_router(mission_control_commands)
 
 
 @app.get("/health")

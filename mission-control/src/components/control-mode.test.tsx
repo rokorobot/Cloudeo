@@ -53,7 +53,7 @@ describe("control mode (read-only V2 WorkOrders)", () => {
     await screen.findByText("EXECUTING");
     expect(screen.getByRole("button", { name: /pause/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /stop/i })).toBeDisabled();
-    expect(screen.getByText("Control actions not connected yet")).toBeInTheDocument();
+    expect(screen.getByText("Pause, stop and take control are not part of the V2 control model yet")).toBeInTheDocument();
     const costRow = screen.getByText("Cost").nextElementSibling;
     expect(costRow).toHaveTextContent("not recorded");
     expect(screen.getByText("Elapsed").nextElementSibling).toHaveTextContent("not recorded");
@@ -69,15 +69,18 @@ describe("control mode (read-only V2 WorkOrders)", () => {
     expect(within(chain).getByText("no commit yet")).toBeInTheDocument();
   });
 
-  it("attention shows the recorded reasons and offers no working actions", async () => {
+  it("attention shows the recorded reasons; without an owner token no decision can be sent", async () => {
     pathname = "/work-orders/wo-1/execute";
     renderControl(<WorkOrderView id="wo-1" stage="execute" />);
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("INDEPENDENCE_UNAVAILABLE");
     expect(alert).toHaveTextContent("No reason has been waived.");
-    for (const action of ["resume", "change_agent", "abort"]) {
+    for (const action of ["Resume", "Replan", "Defer", "Abort"]) {
       expect(screen.getByRole("button", { name: action })).toBeDisabled();
     }
+    // Availability comes from the adapter: resume needs the broker baseline here.
+    expect(screen.getByRole("button", { name: "Resume" })).toHaveAttribute("title", expect.stringMatching(/Workspace Broker/));
+    expect(screen.getByRole("button", { name: "Abort" })).toHaveAttribute("title", expect.stringMatching(/not configured/));
     expect(screen.queryByText(/owner policy override/i)).not.toBeInTheDocument();
   });
 

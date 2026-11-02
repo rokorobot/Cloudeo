@@ -185,6 +185,8 @@ export function FixtureWorkOrderProvider({ children }: { children: ReactNode }) 
       health: HEALTH,
       anyRunning: Object.values(state.runs).some((r) => r.mode === "running"),
       link: null,
+      sendCommand: null,
+      ownerCommandsOff: "Demo data: owner commands go to the V2 control store only",
     };
   }, [state, subscribe]);
 

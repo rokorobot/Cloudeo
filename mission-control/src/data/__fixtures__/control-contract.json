@@ -92,6 +92,25 @@
         ],
         "repo": "demo"
       },
+      "commands": [
+        {
+          "command": "resume",
+          "enabled": false,
+          "reason": "resume here rechecks the accepted baseline; the API is not bound to a Workspace Broker"
+        },
+        {
+          "command": "replan",
+          "enabled": true
+        },
+        {
+          "command": "defer",
+          "enabled": true
+        },
+        {
+          "command": "abort",
+          "enabled": true
+        }
+      ],
       "currentStage": "execute",
       "evidenceCount": 7,
       "execution": {
@@ -377,6 +396,7 @@
         ],
         "repo": "demo"
       },
+      "commands": [],
       "currentStage": "checkpoint",
       "evidenceCount": 5,
       "execution": {

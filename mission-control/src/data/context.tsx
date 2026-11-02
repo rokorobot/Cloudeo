@@ -3,7 +3,8 @@
 import { createContext, useContext, useEffect } from "react";
 
 import type { LiveWorkOrder, Result, WorkOrderCommandSource, WorkOrderList } from "@/data/sources";
-import type { DataSource, SystemHealth } from "@/lib/types";
+import type { CommandResult } from "@/data/control-source";
+import type { DataSource, OwnerCommand, SystemHealth } from "@/lib/types";
 
 /**
  * What every Mission Control screen reads from. Implemented by
@@ -24,6 +25,12 @@ export interface WorkOrderData {
   anyRunning: boolean;
   /** Control mode: whether the control event stream is pushing changes. Null in demo. */
   link: LinkState | null;
+  /**
+   * Control mode owner commands (ADR-038). Null when this source cannot send them
+   * (demo, or the server has no owner token), with the reason in ownerCommandsOff.
+   */
+  sendCommand: ((id: string, command: OwnerCommand, expectedVersion: number, message?: string) => Promise<CommandResult>) | null;
+  ownerCommandsOff: string | null;
 }
 
 /** live: changes are pushed. connecting / polling: re-read on a timer until the stream is up. */
@@ -76,4 +83,9 @@ export function useAnyRunning(): boolean {
 
 export function useLink(): LinkState | null {
   return useData().link;
+}
+
+export function useOwnerCommands() {
+  const { sendCommand, ownerCommandsOff } = useData();
+  return { sendCommand, ownerCommandsOff };
 }
