@@ -6,7 +6,7 @@ import { PanelRight } from "lucide-react";
 import { CloudeoMark } from "@/components/shell/cloudeo-mark";
 import { Chip, Dot } from "@/components/common/status";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useAnyRunning, useDataSource, useHealth } from "@/data/context";
+import { useAnyRunning, useDataSource, useHealth, useOwnerCommands } from "@/data/context";
 import { cn } from "@/lib/utils";
 import { useInspector, usePalette } from "@/state/ui";
 
@@ -15,6 +15,7 @@ export function TopBar() {
   const palette = usePalette();
   const inspector = useInspector();
   const source = useDataSource();
+  const { sendCommand } = useOwnerCommands();
   const health = useHealth();
   const degraded = health?.runtimes.filter((r) => r.status !== "healthy").length ?? 0;
 
@@ -31,7 +32,7 @@ export function TopBar() {
           <Chip className="ml-1">DEMO DATA</Chip>
         </div>
       ) : (
-        <Chip tone="brand">CONTROL STORE · READ-ONLY</Chip>
+        <Chip tone="brand">{sendCommand ? "CONTROL STORE · OWNER" : "CONTROL STORE · READ-ONLY"}</Chip>
       )}
       <div className="flex-1" />
       <Tooltip>

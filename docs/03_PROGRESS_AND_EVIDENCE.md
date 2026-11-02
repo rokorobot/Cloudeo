@@ -2124,3 +2124,35 @@ Evidence:
 Not in this slice: commands (pause/stop/take control) and executor telemetry
 (activity feed, browser frames, cost, elapsed). The latter is expected from
 the Session Fabric projection (doc 16 §24).
+
+## 2026-11-02 — Mission Control owner commands (ADR-038)
+
+Mission Control can now approve or reject a proposed plan and decide on an
+open attention request (`resume` where no baseline recheck is needed,
+`replan`, `defer`, `abort`), through one authenticated endpoint over the
+existing state-machine transitions. Design and boundaries: ADR-038.
+
+Evidence:
+
+- Python: `uv run pytest -q` → 699 passed, 10 skipped, 12 xfailed (same
+  pre-existing skips and xfails); new `tests/test_mission_control_commands.py` (34).
+- UI: `npm run typecheck`, `npm run lint` clean; `npm test` → 52 passed
+  (new: `owner-commands.test.tsx`, 15).
+- Live, end to end (uvicorn API with owner config + `next dev` with the token
+  + Chromium, seeded store: wo-1 in attention from EXECUTING, wo-2
+  PLAN_PROPOSED):
+  - refusals over real HTTP, store unchanged afterwards: cross-site Origin
+    and missing Origin at the UI route (403 `cross_origin`), non-JSON (415),
+    API without token (401), API with a browser Origin (403
+    `browser_origin`), a body naming another actor (422); the token does not
+    appear in the served page;
+  - wo-2: Approve plan → recorded at v4, `approvedBy: robert`, event
+    `owner_approve_plan`;
+  - wo-1: Resume disabled with the Workspace Broker reason; a Defer dialog
+    opened at v8, another writer moved wo-1 to v9, the dialog warned, and
+    confirming was refused (`stale_version`, nothing recorded); Defer again
+    with a note → recorded at v10 as `robert` with the note and no waivers.
+- Bug found by the live check and fixed before commit: the dialog sent the
+  version current at confirm time, so a change arriving through the stream
+  while the dialog was open would have been decided unseen. The version is
+  now pinned when the dialog opens (regression test added).

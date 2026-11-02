@@ -74,7 +74,7 @@ export function StatusBar() {
           <ControlLink />
           <span className="flex items-center gap-1.5 text-muted-foreground max-md:hidden">
             <Dot kind="idle" />
-            Runtime telemetry unavailable · read-only
+            Runtime telemetry unavailable
           </span>
         </>
       )}

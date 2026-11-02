@@ -16,7 +16,7 @@ npm run build
 | `MISSION_CONTROL_SOURCE` | Source | Can change anything? |
 | --- | --- | --- |
 | `demo` (default) | Local fixtures plus a client-side simulation | Yes, simulated: pause, take control, stop, owner override dialog |
-| `control` | Real V2 WorkOrders from the Cloudeo read API, updated in real time | **No.** Read-only; every command renders disabled with "Control actions not connected yet" |
+| `control` | Real V2 WorkOrders from the Cloudeo API, updated in real time | Only the owner commands of ADR-038, and only with an owner token (see below). Pause, stop and take control are not in the V2 control model |
 
 Any other value is a startup error. The mode is read per request, so one build serves either mode.
 
@@ -38,6 +38,27 @@ To watch it update live without a real executor, drive a throwaway store with th
 ```bash
 uv run python dev/mission_control_live_demo.py /tmp/mc-demo.db --step 3   # then point CLOUDEO_CONTROL_DB_PATH at it
 ```
+
+### Owner commands (ADR-038)
+
+With an owner configured, control mode can approve or reject a proposed plan (PLAN stage) and decide on an open attention request:
+`resume`, `replan`, `defer`, `abort`. Nothing else can be written.
+
+```bash
+TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+# API: who the owner is, and the token it accepts
+CLOUDEO_MISSION_CONTROL_OWNER=robert CLOUDEO_MISSION_CONTROL_OWNER_TOKEN=$TOKEN CLOUDEO_CONTROL_DB_PATH=... uv run uvicorn cloudeo.api.app:app --port 18800
+# UI server: the same token (server-side only; never sent to the browser)
+CLOUDEO_MISSION_CONTROL_OWNER_TOKEN=$TOKEN MISSION_CONTROL_SOURCE=control npm run dev
+```
+
+- Which commands apply, and why one is disabled, comes from the adapter (`commands` on the detail view). `resume` back into execution is
+  disabled until the API is bound to a Workspace Broker; `change_agent` / `change_budget` need envelope amendments the UI cannot author yet.
+- Every command is confirmed and names the record version shown when the dialog opened. If the WorkOrder changed meanwhile, the API
+  refuses it (409 `stale_version`) and nothing is recorded.
+- The actor is configured on the API, never sent by the browser. `/api/control/work-orders/[id]/commands` accepts only same-origin JSON
+  from this app and adds the token; the API refuses any request with an `Origin` header, so no web page can reach it directly.
+- Without the token the buttons render disabled with the reason, and the top bar says `CONTROL STORE · READ-ONLY`.
 
 ### Real time
 

@@ -18,7 +18,7 @@ import {
 import { useRunCommands } from "@/data/context";
 import type { LiveWorkOrder } from "@/data/sources";
 
-export const NOT_CONNECTED = "Control actions not connected yet";
+export const NOT_CONNECTED = "Pause, stop and take control are not part of the V2 control model yet";
 
 export function PauseResumeButton({ wo }: { wo: LiveWorkOrder }) {
   const c = useRunCommands(wo.id);
