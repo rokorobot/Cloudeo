@@ -7,6 +7,9 @@ semantics:
 - approve_plan / reject_plan on a PLAN_PROPOSED WorkOrder
 - a decision on the open attention request: abort, defer, replan, and resume
   where no baseline recheck is needed
+- operator halt and stop on an active WorkOrder (ADR-039): halt raises an
+  OPERATOR_HALT attention request; stop is that halt followed by the abort
+  decision, stored as two legal transitions
 
 Not offered: change_agent / change_budget (they need an envelope amendment the
 UI cannot author yet) and resume back into PLAN_APPROVED, EXECUTING or
@@ -32,10 +35,14 @@ from cloudeo.control.store import SqliteControlStore, StaleWriteError
 
 S = WorkOrderStatus
 
-CommandName = Literal["approve_plan", "reject_plan", "abort", "defer", "replan", "resume"]
+CommandName = Literal[
+    "approve_plan", "reject_plan", "halt", "stop", "abort", "defer", "replan", "resume"
+]
 COMMANDS: tuple[CommandName, ...] = (
     "approve_plan",
     "reject_plan",
+    "halt",
+    "stop",
     "resume",
     "replan",
     "defer",
@@ -69,10 +76,12 @@ def available_commands(wo: WorkOrder) -> list[Availability]:
     """
     if wo.status == S.PLAN_PROPOSED:
         return [Availability("approve_plan", True), Availability("reject_plan", True)]
+    if wo.status in m.HALTABLE:
+        return [Availability("halt", True), Availability("stop", True)]
     request = wo.open_attention
     if wo.status != S.USER_ATTENTION_REQUIRED or request is None:
         return []
-    blocking = request.open_blocking()
+    blocking = request.blocking_resume()
     if request.raised_from in NEEDS_BASELINE:
         resume = Availability("resume", False, NO_BROKER)
     elif blocking:
@@ -131,23 +140,41 @@ class CommandService:
             raise CommandRefused("not_applicable", f"{command} does not apply to {wo.status}")
         if not offered[command].enabled:
             raise CommandRefused("not_available", offered[command].reason or command)
+        now = self._clock()
         try:
-            updated = self._apply(wo, command, message)
+            if command == "stop":
+                # Abort stays an attention decision (§6.1): halt, then abort. If the
+                # second write fails, the WorkOrder is left halted, the safe state.
+                halted = self._store.update(
+                    m.halt(wo, actor=self._actor, at=now, message=message),
+                    expected_version=expected_version,
+                    event="owner_stop_halt",
+                )
+                return self._store.update(
+                    self._decide(halted, "abort", message, now),
+                    expected_version=halted.version,
+                    event="owner_stop",
+                )
+            updated = self._apply(wo, command, message, now)
         except m.TransitionRejected as exc:
             raise CommandRefused(exc.code, str(exc)) from exc
         return self._store.update(
             updated, expected_version=expected_version, event=f"owner_{command}"
         )
 
-    def _apply(self, wo: WorkOrder, command: CommandName, message: str) -> WorkOrder:
-        now = self._clock()
+    def _decide(self, wo: WorkOrder, command: str, message: str, now: datetime) -> WorkOrder:
+        decision = UserDecision(
+            action=DECISIONS[command], actor=self._actor, at=now, message=message
+        )
+        return m.decide(wo, decision)
+
+    def _apply(self, wo: WorkOrder, command: CommandName, message: str, now: datetime) -> WorkOrder:
         if command == "approve_plan":
             return m.approve_plan(
                 wo, plan_version=len(wo.plan_versions), approved_by=self._actor, approved_at=now
             )
         if command == "reject_plan":
             return m.reject_plan(wo)
-        decision = UserDecision(
-            action=DECISIONS[command], actor=self._actor, at=now, message=message
-        )
-        return m.decide(wo, decision)
+        if command == "halt":
+            return m.halt(wo, actor=self._actor, at=now, message=message)
+        return self._decide(wo, command, message, now)

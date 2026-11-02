@@ -17,6 +17,7 @@ from datetime import datetime
 from cloudeo.control.model import (
     ATTENTION_SOURCES,
     AUDITED_PRODUCERS,
+    LIFTED_BY_RESUME,
     TERMINAL,
     WRITE_CAPABLE_ROLES,
     AgentProfile,
@@ -356,12 +357,16 @@ def decide(
     _require(amendment is None, "amendment", f"{action} does not take an envelope amendment")
 
     if action == UserAction.RESUME:
-        blocking = request.open_blocking()
+        blocking = request.blocking_resume()
         _require(
             not blocking,
             "unresolved_reasons",
             f"resolve or explicitly waive every blocking reason first: {', '.join(blocking)}",
         )
+        # The owner's resume ends their own operator halt (ADR-039); record that.
+        lifted = tuple(c for c in request.open_blocking() if c in LIFTED_BY_RESUME)
+        if lifted:
+            request = request.evolve(resolved_codes=(*request.resolved_codes, *lifted))
         target = request.raised_from
         if target in (S.PLAN_APPROVED, S.EXECUTING, S.FINAL_VERIFICATION):
             _require(accepted_baseline is not None, "baseline", "resume rechecks the baseline")
@@ -376,6 +381,34 @@ def decide(
     if action == UserAction.ABORT:
         return _close(work_order, request, S.ABORTED)
     raise TransitionRejected("action", f"unknown action {action}")  # pragma: no cover
+
+
+# States an owner can halt (ADR-039): the ones attention may be raised from.
+HALTABLE = ATTENTION_SOURCES
+
+
+def halt(work_order: WorkOrder, *, actor: str, at: datetime, message: str = "") -> WorkOrder:
+    """Operator halt (ADR-039): the owner stops progress now.
+
+    Raises an OPERATOR_HALT attention request. While in attention no block
+    transition is accepted (they require EXECUTING), so no attempt can be
+    dispatched (V2C-02) and an in-flight run cannot record results. The owner
+    then decides as for any attention request; a resume lifts the halt.
+
+    There is no direct stop transition: abort stays an attention decision
+    (§6.1). An operator stop is stored as halt, then the abort decision.
+    """
+    _require(
+        work_order.status in HALTABLE,
+        "illegal_state",
+        f"{work_order.status} cannot be halted",
+    )
+    reason = AttentionReason(
+        code=AttentionCode.OPERATOR_HALT,
+        summary=message.strip() or f"halted by {actor}",
+        evidence=(EvidenceRef(kind="owner_command", ref=f"halt/{actor}/{at.isoformat()}"),),
+    )
+    return raise_attention(work_order, reason)
 
 
 def _close(

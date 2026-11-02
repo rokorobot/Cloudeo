@@ -194,6 +194,14 @@ class AttentionCode(StrEnum):
     PROMOTION_REFUSED = "PROMOTION_REFUSED"
     RISK_REQUIRES_HUMAN = "RISK_REQUIRES_HUMAN"
     PLAN_AMBIGUITY = "PLAN_AMBIGUITY"
+    # The owner stopped progress (ADR-039). Lifted only by the owner's resume.
+    OPERATOR_HALT = "OPERATOR_HALT"
+
+
+# Blocking reasons that a resume decision itself lifts (ADR-039): an operator
+# halt exists only because the owner asked for it, so the owner's resume ends
+# it. Every other blocking reason must still be resolved or explicitly waived.
+LIFTED_BY_RESUME = frozenset({AttentionCode.OPERATOR_HALT})
 
 
 class UserAction(StrEnum):
@@ -774,6 +782,10 @@ class AttentionRequest(_Frozen):
             and r.code not in self.resolved_codes
             and r.code not in waived
         )
+
+    def blocking_resume(self) -> tuple[AttentionCode, ...]:
+        """Open blocking reasons a resume decision would not lift (ADR-039)."""
+        return tuple(c for c in self.open_blocking() if c not in LIFTED_BY_RESUME)
 
 
 class Deviation(_Frozen):

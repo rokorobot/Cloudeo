@@ -2156,3 +2156,23 @@ Evidence:
   version current at confirm time, so a change arriving through the stream
   while the dialog was open would have been decided unseen. The version is
   now pinned when the dialog opens (regression test added).
+
+## 2026-11-02 — Operator halt: Pause / Stop (ADR-039)
+
+`OPERATOR_HALT` attention code, `machine.halt`, resume lifting only the
+owner's halt, and Stop as halt + abort (two legal changes; the transition
+table is unchanged). Mission Control's Pause and Stop are now owner commands.
+
+Evidence:
+
+- `uv run pytest -q` → 729 passed, 10 skipped, 12 xfailed (pre-existing); UI
+  `npm test` → 55 passed; typecheck and lint clean.
+- Domain: `tests/test_control_operator_halt.py` (25). The model's own
+  evolution check rejected a first single-write stop (active → ABORTED),
+  which is how stop became two legal changes.
+- Live (sandbox API + Mission Control with the owner token, Chromium):
+  wo-3 EXECUTING → Pause with a note → v7 `owner_halt`, OPERATOR_HALT shown
+  with the note; Resume disabled (Workspace Broker reason), Replan / Defer /
+  Abort enabled; Inspector Pause/Stop disabled while the decision is
+  pending. wo-4 EXECUTING → Stop with a note → v7 `owner_stop_halt`, v8
+  `owner_stop`, ABORTED, abort decision by `robert` with the note.

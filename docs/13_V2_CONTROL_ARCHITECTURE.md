@@ -711,7 +711,8 @@ AttentionRequest
                       #      AGENT_UNAVAILABLE, INDEPENDENCE_UNAVAILABLE, AUDITOR_ERROR,
                       #      AUDIT_NOT_VERIFIED, MEMORY_CONFLICT, BLOCK_CHECKPOINT_MISMATCH,
                       #      BASELINE_DRIFT,
-                      #      PROMOTION_REFUSED, RISK_REQUIRES_HUMAN, PLAN_AMBIGUITY
+                      #      PROMOTION_REFUSED, RISK_REQUIRES_HUMAN, PLAN_AMBIGUITY,
+                      #      OPERATOR_HALT (owner-raised; lifted by the owner's resume, ADR-039)
     - severity        # blocking | warning
     - summary
     - evidence_refs[] # audits, test output, diffs, gate results, never bare prose

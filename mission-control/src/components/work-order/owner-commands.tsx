@@ -39,6 +39,18 @@ const COPY: Record<OwnerCommand, { label: string; title: string; body: string; d
     body: "Rejecting a proposed plan aborts the WorkOrder. This cannot be undone.",
     danger: true,
   },
+  halt: {
+    label: "Pause",
+    title: "Pause this WorkOrder?",
+    body:
+      "An operator halt is raised and nothing proceeds until you decide: resume, replan, defer or abort. A run already in progress is not interrupted, but it cannot record results while halted.",
+  },
+  stop: {
+    label: "Stop",
+    title: "Stop this WorkOrder?",
+    body: "It is halted and then aborted, both recorded under your name. Everything recorded stays in evidence. This cannot be undone.",
+    danger: true,
+  },
   resume: {
     label: "Resume",
     title: "Resume this WorkOrder?",
@@ -130,6 +142,17 @@ function CommandButton({ wo, view }: { wo: LiveWorkOrder; view: OwnerCommandView
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+/** One command in a fixed place (Pause / Stop): disabled with a reason when it does not apply now. */
+export function OwnerCommandSlot({ wo, command }: { wo: LiveWorkOrder; command: OwnerCommand }) {
+  const view = wo.commands?.find((c) => c.command === command);
+  if (view) return <CommandButton wo={wo} view={view} />;
+  return (
+    <Button variant="outline" size="sm" disabled title={`Not available while the WorkOrder is ${wo.state.replaceAll("_", " ")}`}>
+      {COPY[command].label}
+    </Button>
   );
 }
 

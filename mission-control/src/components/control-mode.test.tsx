@@ -53,7 +53,9 @@ describe("control mode (read-only V2 WorkOrders)", () => {
     await screen.findByText("EXECUTING");
     expect(screen.getByRole("button", { name: /pause/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /stop/i })).toBeDisabled();
-    expect(screen.getByText("Pause, stop and take control are not part of the V2 control model yet")).toBeInTheDocument();
+    expect(screen.getByText("Take control is not part of the V2 control model yet")).toBeInTheDocument();
+    // Pause and Stop are owner commands now; without an owner token they say why they are off.
+    expect(screen.getByRole("button", { name: /pause/i })).toHaveAttribute("title", expect.stringMatching(/not configured/));
     const costRow = screen.getByText("Cost").nextElementSibling;
     expect(costRow).toHaveTextContent("not recorded");
     expect(screen.getByText("Elapsed").nextElementSibling).toHaveTextContent("not recorded");

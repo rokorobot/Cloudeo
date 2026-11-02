@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sameOrigin } from "@/app/api/control/proxy";
+import { Inspector } from "@/components/shell/inspector";
 import { STALE_MESSAGE } from "@/components/work-order/owner-commands";
 import { WorkOrderView } from "@/components/work-order/work-order-view";
 import contract from "@/data/__fixtures__/control-contract.json";
@@ -168,5 +169,50 @@ describe("deciding on what was shown", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(`Changed to v${version}`);
     await userEvent.click(screen.getByRole("button", { name: "Abort" }));
     expect(send).toHaveBeenCalledWith("wo-1", "abort", WO1.version, "");
+  });
+});
+
+describe("pause and stop (operator halt, ADR-039)", () => {
+  const WO2 = contract.detail["wo-2"] as unknown as WorkOrderDetail;
+
+  beforeEach(() => {
+    pathname = "/work-orders/wo-2/execute";
+  });
+
+  function renderInspector(detail: WorkOrderDetail) {
+    const send = vi.fn<(id: string, command: OwnerCommand, version: number, message?: string) => Promise<CommandResult>>(
+      async () => ({ status: "recorded", version: detail.version! + 1 }),
+    );
+    render(
+      <V2WorkOrderProvider source={sourceOf(detail)} openStream={null} ownerCommands send={send}>
+        <Inspector />
+      </V2WorkOrderProvider>,
+    );
+    return send;
+  }
+
+  it("Pause sends an operator halt with the owner's note", async () => {
+    const send = renderInspector(WO2);
+    await userEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent(/cannot record results while halted/);
+    await userEvent.type(screen.getByLabelText(/note for the record/i), "checking the diff");
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(send).toHaveBeenCalledWith("wo-2", "halt", WO2.version, "checking the diff");
+  });
+
+  it("Stop is confirmed as irreversible and sends stop", async () => {
+    const send = renderInspector(WO2);
+    await userEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent(/cannot be undone/);
+    await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(send).toHaveBeenCalledWith("wo-2", "stop", WO2.version, "");
+  });
+
+  it("Pause is disabled with the reason while a decision is pending", async () => {
+    pathname = "/work-orders/wo-1/execute";
+    renderInspector(WO1);
+    const pause = await screen.findByRole("button", { name: "Pause" });
+    expect(pause).toBeDisabled();
+    expect(pause).toHaveAttribute("title", expect.stringMatching(/Not available while the WorkOrder is attention/));
   });
 });

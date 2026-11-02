@@ -75,11 +75,20 @@ def test_resume_needs_blocking_reasons_closed():
     assert offered(intake_attention("warning"))["resume"] == (True, None)
 
 
-@pytest.mark.parametrize(
-    "status_wo", [new_work_order, lambda: m.start_intake(new_work_order(), accepted_baseline=BASE)]
-)
-def test_states_without_owner_commands_offer_none(status_wo):
-    assert available_commands(status_wo()) == []
+def test_draft_offers_no_owner_command():
+    assert available_commands(new_work_order()) == []
+
+
+def test_active_states_offer_halt_and_stop():
+    wo = m.start_intake(new_work_order(), accepted_baseline=BASE)
+    assert offered(wo) == {"halt": (True, None), "stop": (True, None)}
+
+
+def test_halted_intake_can_be_resumed_but_halted_execution_needs_the_broker(store):
+    halted = m.halt(m.start_intake(new_work_order(), accepted_baseline=BASE), actor="r", at=WHEN)
+    assert offered(halted)["resume"] == (True, None)
+    wo = persist_attention_work_order(store)  # raised from EXECUTING
+    assert offered(wo)["resume"] == (False, NO_BROKER)
 
 
 # --- service over a real store ---
@@ -140,6 +149,43 @@ def test_resume_where_no_baseline_is_needed(store):
     assert (
         service(store).run("wo-1", "resume", expected_version=wo.version).status == S.CONTEXT_INTAKE
     )
+
+
+def test_halt_then_resume(store):
+    wo = persist(store, m.start_intake(new_work_order(), accepted_baseline=BASE))
+    halted = service(store).run("wo-1", "halt", expected_version=wo.version, message="checking")
+    assert halted.status == S.USER_ATTENTION_REQUIRED
+    assert halted.open_attention.reasons[0].code == AttentionCode.OPERATOR_HALT
+    assert halted.open_attention.reasons[0].summary == "checking"
+    resumed = service(store).run("wo-1", "resume", expected_version=halted.version)
+    assert resumed.status == S.CONTEXT_INTAKE
+    assert [e.event for e in store.events("wo-1")][-2:] == ["owner_halt", "owner_resume"]
+
+
+def test_stop_is_stored_as_halt_then_abort(store):
+    wo = persist(store, m.start_intake(new_work_order(), accepted_baseline=BASE))
+    stopped = service(store).run(
+        "wo-1", "stop", expected_version=wo.version, message="wrong ticket"
+    )
+    assert stopped.status == S.ABORTED
+    assert stopped.version == wo.version + 2
+    assert [(e.event, e.status) for e in store.events("wo-1")][-2:] == [
+        ("owner_stop_halt", "USER_ATTENTION_REQUIRED"),
+        ("owner_stop", "ABORTED"),
+    ]
+    decision = stopped.attention[-1].decisions[-1]
+    assert (decision.action, decision.actor, decision.message) == (
+        "abort",
+        "robert",
+        "wrong ticket",
+    )
+
+
+def test_stop_on_a_stale_version_writes_nothing(store):
+    wo = persist(store, m.start_intake(new_work_order(), accepted_baseline=BASE))
+    with pytest.raises(StaleWriteError):
+        service(store).run("wo-1", "stop", expected_version=wo.version + 1)
+    assert store.get("wo-1").status == S.CONTEXT_INTAKE
 
 
 def test_stale_version_writes_nothing(store):
@@ -218,6 +264,13 @@ def test_http_command_records_and_reports(configured, store):
     assert stored.attention[-1].decisions[-1].actor == "robert"
     detail = configured.get("/v1/mission-control/work-orders/wo-1").json()
     assert detail["commands"] == []
+
+
+def test_http_stop_and_halt_are_offered_only_where_they_apply(configured, store):
+    v = version(configured)
+    r = configured.post(URL, json={"command": "halt", "expectedVersion": v}, headers=AUTH)
+    assert r.status_code == 409  # wo-1 is already in attention
+    assert r.json()["detail"]["error"] == "not_applicable"
 
 
 def test_http_stale_version_is_a_conflict(configured):

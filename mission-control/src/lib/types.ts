@@ -141,7 +141,7 @@ export interface WorkOrderDetail extends WorkOrderSummary {
   commands?: OwnerCommandView[];
 }
 
-export const OWNER_COMMANDS = ["approve_plan", "reject_plan", "resume", "replan", "defer", "abort"] as const;
+export const OWNER_COMMANDS = ["approve_plan", "reject_plan", "halt", "stop", "resume", "replan", "defer", "abort"] as const;
 export type OwnerCommand = (typeof OWNER_COMMANDS)[number];
 
 export interface OwnerCommandView {
