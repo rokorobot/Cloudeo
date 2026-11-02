@@ -29,6 +29,23 @@ def main(argv: list[str] | None = None) -> int:
     gate = sub.add_parser("gate", help="run a suite once; exit 0 pass, 1 fail, 2 blocked")
     gate.add_argument("--suite", required=True)
     gate.add_argument("--out", type=Path, required=True)
+    release = sub.add_parser(
+        "release-gate", help="may a judged comparison's candidate replace the current baseline?"
+    )
+    release.add_argument("--comparison", type=Path, required=True, help="comparison-*.json")
+    release.add_argument("--gate-report", type=Path, required=True, help="regression gate-*.json")
+    holdout = release.add_mutually_exclusive_group(required=True)
+    holdout.add_argument("--holdout-report", type=Path, help="gate-*.json run with holdout storage")
+    holdout.add_argument("--no-holdout-reason", help="owner-recorded reason there is no holdout")
+    release.add_argument("--thresholds", type=Path, help="default: gates/thresholds-v1.json")
+    release.add_argument(
+        "--candidate-file", required=True, help="candidate configuration, relative to the package"
+    )
+    release.add_argument("--out", type=Path, required=True)
+    release.add_argument("--approved-by", default="owner")
+    release.add_argument(
+        "--apply", action="store_true", help="on pass, write the new record and move the pointer"
+    )
     compare = sub.add_parser("compare", help="paired comparison of two configurations")
     compare.add_argument("--suite", required=True)
     compare.add_argument("--baseline", type=Path, required=True, help="configuration JSON")
@@ -55,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         return _compare(args)
     if args.command == "gate":
         return _gate(args)
+    if args.command == "release-gate":
+        return _release(args)
 
     if args.command == "verify":
         report = verify_store(args.out)
@@ -104,6 +123,55 @@ def _gate(args) -> int:
     _, md_path = write_report(args.out, report)
     print(md_path.read_text())
     return report["exit_code"]
+
+
+def _release(args) -> int:
+    import json
+
+    from cloudeo.evaluation import release
+    from cloudeo.evaluation.compare import THRESHOLDS, load_thresholds
+    from cloudeo.evaluation.contracts import EvalComparison, EvalConfiguration
+    from cloudeo.evaluation.runner import DATA
+
+    comparison = EvalComparison.model_validate_json(args.comparison.read_text())
+    thresholds = load_thresholds(args.thresholds or THRESHOLDS / "thresholds-v1.json")
+    gate_report = json.loads(args.gate_report.read_text())
+    holdout = json.loads(args.holdout_report.read_text()) if args.holdout_report else None
+    baseline = release.current()
+    verdict, failed, blocked = release.decide(
+        comparison, thresholds, gate_report, holdout, args.no_holdout_reason, baseline
+    )
+    candidate = DATA / args.candidate_file
+    if not candidate.is_file() or (
+        EvalConfiguration.model_validate_json(candidate.read_text()).digest
+        != comparison.candidate.digest
+    ):
+        blocked.append(f"{args.candidate_file} is not the compared candidate configuration")
+        verdict = "fail" if failed else "blocked"
+    decision = {
+        "verdict": verdict, "exit_code": release.EXIT_CODES[verdict], "fail_reasons": failed,
+        "blocked_reasons": blocked, "comparison_id": comparison.comparison_id,
+        "current_baseline": baseline.id, "candidate": comparison.candidate.id,
+        "thresholds_digest": thresholds.digest, "proposed_record": None,
+    }  # fmt: skip
+    if verdict == "pass":
+        record = release.next_record(
+            comparison, thresholds, holdout, args.no_holdout_reason, baseline,
+            args.approved_by, args.candidate_file,
+        )  # fmt: skip
+        decision["proposed_record"] = record.model_dump(mode="json")
+        if args.apply:
+            release.apply(record)
+    args.out.mkdir(parents=True, exist_ok=True)
+    path = args.out / f"release-{comparison.comparison_id}.json"
+    path.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+    print(f"release gate: {verdict.upper()} ({comparison.candidate.id} vs current {baseline.id})")
+    for reason in failed + blocked:
+        print(f"- {reason}")
+    if verdict == "pass":
+        print(f"proposed {decision['proposed_record']['id']}"
+              + (": written; open a PR to promote" if args.apply else "; rerun with --apply"))  # fmt: skip
+    return decision["exit_code"]
 
 
 def _compare(args) -> int:

@@ -75,6 +75,16 @@ PR 6a status (2026-11-02): the deterministic regression gate is in place. `pytho
 
 PR 6b status (2026-11-02): owner-approved thresholds are in `src/cloudeo/evaluation/gates/thresholds-v1.json`: 0 critical violations, coverage ≥ 95%, ≥ 12 cases × 5 repetitions, non-inferiority margin 10 points, improvement only when the lower bound is > 0, tokens per verified success ≤ 1.25× baseline, median and p95 duration ≤ 1.5× baseline, release caps USD 45 per run and USD 60 per week. `compare --thresholds FILE` judges pass, fail or inconclusive, requires clean committed code, and records the thresholds digest. `check_frozen` refuses to treat a comparison as judged by other thresholds. Today's live suites have 3 cases, so they are inconclusive until 6d.
 
+PR 6c status (2026-11-02): the baseline pointer and release gate are in place.
+- `src/cloudeo/evaluation/baselines/current.json` names the active immutable record `bNNNN.json`. It starts at `b0001`, which is `opus-5-5` with basis `initial`: the baseline side of every comparison so far, not established by a release gate.
+- `python -m cloudeo.evaluation release-gate --comparison C --gate-report G (--holdout-report H | --no-holdout-reason TEXT) --candidate-file configurations/X.json --out DIR [--apply]` passes only when all of these hold:
+  - the comparison passed its frozen thresholds;
+  - it was run against the current baseline;
+  - the code was clean and committed;
+  - the regression gate passed on the same commit;
+  - holdout ran on that commit with no critical violation and nothing unknown or unavailable, or the owner recorded why there is none.
+- `--apply` writes `bNNNN+1` and moves the pointer in the working tree. Promotion takes effect when that PR is merged. A failed release changes nothing, and rollback means restoring the previous `current.json`.
+
 Dependencies: 1 → 2 → 3 → 4 → 5 → 6 → 7. Case drafting can begin during PR 2, but freeze only after grader validation. Each PR includes relevant regression tests, progress evidence and rollback instructions. EVAL-01A completes at PR 4; EVAL-01B completes at PR 7.
 
 The five initial cases should cover direct-tool verified success, deterministic-validation failure with permitted Jev escalation, unknown UHP execution without unsafe retry, post-audit mutation refusal, and a prohibited billing transition. On a main-only baseline, the billing case is explicitly blocked until its V2 integration lands.

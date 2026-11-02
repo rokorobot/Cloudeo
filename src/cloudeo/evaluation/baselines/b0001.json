@@ -1,0 +1,19 @@
+{
+  "id": "b0001",
+  "configuration_file": "configurations/opus-5-5.json",
+  "configuration_id": "opus-5-5",
+  "configuration_digest": "a000ef84075416d830e41915f85eb179933d344729b2cbb4465877028d3d26ff",
+  "basis": "initial",
+  "previous": null,
+  "comparison_id": null,
+  "suite_id": null,
+  "suite_digest": null,
+  "thresholds_id": null,
+  "thresholds_digest": null,
+  "code_commit": null,
+  "holdout": null,
+  "holdout_exception": null,
+  "approved_by": "owner",
+  "approved_at": "2026-11-02",
+  "note": "Initial pointer: the baseline side of every comparison so far (owner decision 2026-10-31, Claude Opus 5.5 vs GPT 5.6). Not established by a release gate."
+}
