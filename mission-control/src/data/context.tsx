@@ -22,7 +22,12 @@ export interface WorkOrderData {
   health: SystemHealth | null;
   /** True only while the source reports autonomous work in progress. */
   anyRunning: boolean;
+  /** Control mode: whether the control event stream is pushing changes. Null in demo. */
+  link: LinkState | null;
 }
+
+/** live: changes are pushed. connecting / polling: re-read on a timer until the stream is up. */
+export type LinkState = "connecting" | "live" | "polling";
 
 export const WorkOrderDataContext = createContext<WorkOrderData | null>(null);
 
@@ -67,4 +72,8 @@ export function useHealth(): SystemHealth | null {
 
 export function useAnyRunning(): boolean {
   return useData().anyRunning;
+}
+
+export function useLink(): LinkState | null {
+  return useData().link;
 }

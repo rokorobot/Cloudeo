@@ -3,7 +3,7 @@
 import Link from "next/link";
 
 import { Dot, PROVIDER_DOT } from "@/components/common/status";
-import { useHealth, useLiveWorkOrder, useWorkOrderList } from "@/data/context";
+import { useHealth, useLink, useLiveWorkOrder, useWorkOrderList } from "@/data/context";
 import type { LiveWorkOrder } from "@/data/sources";
 import { formatDuration, formatMoney, STATE_LABEL } from "@/lib/format";
 import { useOpenWorkOrder, woHref } from "@/lib/routes";
@@ -41,6 +41,20 @@ function SimulatedRuntime({ wo }: { wo: LiveWorkOrder | undefined }) {
   );
 }
 
+const LINK_LABEL = { live: "Control store · live", connecting: "Control store · connecting", polling: "Control store · reconnecting, re-reading every 5s" } as const;
+
+/** Control mode: whether changes are pushed from the control store or polled. */
+function ControlLink() {
+  const link = useLink();
+  if (!link) return null;
+  return (
+    <span className="flex items-center gap-1.5" data-testid="control-link" data-link={link}>
+      <Dot kind={link === "live" ? "running" : "warn"} />
+      {LINK_LABEL[link]}
+    </span>
+  );
+}
+
 export function StatusBar() {
   const open = useOpenWorkOrder();
   const health = useHealth();
@@ -56,10 +70,13 @@ export function StatusBar() {
       {health ? (
         <SimulatedRuntime wo={wo} />
       ) : (
-        <span className="flex items-center gap-1.5 text-muted-foreground">
-          <Dot kind="idle" />
-          Runtime telemetry unavailable · control store read-only
-        </span>
+        <>
+          <ControlLink />
+          <span className="flex items-center gap-1.5 text-muted-foreground max-md:hidden">
+            <Dot kind="idle" />
+            Runtime telemetry unavailable · read-only
+          </span>
+        </>
       )}
       <div className="flex-1" />
       <Counts />

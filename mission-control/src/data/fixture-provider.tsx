@@ -184,6 +184,7 @@ export function FixtureWorkOrderProvider({ children }: { children: ReactNode }) 
       commands,
       health: HEALTH,
       anyRunning: Object.values(state.runs).some((r) => r.mode === "running"),
+      link: null,
     };
   }, [state, subscribe]);
 

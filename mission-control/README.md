@@ -16,7 +16,7 @@ npm run build
 | `MISSION_CONTROL_SOURCE` | Source | Can change anything? |
 | --- | --- | --- |
 | `demo` (default) | Local fixtures plus a client-side simulation | Yes, simulated: pause, take control, stop, owner override dialog |
-| `control` | Real V2 WorkOrders from the Cloudeo read API | **No.** Read-only; every command renders disabled with "Control actions not connected yet" |
+| `control` | Real V2 WorkOrders from the Cloudeo read API, updated in real time | **No.** Read-only; every command renders disabled with "Control actions not connected yet" |
 
 Any other value is a startup error. The mode is read per request, so one build serves either mode.
 
@@ -33,6 +33,26 @@ MISSION_CONTROL_SOURCE=control CLOUDEO_API_URL=http://127.0.0.1:18800 npm run de
 The browser only talks to `/api/control/*` in this app, which forwards GET requests to
 `/v1/mission-control/*`. Both layers expose GET only. The API opens the SQLite store with `mode=ro`, so a write fails at the database.
 
+To watch it update live without a real executor, drive a throwaway store with the dev script (one control event every `--step` seconds):
+
+```bash
+uv run python dev/mission_control_live_demo.py /tmp/mc-demo.db --step 3   # then point CLOUDEO_CONTROL_DB_PATH at it
+```
+
+### Real time
+
+Changes are pushed, not polled. `GET /v1/mission-control/stream` is Server-Sent Events over the control store's append-only
+`work_order_events` table (`src/cloudeo/mission_control/stream.py`):
+
+- Each event carries only `{cursor, workOrderId, version, event}`. The UI re-reads that WorkOrder (if on screen) and the list through the
+  normal GET endpoints, so the adapter stays the one place that maps domain records, and the stream cannot show anything the store does not hold.
+- The cursor is the event row's SQLite `rowid` (the table is append-only, so it only grows). It is the SSE `id:`, so a reconnecting
+  EventSource sends `Last-Event-ID` and gets exactly the events it missed. No schema change.
+- A fresh subscription (or a cursor ahead of the store, e.g. a replaced store) gets `ready`, and the UI re-reads everything.
+- If the store cannot be read, the stream sends `unavailable` and ends. The UI falls back to re-reading every 5 s and reconnects.
+- The status bar shows the link: `Control store · live`, `connecting`, or `reconnecting`.
+- SQLite has no change notification, so the API checks the table every 0.5 s (a rowid range scan on a read-only connection).
+
 In control mode the UI shows only what the control store holds. Live browser frames, tool events, cost, elapsed time, runtime health,
 routing decisions and performance memory are **not** in the V2 control store yet; those surfaces say so explicitly instead of
 falling back to simulated values.
@@ -42,8 +62,9 @@ falling back to simulated values.
 ```
 screens ──▶ src/data/context.tsx (hooks)
               ├── FixtureWorkOrderProvider   demo: fixtures + simulation + commands
-              └── V2WorkOrderProvider        control: WorkOrderQuerySource only
-                     └── HttpWorkOrderQuerySource ─▶ /api/control ─▶ cloudeo.mission_control (Python adapter) ─▶ cloudeo.control
+              └── V2WorkOrderProvider        control: WorkOrderQuerySource only, refreshed by the event stream
+                     ├── HttpWorkOrderQuerySource ─▶ /api/control ─▶ cloudeo.mission_control (Python adapter) ─▶ cloudeo.control
+                     └── EventSource ─▶ /api/control/stream ─▶ /v1/mission-control/stream ─▶ work_order_events
 ```
 
 - Screens read through `useWorkOrderResult` / `useLiveWorkOrder` / `useWorkOrderList` and act through `useRunCommands`, which is `null` in control mode.

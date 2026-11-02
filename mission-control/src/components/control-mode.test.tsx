@@ -25,7 +25,7 @@ const source: WorkOrderQuerySource = {
 };
 
 function renderControl(ui: React.ReactNode) {
-  return render(<V2WorkOrderProvider source={source}>{ui}</V2WorkOrderProvider>);
+  return render(<V2WorkOrderProvider source={source} openStream={null}>{ui}</V2WorkOrderProvider>);
 }
 
 describe("control mode (read-only V2 WorkOrders)", () => {
