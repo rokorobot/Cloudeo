@@ -2085,3 +2085,42 @@ instruction is unambiguous; the r1 gap was the case's wording. Median time per
 edit trial: Opus 24.8 s, GPT 29.4 s. The runtime reported no currency cost;
 the budget counted USD 10.50 this week at reserve. This small pilot cannot
 establish a quality difference; harder cases are needed for that.
+
+## 2026-11-02 — Mission Control: real V2 WorkOrders in real time (read-only)
+
+Brings the read-only Mission Control branch (`feat/mission-control-v2-readonly`,
+2026-09-24) onto `main` and makes control mode real time.
+
+Rebase onto `main` (ADR-035/037): WorkOrders now carry runner-session evidence,
+so evidence counts rose by one (contract fixture regenerated), and stores
+require registered execution profiles (fixtures call `register_all`). Every
+`WorkOrderStatus`, `BlockStatus`, `AttentionCode` and `UserAction` on `main` is
+still mapped by the adapter's exhaustive tables (checked by script).
+
+Real time: `GET /v1/mission-control/stream` is SSE over the append-only
+`work_order_events` table, using the row's SQLite `rowid` as the cursor (no
+schema change). Events carry only `{cursor, workOrderId, version, event}`;
+the UI re-reads affected views through the existing GET adapter. Resume via
+`Last-Event-ID`; `ready` on fresh subscribe or a cursor ahead of the store;
+`unavailable` ends the stream and the UI falls back to 5 s re-reads and
+reconnects. The status bar shows the link state. The previous unconditional
+5 s polling runs only while the stream is down. A provider bug where a change
+landing during an in-flight read was dropped is fixed (re-read after finish).
+
+Evidence:
+
+- Python: `uv run pytest -q` → 665 passed, 10 skipped (optional `longhorizon`
+  extra), 12 xfailed (deferred V2C obligations); `ruff check .` clean.
+  New: `tests/test_mission_control_stream.py` (11).
+- UI: `npm run typecheck`, `npm run lint` clean; `npm test` → 37 passed
+  (new: `src/data/v2-provider.test.tsx`, 7).
+- Live, end to end (uvicorn API + `next dev` in control mode + Chromium,
+  writer `dev/mission_control_live_demo.py --step 3`): the open WorkOrder
+  followed the writer from v2 to v20 with no reload (Plan → Execute → Audit →
+  Checkpoint per block, then Final Verification); deleting the store switched
+  the link to `reconnecting`, and recreating it recovered without a reload;
+  zero WorkOrder GETs during 12 s of idle while live.
+
+Not in this slice: commands (pause/stop/take control) and executor telemetry
+(activity feed, browser frames, cost, elapsed). The latter is expected from
+the Session Fabric projection (doc 16 §24).
