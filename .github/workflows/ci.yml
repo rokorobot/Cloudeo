@@ -52,6 +52,11 @@ jobs:
           uv run --no-sync python scripts/ci_env_manifest.py ${{ matrix.job }} ci-artifacts/environment.json
       - name: Run tests
         run: uv run --no-sync pytest -q -rsx --junitxml=ci-artifacts/junit.xml
+      # EVAL-01 PR 6a: the regression gate needs every capability, so it runs where
+      # the pinned integration is installed. Exit 1 fail, 2 blocked; both fail the job.
+      - name: EVAL-01 regression gate
+        if: matrix.job == 'longhorizon'
+        run: uv run --no-sync python -m cloudeo.evaluation gate --suite corpus-v3 --out ci-artifacts/eval-gate
       - name: Check results against the expected-skip inventory
         if: ${{ !cancelled() }}
         run: uv run --no-sync python scripts/ci_check_junit.py ${{ matrix.job }} ci-artifacts/junit.xml ci-artifacts/summary.json

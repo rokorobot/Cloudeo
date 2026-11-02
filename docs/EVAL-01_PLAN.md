@@ -71,6 +71,8 @@ Start with an evaluation evidence envelope referencing `ExecutionOutcome`, rathe
 | 6 — enforceable gates | Required deterministic check; trusted live smoke; scheduled comparisons; upgrade/release check | Seeded critical regression blocks; missing required evidence blocks; inconclusive comparison cannot claim improvement; failed evaluation leaves prior release baseline active |
 | 7 — failure-analysis proposals | Read-only analyst, proposal format, independent validation and human-reviewed promotion | One real failed trial produces a reproducible case via review; analyst cannot modify graders, frozen suites, baseline pointers or runtime policy |
 
+PR 6a status (2026-11-02): the deterministic regression gate is in place. `python -m cloudeo.evaluation gate --suite corpus-v3 --out DIR` writes `gate-<run>.json` and `.md`. Exit codes: 0 pass, 1 fail (regression failure or critical execution violation), 2 blocked (regression unknown, infrastructure-invalid, unsupported or not run). It runs in the required `longhorizon` CI job. Remaining PR 6 work: thresholds (6b), baseline pointer and release gate (6c), harder live cases and weekly loop (6d).
+
 Dependencies: 1 → 2 → 3 → 4 → 5 → 6 → 7. Case drafting can begin during PR 2, but freeze only after grader validation. Each PR includes relevant regression tests, progress evidence and rollback instructions. EVAL-01A completes at PR 4; EVAL-01B completes at PR 7.
 
 The five initial cases should cover direct-tool verified success, deterministic-validation failure with permitted Jev escalation, unknown UHP execution without unsafe retry, post-audit mutation refusal, and a prohibited billing transition. On a main-only baseline, the billing case is explicitly blocked until its V2 integration lands.
