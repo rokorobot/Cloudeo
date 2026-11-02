@@ -15,20 +15,16 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { OwnerCommandSlot } from "@/components/work-order/owner-commands";
 import { useRunCommands } from "@/data/context";
 import type { LiveWorkOrder } from "@/data/sources";
 
-export const NOT_CONNECTED = "Pause, stop and take control are not part of the V2 control model yet";
+export const NOT_CONNECTED = "Take control is not part of the V2 control model yet";
 
 export function PauseResumeButton({ wo }: { wo: LiveWorkOrder }) {
   const c = useRunCommands(wo.id);
-  if (!c) {
-    return (
-      <Button variant="outline" size="sm" disabled title={NOT_CONNECTED}>
-        <Pause /> Pause
-      </Button>
-    );
-  }
+  // Control mode: Pause is the owner's operator halt (ADR-039).
+  if (!c) return <OwnerCommandSlot wo={wo} command="halt" />;
   if (wo.mode === "paused") {
     return (
       <Button variant="outline" size="sm" onClick={c.resume}>
@@ -45,13 +41,8 @@ export function PauseResumeButton({ wo }: { wo: LiveWorkOrder }) {
 
 export function StopButton({ wo }: { wo: LiveWorkOrder }) {
   const c = useRunCommands(wo.id);
-  if (!c) {
-    return (
-      <Button variant="outline" size="sm" disabled title={NOT_CONNECTED}>
-        <Square /> Stop
-      </Button>
-    );
-  }
+  // Control mode: Stop is operator halt followed by abort (ADR-039).
+  if (!c) return <OwnerCommandSlot wo={wo} command="stop" />;
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>

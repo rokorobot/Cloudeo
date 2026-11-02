@@ -276,7 +276,9 @@ class UnsupportedWorkOrderView(View):
 class CommandView(View):
     """An owner command that applies now (ADR-038); disabled ones say why."""
 
-    command: Literal["approve_plan", "reject_plan", "resume", "replan", "defer", "abort"]
+    command: Literal[
+        "approve_plan", "reject_plan", "halt", "stop", "resume", "replan", "defer", "abort"
+    ]
     enabled: bool
     reason: str | None = None
 

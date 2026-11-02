@@ -149,6 +149,7 @@ ATTENTION_CODES: frozenset[AttentionCode] = frozenset(
         AttentionCode.PROMOTION_REFUSED,
         AttentionCode.RISK_REQUIRES_HUMAN,
         AttentionCode.PLAN_AMBIGUITY,
+        AttentionCode.OPERATOR_HALT,
     }
 )
 USER_ACTIONS: tuple[UserAction, ...] = (

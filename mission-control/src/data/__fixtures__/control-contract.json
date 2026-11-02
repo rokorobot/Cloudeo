@@ -396,7 +396,16 @@
         ],
         "repo": "demo"
       },
-      "commands": [],
+      "commands": [
+        {
+          "command": "halt",
+          "enabled": true
+        },
+        {
+          "command": "stop",
+          "enabled": true
+        }
+      ],
       "currentStage": "checkpoint",
       "evidenceCount": 5,
       "execution": {

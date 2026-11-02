@@ -41,8 +41,9 @@ uv run python dev/mission_control_live_demo.py /tmp/mc-demo.db --step 3   # then
 
 ### Owner commands (ADR-038)
 
-With an owner configured, control mode can approve or reject a proposed plan (PLAN stage) and decide on an open attention request:
-`resume`, `replan`, `defer`, `abort`. Nothing else can be written.
+With an owner configured, control mode can approve or reject a proposed plan (PLAN stage), decide on an open attention request
+(`resume`, `replan`, `defer`, `abort`), and **Pause** or **Stop** an active WorkOrder (ADR-039): Pause raises an `OPERATOR_HALT`
+attention request, Stop is that halt followed by abort. Nothing else can be written. Take control is not in the V2 model yet.
 
 ```bash
 TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")

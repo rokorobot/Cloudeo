@@ -3697,3 +3697,58 @@ dialog open, same-origin guard). Live check recorded in
 **Consequences:** the owner can approve plans and close attention requests
 from Mission Control, attributed and version-exact. Anyone holding the owner
 token can act as the owner; it is a local secret like the API keys in `.env`.
+
+## ADR-039 — Operator halt (Pause / Stop)
+
+**Status:** Accepted (2026-11-02) by the owner ("create this, please", after
+ADR-038 named it as the follow-up); implemented.
+
+**Context:** The owner needs to stop progress on a WorkOrder at any time. The
+V2 control model has no pause or stop: the only way to stop progress is an
+attention request, and abort exists only as a decision on one (§6.1: no
+active state transitions to ABORTED directly). Mission Control's Pause and
+Stop buttons were therefore disabled (ADR-038).
+
+**Decision:**
+
+- New attention code `OPERATOR_HALT` (blocking). `machine.halt(work_order,
+  actor, at, message)` raises it from any state attention may be raised from
+  (CONTEXT_INTAKE, PLAN_APPROVED, EXECUTING, FINAL_VERIFICATION). Its
+  evidence is an `owner_command` reference; its summary is the owner's note,
+  or "halted by <actor>". No new WorkOrder status.
+- While halted, the WorkOrder is in USER_ATTENTION_REQUIRED, so every block
+  transition is refused (they require EXECUTING): no attempt can be
+  dispatched (V2C-02, ADR-037) and an in-flight run cannot record results.
+- The owner's `resume` lifts their own halt and records it in
+  `resolved_codes`; it lifts nothing else (`AttentionRequest.blocking_resume`,
+  `LIFTED_BY_RESUME`). Any other blocking reason must still be resolved or
+  waived, and the baseline recheck on resume into PLAN_APPROVED, EXECUTING or
+  FINAL_VERIFICATION is unchanged. Replan, defer and abort work as for any
+  attention request.
+- Stop is not a new transition. It is stored as two legal changes: the halt
+  (`owner_stop_halt`), then the abort decision (`owner_stop`), both
+  compare-and-swap. If the second write fails, the WorkOrder is left halted,
+  the safe state. The transition table is unchanged.
+- Mission Control (ADR-038): commands `halt` (Pause) and `stop` (Stop),
+  offered only in those four states, with the same token, origin, version and
+  confirmation rules.
+
+**Not decided here:** interrupting a run already in progress (there is no
+runtime cancel channel; the halt only stops it from recording results and
+new attempts from starting). Resume from a halted execution in Mission
+Control stays disabled until the API is bound to a Workspace Broker (ADR-038).
+Take control waits for the Session Fabric (ADR-031).
+
+**Evidence:** `tests/test_control_operator_halt.py` (halt from every active
+state and nowhere else, no block transition while halted, resume lifts only
+the halt and still rechecks the baseline, stop as two legal changes and never
+a direct abort, stored replay); `tests/test_mission_control_commands.py`
+(availability, halt/resume and stop through the service, stale stop writes
+nothing); `owner-commands.test.tsx` (Pause and Stop dialogs and payloads,
+Pause disabled with the reason while a decision is pending). Live check in
+`03_PROGRESS_AND_EVIDENCE.md` (2026-11-02).
+
+**Consequences:** the owner can stop progress immediately and with an
+auditable record. Pausing an executing WorkOrder from Mission Control is
+one-way until a Workspace Broker is bound, because resuming into execution
+must recheck the baseline.
