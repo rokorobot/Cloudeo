@@ -27,7 +27,7 @@
         ]
       },
       "audit": {
-        "artifactCount": 4,
+        "artifactCount": 5,
         "auditStatus": "VERIFIED",
         "auditedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "auditor": "sol-auditor v1 \u00b7 code_auditor",
@@ -93,7 +93,7 @@
         "repo": "demo"
       },
       "currentStage": "execute",
-      "evidenceCount": 6,
+      "evidenceCount": 7,
       "execution": {
         "blocks": [
           {
@@ -314,7 +314,7 @@
         "role": "primary_code_executor"
       },
       "audit": {
-        "artifactCount": 3,
+        "artifactCount": 4,
         "auditStatus": "VERIFIED",
         "auditedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "auditor": "sol-auditor v1 \u00b7 code_auditor",
@@ -378,7 +378,7 @@
         "repo": "demo"
       },
       "currentStage": "checkpoint",
-      "evidenceCount": 4,
+      "evidenceCount": 5,
       "execution": {
         "blocks": [
           {

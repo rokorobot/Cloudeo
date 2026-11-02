@@ -16,6 +16,7 @@ from control_helpers import (
     persist_attention_work_order,
     persist_candidate_work_order,
     project_profile,
+    register_all,
 )
 
 from cloudeo.control.store import SqliteControlStore
@@ -30,6 +31,7 @@ CONTRACT = (
 def served(tmp_path):
     path = tmp_path / "control.db"
     store = SqliteControlStore(path)
+    register_all(store)
     store.save_profile(project_profile())
     persist_attention_work_order(store)
     persist_candidate_work_order(store)

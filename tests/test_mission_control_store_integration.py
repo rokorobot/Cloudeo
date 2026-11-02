@@ -4,7 +4,7 @@ read-only query source -> UI view model, and the GET-only HTTP surface."""
 import sqlite3
 
 import pytest
-from control_helpers import persist_attention_work_order, project_profile
+from control_helpers import persist_attention_work_order, project_profile, register_all
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -24,6 +24,7 @@ def db_path(tmp_path):
     """A control store with one WorkOrder driven to attention, as a real caller would."""
     path = tmp_path / "control.db"
     store = SqliteControlStore(path)
+    register_all(store)
     store.save_profile(project_profile())
     persist_attention_work_order(store)
     return path

@@ -292,8 +292,8 @@ def test_no_invented_runtime_or_cost_values():
 
 def test_evidence_count_counts_distinct_references():
     wo = code_approved(executing())
-    # context report, tests, audit, diff: each distinct (kind, ref) once.
-    assert to_detail(wo).evidence_count == 4
+    # context report, runner session, tests, audit, diff: each distinct (kind, ref) once.
+    assert to_detail(wo).evidence_count == 5
 
 
 def test_memory_curation_reflects_memory_audit():
