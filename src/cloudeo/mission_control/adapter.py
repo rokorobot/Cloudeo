@@ -30,6 +30,7 @@ from cloudeo.control.model import (
     WorkOrderStatus,
 )
 from cloudeo.control.store import ControlEvent
+from cloudeo.mission_control.commands import available_commands
 from cloudeo.mission_control.views import (
     AgentView,
     AttentionReasonView,
@@ -42,6 +43,7 @@ from cloudeo.mission_control.views import (
     CheckpointItemView,
     CheckpointView,
     CheckView,
+    CommandView,
     CriterionView,
     DecisionView,
     ExecutionView,
@@ -692,4 +694,8 @@ def to_detail(wo: WorkOrder, events: Iterable[ControlEvent] = ()) -> WorkOrderDe
         attention=_attention_view(wo),
         history=_history(events),
         timestamps=_timestamps(wo),
+        commands=[
+            CommandView(command=a.command, enabled=a.enabled, reason=a.reason)
+            for a in available_commands(wo)
+        ],
     )

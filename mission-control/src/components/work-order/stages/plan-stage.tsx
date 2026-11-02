@@ -1,4 +1,5 @@
 import { Chip, Panel, PanelHeader, SectionLabel } from "@/components/common/status";
+import { OwnerCommandBar } from "@/components/work-order/owner-commands";
 import type { LiveWorkOrder } from "@/data/sources";
 import { formatDuration, formatMoney, formatPercent, formatTimestamp } from "@/lib/format";
 import type { PlanView, RoutingCandidate } from "@/lib/types";
@@ -188,6 +189,7 @@ export function PlanStage({ wo, plan }: { wo: LiveWorkOrder; plan: PlanView }) {
           )}
         </Panel>
       </div>
+      <OwnerCommandBar wo={wo} only={["approve_plan", "reject_plan"]} />
       <ControlPlan plan={plan} />
       <Routing plan={plan} />
     </>

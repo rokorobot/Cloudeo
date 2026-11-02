@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./cloudeo.db"
     # V2 control store, read by Mission Control (read-only).
     control_db_path: str = "./control.db"
+    # Mission Control owner commands (ADR-038). Both unset: commands are refused.
+    # The token is shared only with the Mission Control server, never a browser.
+    mission_control_owner: str | None = None
+    mission_control_owner_token: str | None = None
 
     jev_backend: str = "mock"
     jev_model: str = "typesafe/jev-1.13"

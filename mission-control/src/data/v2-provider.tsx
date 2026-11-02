@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { WorkOrderDataContext, type LinkState, type WorkOrderData } from "@/data/context";
+import { sendOwnerCommand, type CommandResult } from "@/data/control-source";
 import type { LiveWorkOrder, Result, WorkOrderList, WorkOrderQuerySource } from "@/data/sources";
-import type { WorkOrderDetail } from "@/lib/types";
+import type { OwnerCommand, WorkOrderDetail } from "@/lib/types";
 
 /**
  * Control mode: real V2 WorkOrders, read-only, kept current in real time.
@@ -32,6 +33,8 @@ export interface ControlStream {
 }
 
 const CLOSED = 2;
+const COMMANDS_OFF = "Owner commands are not configured on this Mission Control server (CLOUDEO_MISSION_CONTROL_OWNER_TOKEN)";
+type Send = (id: string, command: OwnerCommand, expectedVersion: number, message?: string) => Promise<CommandResult>;
 const openEventSource = (): ControlStream => new EventSource("/api/control/stream");
 
 export function V2WorkOrderProvider({
@@ -39,12 +42,16 @@ export function V2WorkOrderProvider({
   pollMs = 5000,
   reconnectMs = 5000,
   openStream = openEventSource,
+  ownerCommands = false,
+  send = sendOwnerCommand,
   children,
 }: {
   source: WorkOrderQuerySource;
   pollMs?: number;
   reconnectMs?: number;
   openStream?: (() => ControlStream) | null;
+  ownerCommands?: boolean;
+  send?: Send;
   children: ReactNode;
 }) {
   const [results, setResults] = useState<Partial<Record<Key, Result<WorkOrderDetail | WorkOrderList>>>>({});
@@ -138,6 +145,19 @@ export function V2WorkOrderProvider({
     return () => clearInterval(timer);
   }, [load, pollMs, link]);
 
+  const sendCommand = useCallback<Send>(
+    async (id, command, expectedVersion, message) => {
+      const result = await send(id, command, expectedVersion, message);
+      // The stream will report the change too; re-read now so the owner sees it at once.
+      if (result.status === "recorded" || result.error === "stale_version") {
+        void load(`wo:${id}`);
+        if (subscribers.current.has("list")) void load("list");
+      }
+      return result;
+    },
+    [send, load],
+  );
+
   // Keep object identity stable across renders for an unchanged payload.
   const liveCache = useRef(new WeakMap<WorkOrderDetail, LiveWorkOrder>());
 
@@ -161,8 +181,10 @@ export function V2WorkOrderProvider({
       health: null,
       anyRunning: false,
       link,
+      sendCommand: ownerCommands ? sendCommand : null,
+      ownerCommandsOff: ownerCommands ? null : COMMANDS_OFF,
     }),
-    [results, subscribe, link],
+    [results, subscribe, link, ownerCommands, sendCommand],
   );
 
   return <WorkOrderDataContext.Provider value={value}>{children}</WorkOrderDataContext.Provider>;

@@ -273,6 +273,14 @@ class UnsupportedWorkOrderView(View):
     source: Literal["control"] = "control"
 
 
+class CommandView(View):
+    """An owner command that applies now (ADR-038); disabled ones say why."""
+
+    command: Literal["approve_plan", "reject_plan", "resume", "replan", "defer", "abort"]
+    enabled: bool
+    reason: str | None = None
+
+
 class WorkOrderDetailView(WorkOrderSummaryView):
     objective: str
     version: int
@@ -293,3 +301,4 @@ class WorkOrderDetailView(WorkOrderSummaryView):
     attention: AttentionView | None = None
     history: list[HistoryEntry]
     timestamps: list[TimestampView]
+    commands: list[CommandView]

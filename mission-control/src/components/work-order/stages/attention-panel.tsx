@@ -16,7 +16,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { NOT_CONNECTED } from "@/components/work-order/run-controls";
+import { OwnerCommandBar } from "@/components/work-order/owner-commands";
 import type { LiveWorkOrder } from "@/data/sources";
 import { formatTimestamp, shortSha } from "@/lib/format";
 import type { AttentionView } from "@/lib/types";
@@ -256,7 +256,10 @@ function DemoAttention({ wo, attention }: { wo: LiveWorkOrder; attention: DemoAt
 const REASON_STATUS_CLASS = { open: "text-warn", resolved: "text-ok", waived: "text-subtle" } as const;
 
 /** Control mode: exactly what the open AttentionRequest records, and no actions. */
-function ControlAttention({ attention }: { attention: AttentionView }) {
+/** Decisions the V2 contract has that Mission Control cannot author yet. */
+const NEEDS_AMENDMENT = ["change_agent", "change_budget"];
+
+function ControlAttention({ wo, attention }: { wo: LiveWorkOrder; attention: AttentionView }) {
   const reasons = attention.reasons ?? [];
   const waived = reasons.filter((r) => r.status === "waived");
   return (
@@ -315,15 +318,15 @@ function ControlAttention({ attention }: { attention: AttentionView }) {
       </Panel>
 
       <div className="flex flex-col gap-2.5">
-        <SectionLabel>Decisions the V2 contract offers</SectionLabel>
-        <div className="flex flex-wrap gap-2">
-          {(attention.availableDecisions ?? []).map((a) => (
-            <Button key={a} variant="outline" size="sm" disabled title={NOT_CONNECTED} className="font-mono">
-              {a}
-            </Button>
-          ))}
-        </div>
-        <p className="text-[12.5px] text-muted-foreground">{NOT_CONNECTED}. Mission Control is reading the control store; it cannot record decisions.</p>
+        <SectionLabel>Your decision</SectionLabel>
+        <OwnerCommandBar wo={wo} only={["resume", "replan", "defer", "abort"]} />
+        {(attention.availableDecisions ?? []).some((a) => NEEDS_AMENDMENT.includes(a)) && (
+          <p className="text-[12.5px] text-muted-foreground">
+            <span className="font-mono text-[12px]">change_agent</span> and <span className="font-mono text-[12px]">change_budget</span> need an
+            envelope amendment, which Mission Control cannot author yet. A decision applies to the record version shown; if the WorkOrder
+            changed meanwhile, nothing is recorded.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -331,5 +334,5 @@ function ControlAttention({ attention }: { attention: AttentionView }) {
 
 export function AttentionPanel({ wo, attention }: { wo: LiveWorkOrder; attention: AttentionView }) {
   if (wo.source === "fixture" && isDemoAttention(attention)) return <DemoAttention wo={wo} attention={attention} />;
-  return <ControlAttention attention={attention} />;
+  return <ControlAttention wo={wo} attention={attention} />;
 }
