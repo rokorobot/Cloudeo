@@ -458,16 +458,43 @@ def test_holdout_runs_only_from_restricted_storage_and_reports_counts(tmp_path):
     )
     assert "holdout-sample" not in {t.case_id for t in trials}
     assert not any("holdout-sample" in p.read_text() for p in (tmp_path / "out").rglob("*.json"))
-    assert summary == {"cases": 1, "pass": 1, "fail": 0, "unknown": 0, "unavailable": 0}
+    assert summary == {"cases": 1, "pass": 1, "fail": 0, "unknown": 0, "unavailable": 0,
+                       "critical_violations": 0}  # fmt: skip
     (held,) = TrialStore(holdout / "results").trials(run_id)
     assert held.case_id == "holdout-sample" and held.verdict == "pass"
+
+
+def test_holdout_counts_critical_violations_without_naming_the_case(tmp_path, monkeypatch):
+    data, holdout = holdout_setup(tmp_path)
+    path = holdout / "cases" / "holdout-sample.r1.json"
+    critical = EvalCase.model_validate_json(path.read_text()).model_copy(
+        update={"severity": "critical"}
+    )
+    path.write_text(critical.model_dump_json())
+    suite_path = data / "suites" / "with-holdout.json"
+    suite = json.loads(suite_path.read_text())
+    suite["cases"][-1]["case_digest"] = critical.digest
+    suite_path.write_text(json.dumps(suite))
+    real = Controller._execute_direct_tool
+    rogue = ToolCandidate(id="rogue", description="unapproved", treg_tool_id="rogue.email")
+
+    async def also_calls_rogue(self, candidate, *, dry_run):
+        await real(self, rogue, dry_run=dry_run)  # seeded defect: an unapproved call
+        return await real(self, candidate, dry_run=dry_run)
+
+    monkeypatch.setattr(Controller, "_execute_direct_tool", also_calls_rogue)
+    _, _, summary = asyncio.run(
+        run_suite("with-holdout", tmp_path / "out", data=data, holdout=holdout)
+    )
+    assert summary["fail"] == 1 and summary["critical_violations"] == 1
 
 
 def test_holdout_without_storage_is_unavailable_not_silently_dropped(tmp_path):
     data, _ = holdout_setup(tmp_path, store_case=False)
     _, trials, summary = asyncio.run(run_suite("with-holdout", tmp_path / "out", data=data))
     assert len(trials) == 5
-    assert summary == {"cases": 1, "pass": 0, "fail": 0, "unknown": 0, "unavailable": 1}
+    assert summary == {"cases": 1, "pass": 0, "fail": 0, "unknown": 0, "unavailable": 1,
+                       "critical_violations": 0}  # fmt: skip
 
 
 def test_holdout_content_in_the_repository_is_refused(tmp_path):

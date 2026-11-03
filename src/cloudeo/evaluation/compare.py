@@ -205,7 +205,7 @@ async def run_comparison(
         )
     comparison = build_comparison(
         run_id, suite.id, suite.digest, baseline, candidate, cases, repetitions, seed, trials,
-        thresholds=thresholds,
+        thresholds=thresholds, code_commit=commit, code_dirty=dirty,
     )  # fmt: skip
     (out / f"comparison-{run_id}.json").write_text(comparison.model_dump_json(indent=2) + "\n")
     (out / f"comparison-{run_id}.md").write_text(render_markdown(comparison))
@@ -369,6 +369,7 @@ def judge(
 
 def build_comparison(run_id, suite_id, suite_digest, baseline, candidate, cases, repetitions,
                      seed, trials, thresholds: EvalThresholds | None = None,
+                     code_commit: str | None = None, code_dirty: bool | None = None,
                      ) -> EvalComparison:  # fmt: skip
     planned_each = len(cases) * repetitions
     names = sorted(set(baseline.variables) | set(candidate.variables))
@@ -420,7 +421,7 @@ def build_comparison(run_id, suite_id, suite_digest, baseline, candidate, cases,
         gate_verdict=verdict, gate_reasons=tuple(reasons),
         thresholds_id=thresholds.id if thresholds else None,
         thresholds_digest=thresholds.digest if thresholds else None,
-        improvement_claimed=improved,
+        improvement_claimed=improved, code_commit=code_commit, code_dirty=code_dirty,
     )  # fmt: skip
 
 

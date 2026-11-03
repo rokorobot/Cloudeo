@@ -149,9 +149,20 @@ async def run_suite(
     loaded = {c.id for c in cases}
     summary = {"cases": sum(e.holdout for e in suite.cases), "pass": 0, "fail": 0, "unknown": 0,
                "unavailable": sum(e.holdout and e.case_id not in loaded for e in suite.cases)}  # fmt: skip
+    summary["critical_violations"] = 0
     for trial in held.trials(run_id) if held else ():
         summary[trial.verdict] += 1
+        # A count only: which case it was stays in holdout storage.
+        summary["critical_violations"] += (
+            case_severity(cases, trial.case_id) == "critical"
+            and trial.execution_grade is not None
+            and trial.execution_grade.verdict == "fail"
+        )
     return run_id, store.trials(run_id), summary
+
+
+def case_severity(cases: list[EvalCase], case_id: str) -> str | None:
+    return next((c.severity for c in cases if c.id == case_id), None)
 
 
 async def _run_trial(

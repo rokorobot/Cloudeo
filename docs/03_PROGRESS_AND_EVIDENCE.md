@@ -2204,3 +2204,28 @@ Evidence:
 - `tests/test_eval_thresholds.py` (21): pins the approved values; every fail and inconclusive rule; improvement only on pass; tokens never guessed; a judged offline run is inconclusive and records its digest; a dirty tree is refused; CLI caps come from the thresholds file.
   - This found and fixed a bug while building it: an inconclusive result could claim improvement.
 - `uv run pytest -q` → 981 passed, 12 xfailed; `ruff check .` clean. Threshold tests also pass in the core-only environment.
+
+## 2026-11-02 — EVAL-01 PR 6c: baseline pointer and release gate
+
+- `evaluation/baselines/`: immutable `BaselineRecord` files (`b0001.json`, …) and a `current.json` pointer that carries the record digest.
+  - Initial record `b0001`: `opus-5-5`, basis `initial`. It was the baseline side of every comparison so far (owner decision 2026-10-31) and was not established by a release gate.
+  - A record pins its configuration file's digest. Editing that file afterwards is refused.
+- `release-gate` returns pass / fail / blocked (exit 0 / 1 / 2). It checks:
+  - the comparison was judged by the frozen thresholds (`check_frozen`) and passed;
+  - its baseline side is the current baseline;
+  - the code was clean and committed (comparisons now record `code_commit` and `code_dirty`);
+  - the regression gate report passed on that commit;
+  - the holdout gate report (aggregate only) ran on that commit with no critical violation and nothing unknown or unavailable, or `--no-holdout-reason` records the owner's reason, which is kept in the new record;
+  - the candidate file is the compared configuration.
+- `--apply`, on pass only, writes the next record (exclusive create) and moves the pointer in the working tree. The PR merge is the promotion; reverting it is the rollback.
+- Holdout run summaries now also count `critical_violations`, without naming cases.
+
+Evidence:
+- `tests/test_eval_release.py` (22):
+  - every check, both fail and blocked;
+  - promote then roll back;
+  - a failed release leaves every baseline file unchanged;
+  - a mismatched candidate file is refused;
+  - a tampered pointer or configuration is refused.
+- New holdout test: a seeded unapproved call on a critical holdout case is counted as `critical_violations: 1`, and the case is not named.
+- `uv run pytest -q` → 1004 passed, 12 xfailed; `ruff check .` clean. The release tests also pass in the core-only environment.

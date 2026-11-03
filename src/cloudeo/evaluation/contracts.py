@@ -277,6 +277,38 @@ class EvalComparison(_Frozen):
     thresholds_digest: str | None = None
     # Only when the interval's lower bound is above the approved floor.
     improvement_claimed: bool = False
+    # The exact code both sides ran (None when unknown); release needs it clean.
+    code_commit: str | None = None
+    code_dirty: bool | None = None
+
+
+class BaselineRecord(_Frozen):
+    """One immutable release baseline (plan §8). `baselines/current.json` names
+    the active one; promotion adds a record and moves the pointer in a reviewed
+    PR, and rollback moves the pointer back."""
+
+    id: str = Field(pattern=r"^b[0-9]{4}$")
+    configuration_file: str  # relative to the evaluation package
+    configuration_id: str
+    configuration_digest: str = Sha256
+    basis: Literal["initial", "release_gate"]
+    previous: str | None = None
+    comparison_id: str | None = None
+    suite_id: str | None = None
+    suite_digest: str | None = None
+    thresholds_id: str | None = None
+    thresholds_digest: str | None = None
+    code_commit: str | None = None
+    # Aggregate holdout counts, or the owner-accepted reason there were none.
+    holdout: dict[str, int] | None = None
+    holdout_exception: str | None = None
+    approved_by: str
+    approved_at: str
+    note: str = ""
+
+    @property
+    def digest(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json"))
 
 
 class EvalThresholds(_Frozen):
