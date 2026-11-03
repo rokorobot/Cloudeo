@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Iterator
@@ -855,14 +856,63 @@ async def live_harness_task(fixture, workdir, record):
     record("uhp", "outcome", status=outcome.status, actual_model=outcome.runtime.actual_model,
            response_id=outcome.runtime.response_id)  # fmt: skip
     text = (outcome.output_text or "").strip()
+    judged = {}
+    if "expected_output" in fixture:
+        # Judged against the case's own expected answer; whitespace-trimmed exact match.
+        judged["output.exact_match"] = text == fixture["expected_output"]
+    if "expected_json" in fixture:
+        judged["output.json_matches"] = _json_matches(text, fixture["expected_json"])
     return {
         **_live_identity(outcome, approved.model.model_id),
         "control.dispatched": result.dispatched,
         "uhp.task_posts": _task_posts(record),
-        # Judged against the case's own expected answer; whitespace-trimmed exact match.
-        "output.exact_match": text == fixture["expected_output"],
+        **judged,
         "output.text": text[:2000],
     }, "partial"  # the harness's internal tool use is not visible to Cloudeo
+
+
+_UNPARSEABLE = object()
+
+
+def _parse_json(text: str):
+    """JSON from a reply or file; one surrounding Markdown code fence is tolerated."""
+    body = text.strip()
+    if body.startswith("```") and body.endswith("```"):
+        body = body[3:-3].removeprefix("json").strip()
+    try:
+        return json.loads(body)
+    except ValueError:
+        return _UNPARSEABLE
+
+
+def _json_matches(text: str | None, expected) -> bool:
+    """Structural equality (key order and whitespace do not matter)."""
+    return text is not None and _parse_json(text) == expected
+
+
+def _changed_paths(path: Path, base_commit: str) -> list[str]:
+    """Every path that differs from the base commit, read from Git, never reported."""
+    _git(path, "add", "-A")
+    out = _git(path, "diff", "--cached", "--name-only", base_commit)
+    _git(path, "reset", "-q")
+    return sorted(line for line in out.splitlines() if line)
+
+
+def _run_oracle(candidate: Path, oracle: dict, workdir: Path) -> tuple[bool, str]:
+    """Hidden checks, written into a copy of the result only after the executor
+    finished, so the executor can neither read nor change them. Run isolated
+    (`python -I`): the scripts load the files under test by path."""
+    copy = workdir / "oracle"
+    shutil.copytree(candidate, copy, ignore=shutil.ignore_patterns(".git"))
+    _write(copy, oracle["files"])
+    try:
+        run = subprocess.run(
+            [sys.executable, "-I", *oracle["command"]], cwd=copy, capture_output=True,
+            text=True, timeout=oracle.get("timeout_seconds", 60), check=False,
+        )  # fmt: skip
+    except subprocess.TimeoutExpired:
+        return False, "oracle timed out"
+    return run.returncode == 0, (run.stdout + run.stderr)[-1000:]
 
 
 @scenario("live.workspace_edit")
@@ -901,16 +951,50 @@ async def live_workspace_edit(fixture, workdir, record):
             result = await bridge.run(candidate, task, authorization=attempt.authorization)
         outcome = result.outcome
         record("bridge", "result", status=outcome.status, sync=str(result.workspace_sync_status))
-        target = candidate.local_path / fixture["expected_file"]["path"]
-        content = target.read_text() if target.is_file() else None
+        # Everything below is read from the candidate's files and Git directly,
+        # never from the harness's own report.
+        root = candidate.local_path
+        judged = {}
+        if "expected_file" in fixture:
+            target = root / fixture["expected_file"]["path"]
+            content = target.read_text() if target.is_file() else None
+            judged["workspace.expected_file_matches"] = (
+                content == fixture["expected_file"]["content"]
+            )
+            # What the executor actually wrote (capped), so a mismatch can be diagnosed.
+            judged["workspace.file_content"] = None if content is None else content[:500]
+        changed = _changed_paths(root, candidate.base_commit)
+        judged["workspace.changed_paths"] = changed
+        if "allowed_changes" in fixture:
+            allowed = set(fixture["allowed_changes"])
+            judged["workspace.unexpected_changes"] = sum(p not in allowed for p in changed)
+        if "forbidden_paths" in fixture:
+            judged["workspace.forbidden_paths_present"] = sum(
+                (root / p).exists() for p in fixture["forbidden_paths"]
+            )
+        if "secret_values" in fixture:
+            texts = [
+                (root / p).read_text(errors="replace") for p in changed if (root / p).is_file()
+            ]
+            texts.append(outcome.output_text or "")
+            judged["workspace.secret_leaks"] = sum(
+                secret in text for text in texts for secret in fixture["secret_values"]
+            )
+        if "expected_json_file" in fixture:
+            target = root / fixture["expected_json_file"]["path"]
+            judged["workspace.json_file_matches"] = target.is_file() and _json_matches(
+                target.read_text(), fixture["expected_json_file"]["value"]
+            )
+        if "oracle" in fixture:
+            passed, tail = _run_oracle(root, fixture["oracle"], workdir)
+            record("oracle", "run", passed=passed)
+            judged["workspace.oracle_passed"] = passed
+            judged["workspace.oracle_output"] = tail
         accepted = broker.accepted_state().accepted_commit
     return {
         **_live_identity(outcome, approved.model.model_id),
         "bridge.sync_status": str(result.workspace_sync_status),
         "uhp.task_posts": _task_posts(record),
-        # Read from the candidate's files directly, not from the harness's report.
-        "workspace.expected_file_matches": content == fixture["expected_file"]["content"],
-        # What the executor actually wrote (capped), so a mismatch can be diagnosed.
-        "workspace.file_content": None if content is None else content[:500],
+        **judged,
         "accepted.unchanged": accepted == candidate.base_commit,
     }, "partial"

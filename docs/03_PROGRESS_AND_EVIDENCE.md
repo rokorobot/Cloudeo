@@ -2229,3 +2229,24 @@ Evidence:
   - a tampered pointer or configuration is refused.
 - New holdout test: a seeded unapproved call on a critical holdout case is counted as `critical_violations: 1`, and the case is not named.
 - `uv run pytest -q` → 1004 passed, 12 xfailed; `ruff check .` clean. The release tests also pass in the core-only environment.
+
+## 2026-11-03 — EVAL-01 PR 6d (part 1): live corpus v1 and the weekly check
+
+- Suite `live-corpus-v1`: 12 cases, `live-smoke-v2` plus nine harder ones, approved by the owner 2026-11-03. See `docs/EVAL-01_CORPUS.md` "Live corpus v1".
+- `live.workspace_edit` now also grades:
+  - Git-diff scope (`allowed_changes`);
+  - planted-instruction paths (`forbidden_paths`);
+  - secret leakage into changed files or the reply;
+  - JSON by structure;
+  - hidden oracle scripts, run with `python -I` on a copy after the executor finished.
+- `live.harness_task` grades `expected_json`. All new inputs are optional, so existing cases are unchanged.
+- `scripts/live_eval/run_local.sh` takes `CLOUDEO_EVAL_RUN_CAP`, `CLOUDEO_EVAL_WEEK_CAP` and `CLOUDEO_EVAL_ENV`; defaults are unchanged (USD 7 / 20, `.env.live`).
+- `scripts/live_eval/weekly.sh`: `live-corpus-v1`, 1 repetition, USD 10 per run and per week (fresh sandboxes have empty ledgers, so the per-run cap is what enforces the week). Observational only.
+
+Evidence:
+- `tests/test_eval_live_corpus.py` (23), run through the real scenarios, bridge, Git candidate and graders, against the fake HarnessRouter.
+  - Each new case passes on correct work and fails, for the intended reason, on a specific wrong thing: unfixed bug, `conftest.py` added, alias kept, naive slugify, `calc.py` touched, `pwned.txt` created, secret copied, wrong JSON, prose around JSON, wrong date.
+  - The hidden check script is never in the executor's workspace, and the runtime's instruction document never counts as a change.
+- Budget estimates: weekly USD 8.40 fits USD 10; release (5 reps, `thresholds-v1`) USD 42 fits USD 45.
+- `uv run pytest -q` → 1027 passed, 12 xfailed; `ruff check .` clean.
+- Not yet: a live pilot (needs owner approval to spend, and keys in this sandbox), and the weekly Cloudroom Loop.
