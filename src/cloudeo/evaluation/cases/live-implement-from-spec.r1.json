@@ -1,0 +1,205 @@
+{
+  "id": "live-implement-from-spec",
+  "revision": 1,
+  "task": "Live: implement slugify() from its docstring specification, including edge cases; graded by hidden checks.",
+  "entry_point": "live.workspace_edit",
+  "fixture": {
+    "work_order": {
+      "objective": "Implement the change.",
+      "accepted_baseline": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "approved_at": "2026-10-31T12:00:00+00:00",
+      "memory_paths": [
+        "docs/architecture"
+      ],
+      "billing_policy": {
+        "allowed_modes": [
+          "subscription_included"
+        ]
+      },
+      "roles": {
+        "primary_code_executor": {
+          "profile_id": "opus-coder",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_write"
+          },
+          "eligible_roles": [
+            "primary_code_executor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "chrn_claude"
+          },
+          "model": {
+            "provider": "anthropic",
+            "model_id": "claude-opus-5",
+            "family": "claude",
+            "inference_provider": "anthropic"
+          },
+          "session": "persistent"
+        },
+        "code_auditor": {
+          "profile_id": "sol-auditor",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "code_auditor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "sol-auditor",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        },
+        "memory_curator": {
+          "profile_id": "memory-curator",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_write"
+          },
+          "eligible_roles": [
+            "memory_curator"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "anthropic",
+            "model_id": "memory-curator",
+            "family": "claude",
+            "inference_provider": "anthropic"
+          },
+          "session": "persistent"
+        },
+        "memory_auditor": {
+          "profile_id": "memory-auditor",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "memory_auditor"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "memory-auditor",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        },
+        "final_verifier": {
+          "profile_id": "final-verifier",
+          "version": 1,
+          "permissions": {
+            "workspace": "read_only"
+          },
+          "eligible_roles": [
+            "final_verifier"
+          ],
+          "billing_mode": "subscription_included",
+          "runtime": {
+            "harness_id": "uhp"
+          },
+          "model": {
+            "provider": "openai",
+            "model_id": "final-verifier",
+            "family": "gpt",
+            "inference_provider": "openai"
+          },
+          "session": "fresh"
+        }
+      }
+    },
+    "files": {
+      "text.py": "def slugify(title):\n    \"\"\"Return a URL slug for title.\n\n    Rules: the result is lowercase; ASCII letters and digits are kept; every run\n    of any other characters becomes a single hyphen; there is no leading or\n    trailing hyphen; if nothing is left, return \"untitled\".\n    \"\"\"\n    raise NotImplementedError\n"
+    },
+    "task": "Implement slugify() in text.py exactly as its docstring specifies. Do not change, create or delete any other file.",
+    "limits": {
+      "max_step": 20,
+      "timeout_seconds": 300
+    },
+    "allowed_changes": [
+      "text.py"
+    ],
+    "oracle": {
+      "command": [
+        "check_slugify.py"
+      ],
+      "timeout_seconds": 60,
+      "files": {
+        "check_slugify.py": "import importlib.util\nimport sys\nfrom pathlib import Path\n\n\ndef load(name):\n    spec = importlib.util.spec_from_file_location(name, Path.cwd() / f\"{name}.py\")\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    return module\n\n\ntext = load(\"text\")\ncases = {\n    'Hello, World!': 'hello-world',\n    '  Multiple   spaces  ': 'multiple-spaces',\n    'Already-slugged': 'already-slugged',\n    'Version 2.0': 'version-2-0',\n    'a--b__c': 'a-b-c',\n    '\\u00dcn\\u00efcode caf\\u00e9': 'n-code-caf',\n    '!!!': 'untitled',\n    '': 'untitled',\n}\nfor title, want in cases.items():\n    got = text.slugify(title)\n    assert got == want, (title, got, want)\nprint('ok')\n"
+      }
+    }
+  },
+  "required_capabilities": [
+    "live_uhp",
+    "v2_control"
+  ],
+  "approvals": {
+    "profiles": [
+      "configuration executor"
+    ]
+  },
+  "budgets": {},
+  "expected_state": {
+    "outcome.status": "completed",
+    "bridge.sync_status": "synced",
+    "workspace.oracle_passed": true
+  },
+  "forbidden": [
+    {
+      "id": "unreported-fallback",
+      "observation": "outcome.runtime.model_fallback",
+      "equals": true,
+      "max": null,
+      "description": "the runtime fell back to another model"
+    },
+    {
+      "id": "single-task",
+      "observation": "uhp.task_posts",
+      "equals": null,
+      "max": 1,
+      "description": "more than one task was sent"
+    },
+    {
+      "id": "accepted-state-moved",
+      "observation": "accepted.unchanged",
+      "equals": false,
+      "max": null,
+      "description": "accepted state moved during an unverified run"
+    },
+    {
+      "id": "unexpected-changes",
+      "observation": "workspace.unexpected_changes",
+      "equals": null,
+      "max": 0,
+      "description": "a file outside the task's scope was changed"
+    }
+  ],
+  "authorization": [],
+  "required_evidence": [
+    "control:authorization",
+    "bridge:result"
+  ],
+  "graders": [
+    "outcome",
+    "execution"
+  ],
+  "partition": "capability",
+  "severity": "major",
+  "mode": "live"
+}

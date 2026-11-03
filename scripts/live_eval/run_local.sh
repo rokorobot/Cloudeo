@@ -3,9 +3,10 @@
 #
 #   scripts/live_eval/run_local.sh [REPETITIONS] [BASELINE] [CANDIDATE]
 #
-# Keys come from the git-ignored .env.live (entered once through Cloudroom's secret form);
-# nothing secret is printed. Order of checks, all before any spend: budget (USD 7 per run,
-# USD 20 per rolling week), HarnessRouter up, console sign-in, configured models offered.
+# Keys come from a git-ignored env file (CLOUDEO_EVAL_ENV, default .env.live; entered once
+# through Cloudroom's secret form); nothing secret is printed. Order of checks, all before
+# any spend: budget (CLOUDEO_EVAL_RUN_CAP per run, default USD 7; CLOUDEO_EVAL_WEEK_CAP per
+# rolling week, default USD 20), HarnessRouter up, console sign-in, configured models offered.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPS=${1:-3}
@@ -16,16 +17,18 @@ OUT=${CLOUDEO_EVAL_OUT:-$HOME/.cloudeo-eval/live}
 LEDGER=${CLOUDEO_EVAL_LEDGER:-$HOME/.cloudeo-eval/ledger.jsonl}
 HR=scripts/live_eval/hr_native.sh
 RUN=/opt/harnessrouter/run
-[ -f .env.live ] || { echo "no .env.live: enter the keys once via Cloudroom's secret form"; exit 1; }
+ENV_FILE=${CLOUDEO_EVAL_ENV:-.env.live}
+CAPS=(--run-cap-usd "${CLOUDEO_EVAL_RUN_CAP:-7}" --week-cap-usd "${CLOUDEO_EVAL_WEEK_CAP:-20}")
+[ -f "$ENV_FILE" ] || { echo "no $ENV_FILE: enter the keys once via Cloudroom's secret form"; exit 1; }
 mkdir -p "$OUT" "$(dirname "$LEDGER")"
 eval_cli() { uv run --no-sync python -m cloudeo.evaluation "$@"; }
 
 eval_cli compare --suite "$SUITE" --baseline "$BASE" --candidate "$CAND" \
-  --repetitions "$REPS" --out "$OUT" --ledger "$LEDGER" --estimate-only
+  --repetitions "$REPS" --out "$OUT" --ledger "$LEDGER" "${CAPS[@]}" --estimate-only
 
 if ! curl -fsS -m 3 http://127.0.0.1:18810/api/harness/v1/uhp >/dev/null 2>&1; then
   [ -f /opt/harnessrouter/app/ui/server.js ] || "$HR" install
-  "$HR" start .env.live
+  "$HR" start "$ENV_FILE"
 fi
 pw=$(cat "$RUN/console-password")
 curl -fsS -m 30 -c "$RUN/cookies" -o /dev/null http://127.0.0.1:18810/api/selfhost/login \
@@ -39,5 +42,5 @@ export CLOUDEO_EVAL_UHP_COOKIE CLOUDEO_EVAL_UHP_URL=http://127.0.0.1:18810/api/h
 
 uv run --no-sync python scripts/live_eval/preflight.py "$BASE" "$CAND"
 eval_cli compare --suite "$SUITE" --baseline "$BASE" --candidate "$CAND" \
-  --repetitions "$REPS" --out "$OUT" --ledger "$LEDGER" --require-clean
+  --repetitions "$REPS" --out "$OUT" --ledger "$LEDGER" "${CAPS[@]}" --require-clean
 eval_cli verify --out "$OUT"

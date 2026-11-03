@@ -1,0 +1,83 @@
+{
+  "id": "live-corpus-v1",
+  "version": 1,
+  "description": "EVAL-01 6d live corpus: live-smoke-v2 plus nine harder cases (hidden-check code tasks, scope discipline, planted instructions, secret handling, structured output, multi-step reasoning). 12 cases: the minimum for a thresholds-v1 verdict.",
+  "cases": [
+    {
+      "case_id": "live-exact-reply",
+      "revision": 1,
+      "case_digest": "7c205eefe02c3619f0c466a91cde9244b9a476979962f331f123925339be394a",
+      "holdout": false
+    },
+    {
+      "case_id": "live-arithmetic",
+      "revision": 1,
+      "case_digest": "358069f23df64634217ebf1d4bb1ebd90b7485b7116230fc588a3630a03319a8",
+      "holdout": false
+    },
+    {
+      "case_id": "live-workspace-edit",
+      "revision": 2,
+      "case_digest": "f24c0b10524340fcd3648fd4881341540891038e90eabc3f38744b3afad238ed",
+      "holdout": false
+    },
+    {
+      "case_id": "live-fix-bug-hidden-tests",
+      "revision": 1,
+      "case_digest": "b33076c6da36aaf6a3968405e6487afce93a93022487102c1f3b2ab51581a14e",
+      "holdout": false
+    },
+    {
+      "case_id": "live-multi-file-rename",
+      "revision": 1,
+      "case_digest": "02dae3abd3c0c0d1b8242f944d79a9108eb7e3bba46d4c1d3dcecf81bad5d10d",
+      "holdout": false
+    },
+    {
+      "case_id": "live-implement-from-spec",
+      "revision": 1,
+      "case_digest": "a99f9d1d05d70031c75504ebd2a36ea0ba840a58611291559529b158ab27ee7e",
+      "holdout": false
+    },
+    {
+      "case_id": "live-scope-discipline",
+      "revision": 1,
+      "case_digest": "01133ab0853facdd26279aa89d82912963ecc31e8ccd3f3d4de0ee1db68e5453",
+      "holdout": false
+    },
+    {
+      "case_id": "live-prompt-injection-in-repo",
+      "revision": 1,
+      "case_digest": "a55c3145643ec0d93c4de2faea3e2d090e3c2953e806ae9ae5fbf967658cb138",
+      "holdout": false
+    },
+    {
+      "case_id": "live-no-secret-leak",
+      "revision": 1,
+      "case_digest": "5bc190aced9e3edb6633e9f2e86d3fce2d37e68b1eb8f18c68f8f9dd7c93b149",
+      "holdout": false
+    },
+    {
+      "case_id": "live-csv-to-json",
+      "revision": 1,
+      "case_digest": "393cd4dc01d00c07447ecf71f22a54b8b30e03385666cc20a881b0b66eca27f3",
+      "holdout": false
+    },
+    {
+      "case_id": "live-structured-extraction",
+      "revision": 1,
+      "case_digest": "0b9cbd6d6f0bcf99386c8a5dcd59e32ce0cd96af85553f8cca9d8891c0742f92",
+      "holdout": false
+    },
+    {
+      "case_id": "live-multi-step-reasoning",
+      "revision": 1,
+      "case_digest": "c59a27381d0e5d9eafcf29a41db40e870922dff2e7434dc1f2f0173e8ad3c8bf",
+      "holdout": false
+    }
+  ],
+  "grader_versions": {
+    "outcome": "2",
+    "execution": "2"
+  }
+}
