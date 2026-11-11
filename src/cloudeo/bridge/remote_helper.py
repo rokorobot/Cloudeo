@@ -44,6 +44,27 @@ REGULAR_MODE = 0o644
 # the bootstrap copy is reconciled at unpack; afterwards they sync normally.
 MANAGED_ROOT_DOCS = ("AGENTS.md", "CLAUDE.md", "QWEN.md", "GEMINI.md")
 HARNESSROUTER_MANAGED_MARKER = b"<!-- harness-skills:begin -->"
+# HarnessRouter's runner (`_git_ensure`, pinned source 809392d) writes exactly
+# this .gitignore at the workspace root, overwriting any project copy. Found by
+# the EVAL-01 live pilot (2026-11-11): synced back, it overwrote the candidate's
+# own .gitignore or added one the executor never wrote. Byte-identical, it is
+# runtime state and never part of the delta, so the candidate keeps its own
+# .gitignore. Any other content (an executor's edit, even on top of it) syncs.
+_RUNNER_GITIGNORE_LINES = (
+    "# harness: never persist secrets/scratch in the session checkpoint",
+    "tmp/", ".gcp-sa.json", ".codex/", ".credentials.json", ".harness/**/.credentials.json",
+    ".harness/home/.hermes/.env", ".harness/home/.hermes/auth.json",
+    ".harness/home/.pi/agent/auth.json", ".harness/home/.pi/agent/models.json",
+    ".harness/goose/config/secrets.yaml",
+    "# harness: the CLI home is checkpointed by tar, not by this repo (see _git_ensure)",
+    ".harness/home/",
+    "",
+)  # fmt: skip
+HARNESSROUTER_GITIGNORE = "\n".join(_RUNNER_GITIGNORE_LINES).encode()
+
+
+def is_runtime_gitignore(path: str, data: bytes) -> bool:
+    return path == ".gitignore" and data == HARNESSROUTER_GITIGNORE
 
 
 class BridgeHelperError(Exception):
@@ -352,6 +373,8 @@ def _pack(root: str, run_id: str, manifest: dict, identity: dict, limits: dict) 
     now = scan(root, limits)
     added, changed, returned = [], [], {}
     for path, (entry, data) in sorted(now.items()):
+        if is_runtime_gitignore(path, data):
+            continue  # HarnessRouter's own file; the candidate keeps its copy
         old = before.get(path)
         if old is None:
             added.append(entry)

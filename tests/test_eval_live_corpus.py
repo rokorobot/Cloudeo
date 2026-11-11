@@ -40,7 +40,7 @@ def grade(case, observations, recorder):
 
 def run_workspace(tmp_path, monkeypatch, case_id, work):
     case = CASES[case_id]
-    router = FakeHarnessRouter(tmp_path / "hr", work=work)
+    router = FakeHarnessRouter(tmp_path / "hr", work=work, runner_gitignore=True)
     monkeypatch.setattr(scenarios, "LIVE_TRANSPORT", httpx.MockTransport(router))
     (tmp_path / "w").mkdir()
     recorder = scenarios.Recorder()
