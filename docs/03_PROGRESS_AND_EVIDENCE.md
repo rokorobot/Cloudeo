@@ -2250,3 +2250,30 @@ Evidence:
 - Budget estimates: weekly USD 8.40 fits USD 10; release (5 reps, `thresholds-v1`) USD 42 fits USD 45.
 - `uv run pytest -q` → 1027 passed, 12 xfailed; `ruff check .` clean.
 - Not yet: a live pilot (needs owner approval to spend, and keys in this sandbox), and the weekly Cloudroom Loop.
+
+## 2026-11-11 — EVAL-01 6d live pilot; bridge fix: HarnessRouter's own `.gitignore`
+
+Live pilot of `live-corpus-v1`: 1 repetition, `opus-5-5` vs `gpt-5-6`, inside Cloudroom, observational.
+- Run `bb451f53…`: invalid. The Anthropic key entered was not an Anthropic API key (HTTP 401), so every Opus trial failed in about 1.5 s with 0 tokens. Infrastructure, not a model result.
+- Owner decision: a one-time weekly-cap exception (USD 18.40 for this week) to rerun with a corrected key.
+- Rerun `cmp-a37792d8d742`:
+  - coverage 100%, outcomes 12/12 on both sides, regrade 0 problems;
+  - verified 5/12 (Opus) vs 8/12 (GPT);
+  - every one of the 11 failures was `unexpected-changes`, caused by a root `.gitignore` neither executor wrote.
+  - Excluding that file, both sides verified 12/12.
+  - Tokens: 13,418 (Opus) vs 170,457 (GPT). Median trial: 19.5 s vs 17.7 s.
+  - Budget counted USD 16.80 for the week, all at reserve; the runtime reported no currency cost.
+
+Root cause: HarnessRouter's runner (`runner/server.py` `_git_ensure`, pinned source `809392d`) writes its own root `.gitignore` before each checkpoint and overwrites any project copy. HarnessRouter hides it from its own produced-files list, but Cloudeo's bridge packed it as a project change. So a candidate gained a `.gitignore` the executor never wrote, and **a project's own `.gitignore` would have been replaced** in the candidate. It is a product defect, not only an evaluation artifact.
+
+Fix:
+- `remote_helper` drops a root `.gitignore` byte-identical to the runner's template (`HARNESSROUTER_GITIGNORE`, checked against the pinned source) from the delta. The candidate keeps its own.
+- Any other content, including an executor's edit on top of the template, still syncs.
+- The fake HarnessRouter can now simulate the runner (`runner_gitignore=True`); the live-corpus tests use it.
+
+Evidence:
+- New bridge tests: the project's own `.gitignore` survives the runner's rewrite and is not in the delta; an executor's `.gitignore` edit still syncs as changed.
+- Live-corpus tests pass with the runner's `.gitignore` simulated.
+- `uv run pytest -q` → 1029 passed, 12 xfailed; `ruff check .` clean.
+
+Follow-up: record the contents of out-of-scope files in live trials, so a scope failure can be attributed from the evidence alone.

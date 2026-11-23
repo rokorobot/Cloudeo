@@ -519,6 +519,28 @@ async def test_b_c_tracked_project_doc_replaces_bootstrap_copy(tmp_path, staging
     assert (candidate.local_path / doc).read_bytes() == PROJECT_DOC
 
 
+async def test_runner_gitignore_never_replaces_the_projects_own(
+    repo, broker, candidate, staging, tmp_path
+):
+    # Found by the EVAL-01 live pilot: HarnessRouter's runner overwrites the root .gitignore.
+    own = (candidate.local_path / ".gitignore").read_bytes()
+    server = FakeHarnessRouter(tmp_path, work=standard_work, runner_gitignore=True)
+    result = await run_bridge(broker, candidate, server, staging)
+    assert result.workspace_sync_status == "synced"
+    assert ".gitignore" not in synced_paths(result)
+    assert (candidate.local_path / ".gitignore").read_bytes() == own
+
+
+async def test_an_executor_edit_of_gitignore_still_syncs(tmp_path, staging, broker, candidate):
+    edited = helper.HARNESSROUTER_GITIGNORE + b"build/\n"
+    server = FakeHarnessRouter(
+        tmp_path, work=lambda ws: (ws / ".gitignore").write_bytes(edited)
+    )
+    result = await run_bridge(broker, candidate, server, staging)
+    assert result.changed_paths == (".gitignore",)
+    assert (candidate.local_path / ".gitignore").read_bytes() == edited
+
+
 async def test_d_agent_edit_of_project_agents_doc_syncs_as_changed(tmp_path, staging):
     _, broker, candidate = project_with(tmp_path, {"AGENTS.md": PROJECT_DOC})
     edited = PROJECT_DOC + b"Also update the changelog.\n"

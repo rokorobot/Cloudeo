@@ -80,6 +80,7 @@ class FakeHarnessRouter:
         bootstrap_content=None,
         before_unpack=None,
         response_overrides=None,
+        runner_gitignore=False,
     ):
         self.remote = root / "remote"
         self.response_overrides = response_overrides or {}
@@ -92,6 +93,8 @@ class FakeHarnessRouter:
         self.before_unpack = before_unpack
         self.helper_outputs = []
         self.work = work
+        # Like the real runner's `_git_ensure`: rewrite the root .gitignore before packing.
+        self.runner_gitignore = runner_gitignore
         self.status = status
         self.session_id = session_id
         self.pack = pack
@@ -180,6 +183,8 @@ class FakeHarnessRouter:
         if self.pack and self._run_helper("unpack", run_id) == 0:
             if self.work:
                 self.work(self.workspace)
+            if self.runner_gitignore:
+                (self.workspace / ".gitignore").write_bytes(helper.HARNESSROUTER_GITIGNORE)
             self._run_helper("pack-delta", run_id)
         if self.output is not None:
             data = self.output(run_id, self.input_manifest())
